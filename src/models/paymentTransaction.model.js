@@ -159,7 +159,7 @@ paymentTransactionSchema.index(
   {
     unique: true,
     partialFilterExpression: {
-      paymentId: { $type: 'string', $nin: ['', null] },
+      paymentId: { $type: 'string', $gt: '' },
     },
   },
 );
