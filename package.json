@@ -26,8 +26,7 @@
     "razorpay": "^2.9.8",
     "resend": "^6.12.4",
     "sharp": "^0.35.2",
-    "undici": "^8.10.0",
-    "uuid": "^14.0.0"
+    "undici": "^8.10.0"
   },
   "devDependencies": {
     "mongodb-memory-server": "^11.2.0",

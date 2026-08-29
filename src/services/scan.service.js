@@ -1,4 +1,4 @@
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const redisService = require('./redis.service');
 const openaiService = require('./openai.service');
 const ocrPreprocessCache = require('./ocrPreprocess.cache');
