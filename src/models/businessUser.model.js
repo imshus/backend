@@ -1,0 +1,42 @@
+const mongoose = require('mongoose');
+
+const businessUserSchema = new mongoose.Schema({
+  businessId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Business',
+    required: true,
+    index: true
+  },
+  phone: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true
+  },
+  passwordHash: {
+    type: String,
+    required: true
+  },
+  role: {
+    type: String,
+    enum: ['OWNER', 'EMP', 'SUPER'],
+    default: 'OWNER',
+    required: true
+  },
+  phoneVerified: {
+    type: Boolean,
+    default: true
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  lastLoginAt: {
+    type: Date
+  }
+}, {
+  timestamps: true,
+  collection: 'business_users'
+});
+
+module.exports = mongoose.model('BusinessUser', businessUserSchema);

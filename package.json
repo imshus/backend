@@ -1,0 +1,36 @@
+{
+  "name": "jewellery-tag-backend",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node --test",
+    "test:msg91": "node test_msg91.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.8.0",
+    "axios": "^1.18.1",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.2.0",
+    "ioredis": "^5.11.1",
+    "joi": "^18.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.7.0",
+    "morgan": "^1.11.0",
+    "multer": "^2.1.1",
+    "openai": "^6.44.0",
+    "razorpay": "^2.9.8",
+    "resend": "^6.12.4",
+    "sharp": "^0.35.2",
+    "undici": "^8.10.0",
+    "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0",
+    "nodemon": "^3.1.14"
+  }
+}
