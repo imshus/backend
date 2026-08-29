@@ -15,6 +15,8 @@ const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   '14k_cash': true,
   '9k_rtgs': true,
   '9k_cash': true,
+  // Bhaw rate source: true = JMD Patil live feed, false = Mega Bullion (supreme changes).
+  'bhaw_source_jmd': false,
 };
 
 const normalizeDashboardMatrices = (values = {}) => ({
@@ -101,6 +103,10 @@ const updateDashboardMatrices = async (req, res) => {
       { $set: { metricsData: normalizedValues } },
       { new: true, upsert: true }
     );
+
+    // The bhaw source feeds the cached gold-rate computation.
+    const redisService = require('../services/redis.service');
+    await redisService.invalidateGoldRatesCache(businessId.toString());
 
     res.status(200).json({ success: true, data: normalizeDashboardMatrices(metrics.metricsData || {}) });
   } catch (error) {

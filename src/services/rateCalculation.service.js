@@ -3,6 +3,8 @@ const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const GoldRate = require('../models/goldRate.model');
 const redisService = require('./redis.service');
 const SupremeChange = require('../models/supremeChange.model');
+const DashboardMetrics = require('../models/dashboardMetrics.model');
+const bhawService = require('./bhaw.service');
 
 const toNumber = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -60,6 +62,20 @@ const getLiveGoldRates = async (businessId) => {
       rtgsChange: supreme && typeof supreme.rtgsChange === 'number' ? supreme.rtgsChange : 0,
       cashChange: supreme && typeof supreme.cashChange === 'number' ? supreme.cashChange : 0
     };
+  }
+
+  // 4b. Bhaw source: a business can adjust its gold rates from the JMD Patil
+  // live feed instead of the Mega Bullion (supreme) changes. Falls back to
+  // supreme values whenever the feed is unavailable.
+  const metrics = await DashboardMetrics.findOne({ businessId });
+  if (metrics?.metricsData?.bhaw_source_jmd) {
+    const jmdBhaw = await bhawService.getJmdBhaw();
+    if (jmdBhaw) {
+      supremeChanges = {
+        rtgsChange: jmdBhaw.rtgsBhaw,
+        cashChange: jmdBhaw.cashBhaw
+      };
+    }
   }
 
   // Compose final rates: MCX + SupremeChange + Business (taxSettings)

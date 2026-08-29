@@ -32,13 +32,11 @@ const confirmGst = async (gstData) => {
   let business = await Business.findOne({ gstNumber: gstData.gstNumber });
   
   if (business) {
-    if (business.isRegistered) {
-      throw new Error('BUSINESS_ALREADY_REGISTERED');
-    }
-    // Resume registration, just return the existing ID
+    // Multiple accounts may share one GST number: attach the new user to the
+    // existing business instead of rejecting an already-registered GSTIN.
     return {
       businessId: business._id.toString(),
-      status: business.registrationStep
+      status: business.isRegistered ? 'REGISTERED' : business.registrationStep
     };
   }
 
@@ -214,6 +212,12 @@ const register = async ({ mobile, password, businessDetails }) => {
   const normalizedPhone = normalizePhone(mobile);
   const stateStr = await redisClient.get(`registration:${businessId}`);
   let state = stateStr ? JSON.parse(stateStr) : null;
+
+  // The redis key is per-business and several users may register under the
+  // same GST number — ignore state left behind by a different phone.
+  if (state && normalizePhone(state.phone) !== normalizedPhone) {
+    state = null;
+  }
 
   if (!state || !state.phoneVerified) {
     // Signup form verifies the phone OTP before GST (via /auth/send-otp +
