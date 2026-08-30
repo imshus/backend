@@ -32,7 +32,7 @@ const verifyOtpSchema = Joi.object({
 
 const createPasswordSchema = Joi.object({
   businessId: Joi.string().required(),
-  password: Joi.string().min(8).required(),
+  password: Joi.string().min(6).required(),
   confirmPassword: Joi.any().valid(Joi.ref('password')).required().messages({
     'any.only': 'Passwords do not match'
   })
@@ -40,7 +40,7 @@ const createPasswordSchema = Joi.object({
 
 const registerSchema = Joi.object({
   mobile: Joi.string().pattern(/^[0-9]{10}$/).required(),
-  password: Joi.string().min(8).required(),
+  password: Joi.string().min(6).required(),
   businessDetails: Joi.object({
     businessId: Joi.string().required(),
     businessName: Joi.string().allow('').optional(),
@@ -65,7 +65,7 @@ const employeeLoginSchema = Joi.object({
 });
 const changePasswordSchema = Joi.object({
   currentPassword: Joi.string().required(),
-  newPassword: Joi.string().min(8).required(),
+  newPassword: Joi.string().min(6).required(),
 });
 
 module.exports = {

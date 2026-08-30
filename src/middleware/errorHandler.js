@@ -20,6 +20,7 @@ const errorHandler = (err, req, res, next) => {
     'MSG91_SERVER_ERROR': { status: 502, msg: 'MSG91 service returned a server error.' },
     'MSG91_NETWORK_ERROR': { status: 502, msg: 'Unable to reach MSG91 service.' },
     'MSG91_TIMEOUT': { status: 504, msg: 'MSG91 request timed out.' },
+    'USER_ID_ALREADY_EXISTS': { status: 409, msg: 'This User ID is already taken. Please choose another.' },
     'PHONE_ALREADY_EXISTS': { status: 409, msg: 'This phone number is already associated with an account.' },
     'REGISTRATION_SESSION_EXPIRED': { status: 410, msg: 'Registration session expired. Please verify GST again.' },
     'UNAUTHORIZED': { status: 401, msg: 'Missing or invalid authentication token.' },

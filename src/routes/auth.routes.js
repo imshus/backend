@@ -8,6 +8,7 @@ const {
   sendOtpSchema,
   verifyMobileOtpSchema,
   verifyOtpSchema,
+  checkAvailabilitySchema,
   createPasswordSchema,
   registerSchema,
   loginSchema,
@@ -21,6 +22,7 @@ const { authenticateJWT } = require('../middleware/auth.middleware');
 const router = express.Router();
 
 router.post('/business/gst/verify', gstRateLimiter, validate(gstVerifySchema), authController.verifyGst);
+router.post('/check-availability', validate(checkAvailabilitySchema), authController.checkAvailability);
 router.post('/business/gst/confirm', validate(gstConfirmSchema), authController.confirmGst);
 router.post('/business/contact-details', validate(contactDetailsSchema), authController.submitContactDetails);
 router.post('/register', validate(registerSchema), authController.register);

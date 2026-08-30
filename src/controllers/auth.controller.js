@@ -38,9 +38,32 @@ const submitContactDetails = async (req, res, next) => {
 
 const register = async (req, res, next) => {
   try {
-    const { mobile, password, businessDetails } = req.body;
-    const data = await registrationService.register({ mobile, password, businessDetails });
+    const { mobile, password, userId, businessDetails } = req.body;
+    const data = await registrationService.register({ mobile, password, userId, businessDetails });
     sendSuccess(res, data);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Signup-form pre-check so uniqueness errors surface on the register page,
+// before the OTP is sent — not later on the GST screen.
+const checkAvailability = async (req, res, next) => {
+  try {
+    const BusinessUser = require('../models/businessUser.model');
+    const { mobile, userId } = req.body;
+    const phone = String(mobile || '').replace(/D/g, '').slice(-10);
+    const normalizedUserId = String(userId || '').trim();
+
+    const [phoneUser, userIdUser] = await Promise.all([
+      /^[0-9]{10}$/.test(phone) ? BusinessUser.findOne({ phone }) : null,
+      normalizedUserId ? BusinessUser.findOne({ userId: normalizedUserId }) : null,
+    ]);
+
+    sendSuccess(res, {
+      phoneTaken: Boolean(phoneUser),
+      userIdTaken: Boolean(userIdUser),
+    });
   } catch (err) {
     next(err);
   }
@@ -186,6 +209,7 @@ const refreshToken = async (req, res, next) => {
 };
 
 module.exports = {
+  checkAvailability,
   verifyGst,
   confirmGst,
   submitContactDetails,

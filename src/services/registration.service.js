@@ -110,7 +110,7 @@ const verifyPhoneOtp = async (businessId, otp) => {
   return { phoneVerified: true };
 };
 
-const createPassword = async (businessId, password) => {
+const createPassword = async (businessId, password, userId) => {
   const stateStr = await redisClient.get(`registration:${businessId}`);
   if (!stateStr) throw new Error('Session expired or incomplete registration');
   
@@ -130,6 +130,7 @@ const createPassword = async (businessId, password) => {
     const newUsers = await BusinessUser.create([{
       businessId: business._id,
       phone: state.phone,
+      ...(userId ? { userId } : {}),
       passwordHash,
       role: 'OWNER',
       phoneVerified: true,
@@ -161,8 +162,13 @@ const createPassword = async (businessId, password) => {
 };
 
 const login = async (mobile, password) => {
-  const normalizedPhone = normalizePhone(mobile);
-  const user = await BusinessUser.findOne({ phone: normalizedPhone });
+  // The login field carries either a 10-digit phone number or a User ID.
+  const raw = String(mobile || '').trim();
+  const normalizedPhone = normalizePhone(raw);
+  const query = /^[0-9]{10}$/.test(normalizedPhone)
+    ? { $or: [{ phone: normalizedPhone }, { userId: raw }] }
+    : { userId: raw };
+  const user = await BusinessUser.findOne(query);
   if (!user || !user.isActive) {
     throw new Error('INVALID_PHONE_CREDENTIALS');
   }
@@ -203,7 +209,7 @@ const loginWithOtp = async (mobile, otp) => {
   return buildLoginPayload(user, business, tokens);
 };
 
-const register = async ({ mobile, password, businessDetails }) => {
+const register = async ({ mobile, password, userId, businessDetails }) => {
   const businessId = businessDetails?.businessId;
   if (!businessId) {
     throw new Error('REGISTRATION_SESSION_EXPIRED');
@@ -247,7 +253,13 @@ const register = async ({ mobile, password, businessDetails }) => {
     });
   }
 
-  return createPassword(businessId, password);
+  const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
+  if (normalizedUserId) {
+    const existingUserId = await BusinessUser.findOne({ userId: normalizedUserId });
+    if (existingUserId) throw new Error('USER_ID_ALREADY_EXISTS');
+  }
+
+  return createPassword(businessId, password, normalizedUserId || undefined);
 };
 
 const loginEmployee = async ({ phone }, password) => {

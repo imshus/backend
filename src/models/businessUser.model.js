@@ -13,6 +13,14 @@ const businessUserSchema = new mongoose.Schema({
     unique: true,
     trim: true
   },
+  // Chosen at signup; unique across all users. Sparse so accounts created
+  // before this field existed (phone-only) stay valid.
+  userId: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true
+  },
   passwordHash: {
     type: String,
     required: true
