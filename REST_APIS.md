@@ -67,6 +67,21 @@ This file lists all REST API routes provided by the backend (grouped and numbere
 - Controller: `authController.refreshToken`
 - Description: Refresh access/refresh tokens via `auth.service.refreshTokens`.
 
+1.13 POST /api/v1/auth/forgot-password/request
+- Auth: none
+- Middleware: `validate(requestPasswordResetSchema)`
+- Description: Resolve a registered phone number or User ID and send a password-reset OTP.
+
+1.14 POST /api/v1/auth/forgot-password/verify-otp
+- Auth: none
+- Middleware: `validate(verifyPasswordResetOtpSchema)`
+- Description: Verify the password-reset OTP and return a single-use, 10-minute reset token.
+
+1.15 POST /api/v1/auth/forgot-password/reset
+- Auth: password-reset token in the request body
+- Middleware: `validate(resetPasswordSchema)`
+- Description: Set and confirm a new password without requesting the forgotten current password.
+
 
 2. Scanning (Image upload, AI analysis, clarification, review)
 

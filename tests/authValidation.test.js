@@ -5,6 +5,10 @@ const {
   checkAvailabilitySchema,
   registerSchema,
   loginSchema,
+  requestPasswordResetSchema,
+  verifyPasswordResetOtpSchema,
+  resetPasswordSchema,
+  changePasswordSchema,
 } = require('../src/validators/auth.validator');
 
 const businessDetails = {
@@ -77,5 +81,60 @@ test('business login accepts either phone number or chosen User ID', () => {
   assert.equal(
     loginSchema.validate({ mobile: 'owner.one', password: 'secret1' }).error,
     undefined,
+  );
+});
+
+test('password recovery accepts either a registered phone-shaped value or User ID', () => {
+  assert.equal(
+    requestPasswordResetSchema.validate({ identifier: '9876543210' }).error,
+    undefined,
+  );
+  assert.equal(
+    requestPasswordResetSchema.validate({ identifier: 'owner.one' }).error,
+    undefined,
+  );
+  assert.equal(
+    verifyPasswordResetOtpSchema.validate({ identifier: 'owner.one', otp: '123456' }).error,
+    undefined,
+  );
+  assert.ok(
+    verifyPasswordResetOtpSchema.validate({ identifier: 'owner.one', otp: '123' }).error,
+  );
+});
+
+test('forgot-password reset requires matching new and confirm passwords', () => {
+  assert.equal(
+    resetPasswordSchema.validate({
+      resetToken: 'signed-reset-token',
+      newPassword: 'secret1',
+      confirmPassword: 'secret1',
+    }).error,
+    undefined,
+  );
+
+  assert.match(
+    resetPasswordSchema.validate({
+      resetToken: 'signed-reset-token',
+      newPassword: 'secret1',
+      confirmPassword: 'different',
+    }).error.message,
+    /Passwords do not match/i,
+  );
+
+  assert.ok(
+    resetPasswordSchema.validate({
+      resetToken: 'signed-reset-token',
+      newPassword: 'secret1',
+    }).error,
+  );
+});
+
+test('normal password change still requires the real current password', () => {
+  assert.equal(
+    changePasswordSchema.validate({ currentPassword: 'old-secret', newPassword: 'new-secret' }).error,
+    undefined,
+  );
+  assert.ok(
+    changePasswordSchema.validate({ currentPassword: '', newPassword: 'new-secret' }).error,
   );
 });

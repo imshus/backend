@@ -10,6 +10,28 @@ const generateTokens = (businessId, userId, role) => {
   return { accessToken, refreshToken };
 };
 
+const generatePasswordResetToken = (businessId, userId, nonce) => {
+  return jwt.sign(
+    { businessId, userId, nonce, purpose: 'PASSWORD_RESET' },
+    config.jwt.accessSecret,
+    { expiresIn: '10m' },
+  );
+};
+
+const verifyPasswordResetToken = (token) => {
+  try {
+    const payload = jwt.verify(token, config.jwt.accessSecret);
+    if (payload.purpose !== 'PASSWORD_RESET' || !payload.userId || !payload.nonce) {
+      throw new Error('INVALID_RESET_TOKEN');
+    }
+    return payload;
+  } catch (error) {
+    if (error.message === 'INVALID_RESET_TOKEN') throw error;
+    if (error.name === 'TokenExpiredError') throw new Error('RESET_TOKEN_EXPIRED');
+    throw new Error('INVALID_RESET_TOKEN');
+  }
+};
+
 const verifyAccessToken = (token) => {
   try {
     return jwt.verify(token, config.jwt.accessSecret);
@@ -39,6 +61,8 @@ const refreshTokens = (token) => {
 
 module.exports = {
   generateTokens,
+  generatePasswordResetToken,
+  verifyPasswordResetToken,
   verifyAccessToken,
   verifyRefreshToken,
   refreshTokens,

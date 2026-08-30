@@ -214,7 +214,7 @@ async function sendMsg91Otp({ mobile, otp, requestId, route }) {
   }
 }
 
-async function createOtpRecord({ businessId, otpType, destination, mobile, otp, flow, requestId, status, msg91Response }) {
+async function createOtpRecord({ businessId, otpType, destination, mobile, otp, flow, requestId, status, msg91Response, expiresAt }) {
   divider('OTP DATABASE');
   const payload = {
     businessId,
@@ -227,6 +227,7 @@ async function createOtpRecord({ businessId, otpType, destination, mobile, otp, 
     msg91Response,
     status,
     flow,
+    expiresAt,
   };
 
   try {
@@ -273,6 +274,7 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
       requestId,
       status: 'GENERATED',
       msg91Response: null,
+      expiresAt: new Date(Date.now() + (10 * 60 * 1000)),
     });
 
     rememberDevOtp(String(businessId || normalizedMobile), otpType, otp, normalizedMobile);
@@ -348,7 +350,13 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
   }
 }
 
-async function verifyOtpByMobile({ mobile, otp, route = '/api/v1/auth/verify-otp' }) {
+async function verifyOtpByMobile({
+  mobile,
+  otp,
+  route = '/api/v1/auth/verify-otp',
+  flow,
+  rejectAlreadyVerified = false,
+}) {
   const timestamp = nowIso();
   const requestId = randomUUID();
 
@@ -356,7 +364,9 @@ async function verifyOtpByMobile({ mobile, otp, route = '/api/v1/auth/verify-otp
   logContext({ mobile, timestamp, requestId, route });
 
   const normalizedMobile = ensureMobile(mobile);
-  const latest = await otpRepository.findLatestByMobile(normalizedMobile);
+  const latest = flow
+    ? await otpRepository.findLatestByMobileAndFlow(normalizedMobile, flow)
+    : await otpRepository.findLatestByMobile(normalizedMobile);
 
   if (!latest) {
     console.log('OTP Found: NO');
@@ -365,6 +375,18 @@ async function verifyOtpByMobile({ mobile, otp, route = '/api/v1/auth/verify-otp
 
   console.log('OTP Found: YES');
 
+  // New OTP records carry an explicit TTL. Password-reset verification also
+  // applies a createdAt fallback so an old record can never become an
+  // unlimited recovery credential during a rolling backend deployment.
+  if (latest.expiresAt || flow === 'PASSWORD_RESET') {
+    const expiresAt = latest.expiresAt
+      ? new Date(latest.expiresAt).getTime()
+      : new Date(latest.createdAt).getTime() + (10 * 60 * 1000);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw new Error('OTP_EXPIRED');
+    }
+  }
+
   if (String(latest.otp) !== String(otp)) {
     console.log('OTP Invalid: YES');
     throw new Error('OTP_INVALID');
@@ -372,6 +394,9 @@ async function verifyOtpByMobile({ mobile, otp, route = '/api/v1/auth/verify-otp
 
   if (latest.verified) {
     console.log('OTP Already Verified: YES');
+    if (rejectAlreadyVerified) {
+      throw new Error('OTP_ALREADY_USED');
+    }
     return {
       verified: true,
       alreadyVerified: true,

@@ -13,6 +13,9 @@ const {
   registerSchema,
   loginSchema,
   loginOtpSchema,
+  requestPasswordResetSchema,
+  verifyPasswordResetOtpSchema,
+  resetPasswordSchema,
   employeeLoginSchema,
   changePasswordSchema,
 } = require('../validators/auth.validator');
@@ -29,6 +32,9 @@ router.post('/register', validate(registerSchema), authController.register);
 router.post('/send-otp', validate(sendOtpSchema), authController.sendOtp);
 router.post('/verify-otp', validate(verifyMobileOtpSchema), authController.verifyOtpByMobile);
 router.post('/login-otp', validate(loginOtpSchema), authController.loginWithOtp);
+router.post('/forgot-password/request', validate(requestPasswordResetSchema), authController.requestPasswordReset);
+router.post('/forgot-password/verify-otp', validate(verifyPasswordResetOtpSchema), authController.verifyPasswordResetOtp);
+router.post('/forgot-password/reset', validate(resetPasswordSchema), authController.resetForgottenPassword);
 router.get('/dev/otps/:businessId', authController.getDevOtps);
 router.post('/business/verify-phone-otp', validate(verifyOtpSchema), authController.verifyPhoneOtp);
 router.post('/business/create-password', validate(createPasswordSchema), authController.createPassword);

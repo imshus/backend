@@ -55,9 +55,15 @@ const checkAvailability = async (req, res, next) => {
     const phone = String(mobile || '').replace(/\D/g, '').slice(-10);
     const normalizedUserId = String(userId || '').trim();
 
+    // A User ID is only free if no account uses it as a User ID AND no account
+    // owns it as a phone number - login would otherwise resolve it to the phone.
     const [phoneUser, userIdUser] = await Promise.all([
       /^[0-9]{10}$/.test(phone) ? BusinessUser.findOne({ phone }) : null,
-      normalizedUserId ? BusinessUser.findOne({ userId: normalizedUserId }) : null,
+      normalizedUserId
+        ? BusinessUser.findOne({
+            $or: [{ userId: normalizedUserId }, { phone: normalizedUserId }],
+          })
+        : null,
     ]);
 
     sendSuccess(res, {
@@ -149,6 +155,35 @@ const loginWithOtp = async (req, res, next) => {
   }
 };
 
+const requestPasswordReset = async (req, res, next) => {
+  try {
+    const data = await registrationService.requestPasswordReset(req.body.identifier);
+    sendSuccess(res, data);
+  } catch (err) {
+    next(err);
+  }
+};
+
+const verifyPasswordResetOtp = async (req, res, next) => {
+  try {
+    const { identifier, otp } = req.body;
+    const data = await registrationService.verifyPasswordResetOtp(identifier, otp);
+    sendSuccess(res, data);
+  } catch (err) {
+    next(err);
+  }
+};
+
+const resetForgottenPassword = async (req, res, next) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+    const data = await registrationService.resetForgottenPassword(resetToken, newPassword);
+    sendSuccess(res, data);
+  } catch (err) {
+    next(err);
+  }
+};
+
 const loginEmployee = async (req, res, next) => {
   try {
     const { phone, password } = req.body;
@@ -217,6 +252,9 @@ module.exports = {
   sendOtp,
   verifyOtpByMobile,
   loginWithOtp,
+  requestPasswordReset,
+  verifyPasswordResetOtp,
+  resetForgottenPassword,
   getDevOtps,
   verifyPhoneOtp,
   createPassword,

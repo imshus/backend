@@ -41,6 +41,14 @@ const businessUserSchema = new mongoose.Schema({
   },
   lastLoginAt: {
     type: Date
+  },
+  passwordResetNonceHash: {
+    type: String,
+    select: false
+  },
+  passwordResetExpiresAt: {
+    type: Date,
+    select: false
   }
 }, {
   timestamps: true,

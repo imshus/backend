@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { createHash, randomBytes } = require('crypto');
 const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
 const redisClient = require('../redis/redisClient');
@@ -26,6 +27,24 @@ function buildLoginPayload(user, business, tokens) {
     address: business ? business.address : undefined,
     phone: user.phone,
   };
+}
+
+function buildBusinessUserQuery(identifier) {
+  const raw = String(identifier || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  const isPhone = /^[+\d\s()-]+$/.test(raw) && digits.length === 10;
+  return isPhone ? { phone: digits } : { userId: raw };
+}
+
+function maskPhone(phone) {
+  const normalized = normalizePhone(phone);
+  return normalized.length === 10
+    ? `${normalized.slice(0, 2)}******${normalized.slice(-2)}`
+    : 'your registered phone';
+}
+
+function hashResetNonce(nonce) {
+  return createHash('sha256').update(nonce).digest('hex');
 }
 
 const confirmGst = async (gstData) => {
@@ -215,6 +234,81 @@ const loginWithOtp = async (mobile, otp) => {
   return buildLoginPayload(user, business, tokens);
 };
 
+const requestPasswordReset = async (identifier) => {
+  const user = await BusinessUser.findOne(buildBusinessUserQuery(identifier));
+  if (!user || !user.isActive) {
+    throw new Error('ACCOUNT_NOT_FOUND');
+  }
+
+  await otpService.sendMobileOtp({
+    mobile: user.phone,
+    flow: 'PASSWORD_RESET',
+    businessId: user.businessId,
+    route: '/api/v1/auth/forgot-password/request',
+  });
+
+  return {
+    destination: maskPhone(user.phone),
+    message: 'Password reset code sent successfully',
+  };
+};
+
+const verifyPasswordResetOtp = async (identifier, otp) => {
+  const user = await BusinessUser.findOne(buildBusinessUserQuery(identifier));
+  if (!user || !user.isActive) {
+    throw new Error('ACCOUNT_NOT_FOUND');
+  }
+
+  await otpService.verifyOtpByMobile({
+    mobile: user.phone,
+    otp,
+    flow: 'PASSWORD_RESET',
+    rejectAlreadyVerified: true,
+    route: '/api/v1/auth/forgot-password/verify-otp',
+  });
+
+  const nonce = randomBytes(32).toString('hex');
+  user.passwordResetNonceHash = hashResetNonce(nonce);
+  user.passwordResetExpiresAt = new Date(Date.now() + (10 * 60 * 1000));
+  await user.save();
+
+  return {
+    resetToken: authService.generatePasswordResetToken(
+      user.businessId.toString(),
+      user._id.toString(),
+      nonce,
+    ),
+    expiresInSeconds: 600,
+  };
+};
+
+const resetForgottenPassword = async (resetToken, newPassword) => {
+  const payload = authService.verifyPasswordResetToken(resetToken);
+  const user = await BusinessUser.findById(payload.userId)
+    .select('+passwordResetNonceHash +passwordResetExpiresAt');
+
+  const storedNonceHash = user?.passwordResetNonceHash;
+  const resetExpiresAt = user?.passwordResetExpiresAt
+    ? new Date(user.passwordResetExpiresAt).getTime()
+    : 0;
+  if (
+    !user
+    || !user.isActive
+    || !storedNonceHash
+    || storedNonceHash !== hashResetNonce(payload.nonce)
+    || resetExpiresAt <= Date.now()
+  ) {
+    throw new Error('INVALID_RESET_TOKEN');
+  }
+
+  user.passwordHash = await bcrypt.hash(newPassword, 10);
+  user.passwordResetNonceHash = undefined;
+  user.passwordResetExpiresAt = undefined;
+  await user.save();
+
+  return { success: true, message: 'Password reset successfully' };
+};
+
 const register = async ({ mobile, password, userId, businessDetails }) => {
   const businessId = businessDetails?.businessId;
   if (!businessId) {
@@ -335,6 +429,9 @@ module.exports = {
   createPassword,
   login,
   loginWithOtp,
+  requestPasswordReset,
+  verifyPasswordResetOtp,
+  resetForgottenPassword,
   loginEmployee,
   changePassword,
 };

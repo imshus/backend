@@ -67,7 +67,14 @@ const getLiveGoldRates = async (businessId) => {
   // 4b. Bhaw source: a business can adjust its gold rates from the JMD Patil
   // live feed instead of the Mega Bullion (supreme) changes. Falls back to
   // supreme values whenever the feed is unavailable.
-  const metrics = await DashboardMetrics.findOne({ businessId });
+  // Never let the bhaw-source lookup break rate delivery: a malformed
+  // businessId or a metrics outage falls back to the supreme changes.
+  let metrics = null;
+  try {
+    metrics = await DashboardMetrics.findOne({ businessId });
+  } catch (metricsError) {
+    console.warn('[Gold Rates] Could not read bhaw source preference:', metricsError.message);
+  }
   if (metrics?.metricsData?.bhaw_source_jmd) {
     const jmdBhaw = await bhawService.getJmdBhaw();
     if (jmdBhaw) {
