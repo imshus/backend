@@ -1,5 +1,19 @@
 const Joi = require('joi');
 
+const USER_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+const PASSWORD_MIN_LENGTH = 6;
+
+const userIdSchema = Joi.string()
+  .trim()
+  .min(3)
+  .max(30)
+  .pattern(USER_ID_PATTERN)
+  .messages({
+    'string.min': 'User ID must be at least 3 characters',
+    'string.max': 'User ID must be 30 characters or fewer',
+    'string.pattern.base': 'User ID can only contain letters, numbers, dots, underscores, and hyphens',
+  });
+
 const gstVerifySchema = Joi.object({
   gstNumber: Joi.string().pattern(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/).required().messages({
     'string.pattern.base': 'INVALID_GST_NUMBER',
@@ -30,9 +44,25 @@ const verifyOtpSchema = Joi.object({
   otp: Joi.string().length(6).required()
 });
 
+// Live signup-field validation. Empty companion fields are accepted because
+// the client checks phone, User ID, and password independently while typing.
+const checkAvailabilitySchema = Joi.object({
+  mobile: Joi.string().pattern(/^[0-9]{10}$/).allow('').optional(),
+  userId: userIdSchema.allow('').optional(),
+})
+  .custom((value, helpers) => {
+    if (!String(value.mobile || '').trim() && !String(value.userId || '').trim()) {
+      return helpers.error('object.missing');
+    }
+    return value;
+  })
+  .messages({
+    'object.missing': 'Enter a phone number or User ID to check',
+  });
+
 const createPasswordSchema = Joi.object({
   businessId: Joi.string().required(),
-  password: Joi.string().min(6).required(),
+  password: Joi.string().min(PASSWORD_MIN_LENGTH).max(128).required(),
   confirmPassword: Joi.any().valid(Joi.ref('password')).required().messages({
     'any.only': 'Passwords do not match'
   })
@@ -40,7 +70,8 @@ const createPasswordSchema = Joi.object({
 
 const registerSchema = Joi.object({
   mobile: Joi.string().pattern(/^[0-9]{10}$/).required(),
-  password: Joi.string().min(6).required(),
+  password: Joi.string().min(PASSWORD_MIN_LENGTH).max(128).required(),
+  userId: userIdSchema.optional(),
   businessDetails: Joi.object({
     businessId: Joi.string().required(),
     businessName: Joi.string().allow('').optional(),
@@ -50,7 +81,10 @@ const registerSchema = Joi.object({
 });
 
 const loginSchema = Joi.object({
-  mobile: Joi.string().pattern(/^[0-9]{10}$/).required(),
+  mobile: Joi.alternatives().try(
+    Joi.string().pattern(/^[0-9]{10}$/),
+    userIdSchema,
+  ).required(),
   password: Joi.string().required()
 });
 
@@ -75,6 +109,7 @@ module.exports = {
   sendOtpSchema,
   verifyMobileOtpSchema,
   verifyOtpSchema,
+  checkAvailabilitySchema,
   createPasswordSchema,
   registerSchema,
   loginSchema,

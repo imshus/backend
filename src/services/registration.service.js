@@ -155,8 +155,14 @@ const createPassword = async (businessId, password, userId) => {
       userId: newUsers[0]._id.toString()
     };
   } catch (error) {
-    // await session.abortTransaction();
-    // session.endSession();
+    // Availability checks improve feedback, but the unique indexes remain the
+    // final authority if two registrations race. Convert Mongo's duplicate-key
+    // error into the same field-specific codes used by the pre-check.
+    if (error?.code === 11000) {
+      const duplicateField = Object.keys(error.keyPattern || error.keyValue || {})[0];
+      if (duplicateField === 'userId') throw new Error('USER_ID_ALREADY_EXISTS');
+      if (duplicateField === 'phone') throw new Error('PHONE_ALREADY_EXISTS');
+    }
     throw error;
   }
 };

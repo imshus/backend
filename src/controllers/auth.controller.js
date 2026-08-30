@@ -52,7 +52,7 @@ const checkAvailability = async (req, res, next) => {
   try {
     const BusinessUser = require('../models/businessUser.model');
     const { mobile, userId } = req.body;
-    const phone = String(mobile || '').replace(/D/g, '').slice(-10);
+    const phone = String(mobile || '').replace(/\D/g, '').slice(-10);
     const normalizedUserId = String(userId || '').trim();
 
     const [phoneUser, userIdUser] = await Promise.all([
