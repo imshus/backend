@@ -290,10 +290,10 @@ const generateInvoice = async (req, res, next) => {
 
     // Rendered here as a data URI so the PDF has no external image dependency:
     // PDFMonkey would otherwise print an empty box if the fetch failed.
-    // A government e-invoice must print the IRP's signed payload in its QR —
-    // a convenience link cannot stand in for it. So when the caller supplies
-    // one it wins; otherwise the QR resolves to our own invoice endpoint.
-    const qrPayload = String(qr_code_data || '').trim() || invoiceDownloadUrl;
+    // This invoice's visible QR always resolves to the exact PDF generated
+    // below. Keep any IRP/e-invoice payload separately so caller-provided data
+    // can never replace the download link printed for the customer.
+    const qrPayload = invoiceDownloadUrl;
 
     let qrCodeImage = '';
     try {
@@ -434,12 +434,12 @@ const generateInvoice = async (req, res, next) => {
       ack_number: ack_number || '',
       ack_date: ack_date || '',
 
-      // QR code. The ordinary invoice QR requests an attachment immediately;
+      // QR code. The printed QR requests this PDF as an attachment immediately;
       // invoice_url remains flag-free so the app can preview the same PDF.
-      // qr_code_data stays available for a caller that wants to render its own.
       invoice_url: invoiceUrl,
-      qr_code_data: qr_code_data || invoiceDownloadUrl,
+      qr_code_data: invoiceDownloadUrl,
       qr_code_image: qrCodeImage,
+      e_invoice_qr_code_data: String(qr_code_data || '').trim(),
 
       amount_in_words,
       signature_image: '',

@@ -327,3 +327,29 @@ test('the ordinary invoice QR requests a direct download and warms Redis', async
   assert.equal(state.cacheSets.length, 1, 'generated PDF should be cached before returning');
   assert.equal(state.cacheSets[0].token, res.payload.invoiceUrl.split('/').pop());
 });
+
+test('caller e-invoice data cannot replace the printed PDF download QR', async () => {
+  reset();
+  const res = makeRes();
+  const signedIrpPayload = 'signed-government-e-invoice-payload';
+
+  await generateInvoice({
+    user: { businessId: '507f1f77bcf86cd799439011' },
+    body: {
+      customer_name: 'Garg Jewellers',
+      line_items: [{ description: '18KT GOLD', qty: 1, qty_unit: 'Gms.', price: 100, amount: 100 }],
+      subtotal: 100,
+      gst_rate: 3,
+      gst_amount: 3,
+      grand_total: 103,
+      irn: 'IRN-123',
+      qr_code_data: signedIrpPayload,
+    },
+  }, res, (err) => { throw err; });
+
+  const payload = state.generatedPdfPayloads[0];
+  assert.match(state.qrPayloads[0], /\/api\/v1\/invoices\/p\/[a-f0-9]{32}\?download=1$/);
+  assert.equal(payload.qr_code_data, state.qrPayloads[0]);
+  assert.equal(payload.e_invoice_qr_code_data, signedIrpPayload);
+  assert.notEqual(state.qrPayloads[0], signedIrpPayload);
+});
