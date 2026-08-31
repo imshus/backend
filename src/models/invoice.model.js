@@ -55,6 +55,17 @@ const invoiceSchema = new mongoose.Schema({
     enum: ['pending', 'generating', 'success', 'failure'],
     default: 'pending',
   },
+
+  // Unguessable id encoded into the invoice QR code. Anyone holding the
+  // printed invoice can fetch the PDF with it, so it is random rather than
+  // derived from the invoice number, and it is never reused.
+  publicToken: {
+    type: String,
+    default: null,
+    unique: true,
+    sparse: true,
+    index: true,
+  },
 }, {
   timestamps: true,
   collection: 'invoices',

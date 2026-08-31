@@ -1,0 +1,321 @@
+<!--
+  MRPscan — GST TAX INVOICE template for PDFMonkey (Liquid).
+
+  Matches the printed PRATHAM INTERNATIONAL invoice format:
+
+    header ....... GSTIN left / "Original Copy" right, then TAX INVOICE,
+                   company name and address centred
+    meta ......... Invoice No. / Dated / Place of Supply / Reverse Charge
+                   beside GR/RR No. / Transport / Vehicle No. / Station
+    parties ...... Billed to | Shipped to
+    e-invoice .... IRN / Ack.No. / Ack.Date as one full-width band
+    items ........ S.N. | Description of Goods | HSN/SAC Code | Qty. | Unit
+                   | Price Rate | Amount(₹)
+    totals ....... subtotal, IGST or CGST+SGST, Rounded Off, then Grand Total
+                   with the unit count
+    footer ....... amount in words, bank details, then terms | QR | signatures
+
+  Optional blocks (e-invoice, bank details) collapse when the payload leaves
+  them blank, so the same template serves businesses without e-invoicing.
+-->
+<style>
+  @page { size: A4; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+    font-size: 9.5pt;
+    line-height: 1.25;
+    color: #000;
+    margin: 0;
+  }
+
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 0; vertical-align: top; font-weight: normal; }
+
+  .sheet { border: 1px solid #000; }
+  .pad { padding: 3px 5px; }
+  .b { font-weight: bold; }
+  .c { text-align: center; }
+  .r { text-align: right; }
+  .nowrap { white-space: nowrap; }
+
+  .bb { border-bottom: 1px solid #000; }
+  .brr { border-right: 1px solid #000; }
+
+  .co-name { font-size: 19pt; }
+  .ti { font-size: 11pt; }
+  .sm { font-size: 8pt; }
+  .xs { font-size: 7pt; }
+
+  /* "Label : value" pairs used by the meta and party blocks. */
+  .kv { width: 100%; }
+  .kv td { padding: 1px 0; }
+  .kv .k { width: 44%; }
+  .kv .sep { width: 8px; }
+
+  .items thead th {
+    border-bottom: 1px solid #000;
+    border-right: 1px solid #000;
+    padding: 4px 5px;
+    text-align: center;
+  }
+  .items tbody td {
+    border-right: 1px solid #000;
+    padding: 3px 5px;
+  }
+  .items .last { border-right: none; }
+  /* Keeps the item area a fixed depth like the printed pad. */
+  .items .body-fill td { height: 218px; border-bottom: 1px solid #000; }
+  /* Long invoices skip the pad but still need the rule closing the grid. */
+  .items .body-close td { border-bottom: 1px solid #000; }
+
+  /* Print behaviour: an individual item line must not be split down the
+     middle, and a long invoice repeats the column headings on each sheet.
+     Scoped to the item rows on purpose — applying it to every <tr> would stop
+     the outer sheet from breaking at all and cost an extra page. */
+  .items thead { display: table-header-group; }
+  .items tbody tr { page-break-inside: avoid; break-inside: avoid; }
+  .no-split { page-break-inside: avoid; break-inside: avoid; }
+
+  .totals td { padding: 2px 5px; }
+  .grand { font-size: 11pt; font-weight: bold; }
+
+  .terms { font-size: 8pt; line-height: 1.45; }
+  .terms ol { margin: 1px 0 0; padding-left: 14px; }
+  .qr img { width: 118px; height: 118px; }
+  .sign-pad { height: 46px; }
+</style>
+
+<table class="sheet">
+
+  <!-- ── Header ───────────────────────────────────────────────────────── -->
+  <tr>
+    <td class="bb">
+      <table>
+        <tr>
+          <td class="pad b" style="width: 40%;">GSTIN : {{ gstin_number | escape }}</td>
+          <td class="pad c ti" style="width: 20%;">TAX INVOICE</td>
+          <td class="pad r" style="width: 40%;">Original Copy</td>
+        </tr>
+      </table>
+      <div class="c b co-name">{{ company_name | escape }}</div>
+      <div class="c pad" style="padding-top: 1px;">{{ company_address | escape }}</div>
+    </td>
+  </tr>
+
+  <!-- ── Invoice meta + consignment ───────────────────────────────────── -->
+  <tr>
+    <td class="bb">
+      <table>
+        <tr>
+          <td class="pad brr" style="width: 50%;">
+            <table class="kv">
+              <tr><td class="k">Invoice No.</td><td class="sep">:</td><td class="b">{{ invoice_number | escape }}</td></tr>
+              <tr><td class="k">Dated</td><td class="sep">:</td><td class="b">{{ invoice_date | escape }}</td></tr>
+              <tr><td class="k">Place of Supply</td><td class="sep">:</td><td class="b">{{ place_of_supply | escape }}</td></tr>
+              <tr><td class="k">Reverse Charge</td><td class="sep">:</td><td class="b">{{ reverse_charge | escape }}</td></tr>
+            </table>
+          </td>
+          <td class="pad" style="width: 50%;">
+            <table class="kv">
+              <tr><td class="k">GR/RR No.</td><td class="sep">:</td><td class="b">{{ gr_rr_number | escape }}</td></tr>
+              <tr><td class="k">Transport</td><td class="sep">:</td><td class="b">{{ transport | escape }}</td></tr>
+              <tr><td class="k">Vehicle No.</td><td class="sep">:</td><td class="b">{{ vehicle_number | escape }}</td></tr>
+              <tr><td class="k">Station</td><td class="sep">:</td><td class="b">{{ station | escape }}</td></tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- ── Billed to / Shipped to ───────────────────────────────────────── -->
+  <tr>
+    <td class="bb">
+      <table>
+        <tr>
+          <td class="pad brr" style="width: 50%;">
+            <div>Billed to&nbsp;&nbsp;&nbsp;:</div>
+            <div class="b">{{ customer_name | escape }}</div>
+            <div>{{ customer_address | escape }}</div>
+            {% if customer_phone != blank %}<div>Phone : {{ customer_phone | escape }}</div>{% endif %}
+            <table class="kv" style="margin-top: 10px;">
+              <tr>
+                <td class="k">GSTIN / Pan</td><td class="sep">:</td>
+                <td class="b">{{ customer_gstin | default: customer_pan | escape }}</td>
+              </tr>
+            </table>
+          </td>
+          <td class="pad" style="width: 50%;">
+            <div>Shipped to&nbsp;:</div>
+            <div class="b">{{ shipped_to_name | escape }}</div>
+            <div>{{ shipped_to_address | escape }}</div>
+            <table class="kv" style="margin-top: 10px;">
+              <tr>
+                <td class="k">GSTIN / Pan</td><td class="sep">:</td>
+                <td class="b">{{ shipped_to_gstin | escape }}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- ── e-Invoice reference band ─────────────────────────────────────── -->
+  {% if irn != blank %}
+    <tr>
+      <td class="bb pad sm">
+        <table>
+          <tr>
+            <td style="width: 56%;">IRN : {{ irn | escape }}</td>
+            <td style="width: 26%;">Ack.No. : {{ ack_number | escape }}</td>
+            <td style="width: 18%;">Ack.Date : {{ ack_date | escape }}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  {% endif %}
+
+  <!-- ── Items ────────────────────────────────────────────────────────── -->
+  <tr>
+    <td>
+      <table class="items">
+        <thead>
+          <tr>
+            <th style="width: 5.5%;">S.N.</th>
+            <th style="width: 41%; text-align: left;">Description of Goods</th>
+            <th style="width: 10.5%;">HSN/SAC<br />Code</th>
+            <th style="width: 8.5%;">Qty.</th>
+            <th style="width: 8%;">Unit</th>
+            <th style="width: 12%;">Price<br />Rate</th>
+            <th style="width: 14.5%;" class="last">Amount(₹)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in line_items %}
+            <tr>
+              <td class="c">{{ item.sn | escape }}.</td>
+              <td>
+                {{ item.description | escape }}
+                {% if item.note != blank %}<div class="sm" style="padding-left: 12px;">{{ item.note | escape }}</div>{% endif %}
+              </td>
+              <td class="c">{{ item.hsn | escape }}</td>
+              <td class="r nowrap">{{ item.qty_display }}</td>
+              <td class="c nowrap">{{ item.unit_display }}</td>
+              <td class="r nowrap">{{ item.price_display }}</td>
+              <td class="r nowrap last">{{ item.amount_display }}</td>
+            </tr>
+          {% endfor %}
+          {% if line_items.size < 12 %}
+            <tr class="body-fill">
+              <td></td><td></td><td></td><td></td><td></td><td></td><td class="last"></td>
+            </tr>
+          {% else %}
+            <tr class="body-close">
+              <td></td><td></td><td></td><td></td><td></td><td></td><td class="last"></td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </td>
+  </tr>
+
+  <!-- ── Totals ───────────────────────────────────────────────────────── -->
+  <tr>
+    <td class="bb">
+      <table class="totals">
+        <tr>
+          <td style="width: 60.5%;"></td>
+          <td style="width: 25%;"></td>
+          <td class="r nowrap" style="width: 14.5%;">{{ subtotal_display }}</td>
+        </tr>
+        {% if is_intra_state %}
+          <tr>
+            <td class="r">Add : CGST</td>
+            <td class="c nowrap">@&nbsp;&nbsp;{{ cgst_rate_display }} %</td>
+            <td class="r nowrap">{{ cgst_amount_display }}</td>
+          </tr>
+          <tr>
+            <td class="r">Add : SGST</td>
+            <td class="c nowrap">@&nbsp;&nbsp;{{ sgst_rate_display }} %</td>
+            <td class="r nowrap">{{ sgst_amount_display }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td class="r">Add : IGST</td>
+            <td class="c nowrap">@&nbsp;&nbsp;{{ igst_rate_display }} %</td>
+            <td class="r nowrap">{{ igst_amount_display }}</td>
+          </tr>
+        {% endif %}
+        {% if rounded_off != 0 %}
+          <tr>
+            <td class="r">Add&nbsp;&nbsp;&nbsp;: Rounded Off ({% if rounded_off > 0 %}+{% else %}-{% endif %})</td>
+            <td></td>
+            <td class="r nowrap">{{ rounded_off_display }}</td>
+          </tr>
+        {% endif %}
+      </table>
+    </td>
+  </tr>
+
+  <tr>
+    <td class="bb">
+      <table class="totals grand">
+        <tr>
+          <td class="r" style="width: 45%;">Grand Total</td>
+          <td class="c" style="width: 25%;">{{ total_units }} Units</td>
+          <td class="r nowrap" style="width: 30%;">₹ {{ grand_total_display }}</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- ── Amount in words ──────────────────────────────────────────────── -->
+  <tr>
+    <td class="bb pad" style="padding-top: 8px; padding-bottom: 8px;">{{ amount_in_words | escape }}</td>
+  </tr>
+
+  <!-- ── Bank details ─────────────────────────────────────────────────── -->
+  {% if bank_name != blank %}
+    <tr>
+      <td class="bb pad">
+        <div>Bank Details: {{ bank_name | escape }}{% if bank_branch != blank %}, {{ bank_branch | escape }}{% endif %}</div>
+        <div style="padding-left: 76px;">
+          ACCOUNT NO. {{ bank_account_number | escape }}&nbsp;&nbsp;&nbsp;RTGS/NEFT/IFS CODE : {{ bank_ifsc | escape }}
+        </div>
+      </td>
+    </tr>
+  {% endif %}
+
+  <!-- ── Terms | QR | Signatures ──────────────────────────────────────── -->
+  <tr class="no-split">
+    <td>
+      <table>
+        <tr>
+          <td class="pad brr terms" style="width: 31%;">
+            <div class="xs">Terms &amp; Conditions</div>
+            <div style="margin-top: 6px;">E. &amp; O.E.</div>
+            <ol>
+              {% for term in terms_list %}<li>{{ term | escape }}</li>{% endfor %}
+            </ol>
+          </td>
+
+          <td class="pad c brr qr" style="width: 22%;">
+            {% if qr_code_image != blank %}
+              <div class="xs" style="margin-bottom: 4px;">{% if irn != blank %}E-Invoice QR Code{% else %}Scan to view invoice{% endif %}</div>
+              <img src="{{ qr_code_image }}" alt="Invoice QR code" />
+            {% endif %}
+          </td>
+
+          <td style="width: 47%;">
+            <div class="pad bb">Receiver&#39;s Signature&nbsp;&nbsp;&nbsp;:</div>
+            <div class="pad c b" style="padding-top: 14px;">for {{ company_name | escape }}</div>
+            <div class="sign-pad"></div>
+            <div class="pad c">Authorised Signatory</div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>

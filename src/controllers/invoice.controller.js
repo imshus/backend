@@ -1,10 +1,130 @@
+const crypto = require('crypto');
+const { Readable } = require('stream');
+const QRCode = require('qrcode');
 const Invoice = require('../models/invoice.model');
 const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
 const Employee = require('../models/employee.model');
 const { generateInvoiceNumber, peekNextInvoiceNumber } = require('../models/invoiceCounter.model');
-const { generateInvoicePdf } = require('../services/pdfmonkey.service');
+const { generateInvoicePdf, getDownloadUrl } = require('../services/pdfmonkey.service');
+const config = require('../config/env');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
+
+/**
+ * Resolves the single quantity + unit pair a line prints.
+ *
+ * A jewellery line is quoted either by metal weight in grams or by stone
+ * weight in carats. The app sends the number in `qty` with its unit in
+ * `qty_unit`; the explicit `net_weight` / `diamond_weight` keys are also
+ * honoured for callers that separate them.
+ */
+const resolveQuantity = (item) => {
+  const diamond = Number(item.diamond_weight) || 0;
+  const net = Number(item.net_weight) || 0;
+  const qty = Number(item.qty) || 0;
+
+  if (diamond > 0) return { value: diamond, unit: item.qty_unit || 'CT' };
+  if (net > 0) return { value: net, unit: item.qty_unit || 'Gms.' };
+  return { value: qty, unit: item.qty_unit || '' };
+};
+
+/** True when a unit label denotes grams, in any of the spellings we accept. */
+const isGramUnit = (unit) => /^(g|gm|gms|gram|grams)\.?$/i.test(String(unit || '').trim());
+
+/** GST state codes, used to classify a supply when the buyer has no GSTIN. */
+const STATE_CODES = {
+  'jammu and kashmir': '01', 'himachal pradesh': '02', punjab: '03', chandigarh: '04',
+  uttarakhand: '05', haryana: '06', delhi: '07', 'new delhi': '07', rajasthan: '08',
+  'uttar pradesh': '09', bihar: '10', sikkim: '11', 'arunachal pradesh': '12',
+  nagaland: '13', manipur: '14', mizoram: '15', tripura: '16', meghalaya: '17',
+  assam: '18', 'west bengal': '19', jharkhand: '20', odisha: '21', orissa: '21',
+  chhattisgarh: '22', 'madhya pradesh': '23', gujarat: '24', 'dadra and nagar haveli and daman and diu': '26',
+  maharashtra: '27', karnataka: '29', goa: '30', lakshadweep: '31', kerala: '32',
+  'tamil nadu': '33', puducherry: '34', 'andaman and nicobar islands': '35',
+  telangana: '36', 'andhra pradesh': '37', ladakh: '38', 'other territory': '97',
+};
+
+/**
+ * Determines the customer's state code for the IGST-vs-CGST/SGST decision.
+ *
+ * A registered buyer's GSTIN carries it in the first two digits. An
+ * unregistered walk-in has none, so it comes from the place of supply — which
+ * is free text. Accepting only the bracketed "(07)" form meant a counter sale
+ * typed as "Delhi" was billed IGST instead of CGST+SGST, sending the tax to the
+ * wrong heads on both sides' returns.
+ */
+const resolveStateCode = (customerGstin, placeOfSupply) => {
+  const fromGstin = String(customerGstin || '').trim().slice(0, 2);
+  if (/^\d{2}$/.test(fromGstin)) return fromGstin;
+
+  const place = String(placeOfSupply || '').trim();
+
+  // "Uttar Pradesh (09)" — an explicit code always wins.
+  const bracketed = place.match(/\((\d{2})\)/);
+  if (bracketed) return bracketed[1];
+
+  // Otherwise match the state name, ignoring any trailing pincode or punctuation.
+  const name = place
+    .replace(/\(.*?\)/g, ' ')
+    .replace(/[^a-zA-Z& ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (STATE_CODES[name]) return STATE_CODES[name];
+
+  // Fall back to a contained state name, e.g. "Karol Bagh, New Delhi".
+  const matches = Object.keys(STATE_CODES).filter((state) => name.includes(state));
+  if (matches.length) {
+    // Prefer the longest match so "new delhi" beats "delhi".
+    const best = matches.sort((a, b) => b.length - a.length)[0];
+    return STATE_CODES[best];
+  }
+
+  return '';
+};
+
+/**
+ * Formats a number the way an Indian tax invoice prints it: two decimals and
+ * lakh/crore digit grouping, e.g. 350650 -> "3,50,650.00".
+ */
+const formatInr = (value) => {
+  const amount = Number(value) || 0;
+  const [whole, decimals] = Math.abs(amount).toFixed(2).split('.');
+  const last3 = whole.slice(-3);
+  let rest = whole.slice(0, -3);
+
+  // Everything above the last three digits is grouped in pairs, so
+  // 12345678 prints as 1,23,45,678 rather than 12,345,678.
+  let grouped = '';
+  while (rest.length > 2) {
+    grouped = ',' + rest.slice(-2) + grouped;
+    rest = rest.slice(0, -2);
+  }
+  grouped = rest + grouped;
+
+  const digits = grouped ? grouped + ',' + last3 : last3;
+  return (amount < 0 ? '-' : '') + digits + '.' + decimals;
+};
+
+/**
+ * Adds the durable invoice URL to a record on its way out.
+ *
+ * The stored pdfUrl is a signed PDFMonkey link that expires within hours, so
+ * the app must not rely on it when reopening an older invoice. Invoices created
+ * before public tokens existed have none, and simply get no invoiceUrl.
+ *
+ * publicToken is stripped: the URL already carries it, and the raw token is the
+ * credential.
+ */
+const withInvoiceUrl = (invoice) => {
+  const { publicToken, ...rest } = invoice;
+  return {
+    ...rest,
+    invoiceUrl: publicToken
+      ? `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`
+      : null,
+  };
+};
 
 const resolveBusinessIdFromUser = async (user) => {
   if (!user) return null;
@@ -28,7 +148,10 @@ const resolveBusinessIdFromUser = async (user) => {
  * {
  *   customer_name, customer_address, customer_phone,
  *   customer_email, customer_gstin,
-      customer_pan = '',
+ *   customer_pan, reverse_charge,
+ *   gr_rr_number, vehicle_number, station,
+ *   shipped_to_name, shipped_to_address, shipped_to_gstin,
+ *   irn, ack_number, ack_date, qr_code_data,
  *   place_of_supply, transport,
  *   line_items: [{ description, note, qty, price, amount }],
  *   subtotal, gst_rate, gst_amount, grand_total,
@@ -68,6 +191,18 @@ const generateInvoice = async (req, res, next) => {
       grand_total = 0,
       amount_in_words = '',
       terms_and_conditions = '',
+      customer_pan = '',
+      reverse_charge = 'N',
+      gr_rr_number = '',
+      vehicle_number = '',
+      station = '',
+      shipped_to_name = '',
+      shipped_to_address = '',
+      shipped_to_gstin = '',
+      irn = '',
+      ack_number = '',
+      ack_date = '',
+      qr_code_data = '',
     } = req.body;
 
     // Validate required fields
@@ -86,17 +221,83 @@ const generateInvoice = async (req, res, next) => {
     // 2. Generate server-side invoice number (atomic, central)
     const invoiceNumber = await generateInvoiceNumber();
 
-    // 3. Format the invoice date (server time)
+    // 3. Format the invoice date (server time). The printed tax invoice shows
+    // the date alone as DD-MM-YYYY — no time component.
     const now = new Date();
-    const invoiceDate = now.toLocaleString('en-IN', {
-      day: '2-digit',
-      month: 'long',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-      timeZone: 'Asia/Kolkata',
-    });
+    const invoiceDate = now
+      .toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: 'Asia/Kolkata',
+      })
+      .split('/')
+      .join('-');
+
+    // The QR code printed on the invoice resolves to this API, which then
+    // serves the stored PDF. The token has to exist before the payload is
+    // built, because the QR image is part of the document being generated.
+    const publicToken = crypto.randomBytes(16).toString('hex');
+    const invoiceUrl = `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`;
+
+    // Rendered here as a data URI so the PDF has no external image dependency:
+    // PDFMonkey would otherwise print an empty box if the fetch failed.
+    // A government e-invoice must print the IRP's signed payload in its QR —
+    // a convenience link cannot stand in for it. So when the caller supplies
+    // one it wins; otherwise the QR resolves to our own invoice endpoint.
+    const qrPayload = String(qr_code_data || '').trim() || invoiceUrl;
+
+    let qrCodeImage = '';
+    try {
+      qrCodeImage = await QRCode.toDataURL(qrPayload, {
+        margin: 0,
+        width: 240,
+        errorCorrectionLevel: 'M',
+      });
+    } catch (qrErr) {
+      // A missing QR must not cost the customer their invoice.
+      console.error('[Invoice] QR generation failed:', qrErr.message);
+    }
+
+    // GST is IGST across states, and CGST+SGST within the same state. The
+    // supplier state comes from the GSTIN prefix; the customer's from theirs,
+    // falling back to the place of supply code in brackets e.g. "... (09)".
+    const supplierStateCode = String(business?.gstNumber || '').slice(0, 2);
+    const customerStateCode = resolveStateCode(customer_gstin, place_of_supply);
+    const isIntraState =
+      Boolean(supplierStateCode) && supplierStateCode === customerStateCode;
+
+    const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+    const gstRateValue = Number(gst_rate) || 0;
+    const halfRate = round2(gstRateValue / 2);
+
+    // Every figure the invoice prints is rounded to paise once, here, so the
+    // totals column is arithmetic the customer can redo by hand. CGST and SGST
+    // are both the same rounded half: an intra-state supply must show equal
+    // heads, so the odd paisa a 50/50 split cannot carry falls to Rounded Off
+    // rather than making one head disagree with its own printed rate.
+    const subtotalValue = round2(subtotal);
+    const gstAmountValue = round2(gst_amount);
+    const halfAmount = round2(gstAmountValue / 2);
+    const printedTax = isIntraState ? halfAmount * 2 : gstAmountValue;
+
+    // The printed grand total is rounded to the rupee. Rounded Off is the
+    // residual against the figures actually printed above it — not against the
+    // client's unrounded total — so the column always closes.
+    const roundedTotal = Math.round(round2(grand_total));
+    const roundedOff = round2(roundedTotal - (subtotalValue + printedTax));
+
+    // The printed "N Units" figure counts metal weight in grams only. Carats
+    // are a different dimension and must not be added into the same total, so
+    // each line is counted by the unit it actually prints.
+    const totalUnits = (Array.isArray(line_items) ? line_items : []).reduce(
+      (sum, item) => {
+        const { value, unit } = resolveQuantity(item);
+        return isGramUnit(unit) ? sum + value : sum;
+      },
+      0,
+    );
 
     // 4. Build the PDFMonkey payload exactly matching the template schema
     const pdfPayload = {
@@ -114,20 +315,94 @@ const generateInvoice = async (req, res, next) => {
       transport,
       line_items: line_items
         .filter((item) => Number(item.qty) > 0 || Number(item.amount) > 0)
-        .map((item) => ({
+        .map((item, index) => ({
+          sn: index + 1,
           description: item.description ?? '',
           note: item.note ?? '',
+          hsn: item.hsn ?? '',
           qty: Number(item.qty) || 0,
+          qty_unit: item.qty_unit ?? item.qtyUnit ?? '',
+          net_weight: Number(item.net_weight) || 0,
+          diamond_weight: Number(item.diamond_weight) || 0,
           price: Number(item.price) || 0,
           amount: Number(item.amount) || 0,
+          price_display: formatInr(item.price),
+          amount_display: formatInr(item.amount),
+          qty_display: resolveQuantity(item).value
+            ? resolveQuantity(item).value.toFixed(3)
+            : '',
+          unit_display: resolveQuantity(item).unit,
         })),
-      subtotal: Number(subtotal) || 0,
-      gst_rate: Number(gst_rate) || 0,
-      gst_amount: Number(gst_amount) || 0,
-      grand_total: Number(grand_total) || 0,
+      subtotal: subtotalValue,
+      gst_rate: gstRateValue,
+      gst_amount: gstAmountValue,
+      grand_total: roundedTotal,
+
+      // Tax split for the invoice footer. CGST and SGST are the same rounded
+      // half, so the two heads always agree with their printed rate.
+      is_intra_state: isIntraState,
+      igst_rate: isIntraState ? 0 : gstRateValue,
+      igst_amount: isIntraState ? 0 : gstAmountValue,
+      cgst_rate: isIntraState ? halfRate : 0,
+      cgst_amount: isIntraState ? halfAmount : 0,
+      sgst_rate: isIntraState ? halfRate : 0,
+      sgst_amount: isIntraState ? halfAmount : 0,
+      rounded_off: roundedOff,
+
+      // Tax rates print to two decimals, e.g. "@ 3.00 %".
+      igst_rate_display: (isIntraState ? 0 : gstRateValue).toFixed(2),
+      cgst_rate_display: (isIntraState ? halfRate : 0).toFixed(2),
+      sgst_rate_display: (isIntraState ? halfRate : 0).toFixed(2),
+
+      // Pre-formatted for printing; the raw numbers above stay for any caller
+      // that needs to compute with them.
+      subtotal_display: formatInr(subtotalValue),
+      igst_amount_display: formatInr(isIntraState ? 0 : gstAmountValue),
+      cgst_amount_display: formatInr(isIntraState ? halfAmount : 0),
+      sgst_amount_display: formatInr(isIntraState ? halfAmount : 0),
+      rounded_off_display: formatInr(Math.abs(roundedOff)),
+      grand_total_display: formatInr(roundedTotal),
+      total_units: totalUnits.toFixed(3),
+
+      // Consignment block.
+      reverse_charge: reverse_charge || 'N',
+      gr_rr_number: gr_rr_number || '',
+      vehicle_number: vehicle_number || '',
+      station: station || '',
+      shipped_to_name: shipped_to_name || customer_name,
+      shipped_to_address: shipped_to_address || customer_address,
+      shipped_to_gstin: shipped_to_gstin || customer_gstin,
+      customer_pan,
+
+      // Bank block, printed from the business profile.
+      bank_name: business?.bankName || '',
+      bank_branch: business?.bankBranch || '',
+      bank_account_number: business?.bankAccountNumber || '',
+      bank_ifsc: business?.bankIfsc || '',
+
+      // Government e-invoice fields. Empty until an IRP integration supplies
+      // them; the template hides the block when they are blank.
+      irn: irn || '',
+      ack_number: ack_number || '',
+      ack_date: ack_date || '',
+
+      // QR code. Scanning it opens invoice_url, which serves the stored PDF.
+      // qr_code_data stays available for a caller that wants to render its own.
+      invoice_url: invoiceUrl,
+      qr_code_data: qr_code_data || invoiceUrl,
+      qr_code_image: qrCodeImage,
+
       amount_in_words,
       signature_image: '',
       terms_and_conditions,
+      terms_list:
+        Array.isArray(business?.invoiceTerms) && business.invoiceTerms.length
+          ? business.invoiceTerms
+          : [
+              'Goods once sold will not be taken back.',
+              'Interest @ 18% p.a. will be charged if the payment is not made within the stipulated time.',
+              'Subject to Delhi Jurisdiction only.',
+            ],
     };
 
     // 5. Save invoice record (status: pending) before hitting PDFMonkey
@@ -154,6 +429,7 @@ const generateInvoice = async (req, res, next) => {
       amountInWords: amount_in_words,
       termsAndConditions: terms_and_conditions,
       pdfStatus: 'pending',
+      publicToken,
     });
 
     // 6. Call PDFMonkey synchronous endpoint
@@ -180,7 +456,85 @@ const generateInvoice = async (req, res, next) => {
       invoiceDate,
       pdfUrl: pdfResult.downloadUrl,
       invoiceId: invoice._id,
+      invoiceUrl,
     }, 201);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/v1/invoices/p/:token
+ *
+ * Public — this is the address encoded in the invoice QR code, so it is
+ * reachable without a JWT by anyone holding the printed invoice. The token is
+ * 128 bits of randomness and identifies exactly one invoice.
+ *
+ * Streams the PDF rather than redirecting, because the PDFMonkey link is
+ * signed and short-lived; a fresh one is fetched on every request.
+ */
+const getPublicInvoice = async (req, res, next) => {
+  try {
+    const token = String(req.params.token || '');
+
+    // Reject anything that is not a token before touching the database.
+    if (!/^[a-f0-9]{32}$/.test(token)) {
+      return sendError(res, 'Invoice not found', 404);
+    }
+
+    const invoice = await Invoice.findOne({ publicToken: token })
+      .select('invoiceNumber pdfMonkeyDocId pdfUrl pdfStatus')
+      .lean();
+
+    if (!invoice) {
+      return sendError(res, 'Invoice not found', 404);
+    }
+    if (invoice.pdfStatus !== 'success') {
+      return sendError(res, 'This invoice is still being prepared', 409);
+    }
+
+    // Prefer a freshly signed URL; fall back to the stored one, which may
+    // still be valid for a recently generated invoice.
+    let downloadUrl = invoice.pdfUrl;
+    if (invoice.pdfMonkeyDocId) {
+      try {
+        downloadUrl = await getDownloadUrl(invoice.pdfMonkeyDocId);
+      } catch (urlErr) {
+        console.warn('[Invoice] Could not refresh download URL:', urlErr.message);
+      }
+    }
+    if (!downloadUrl) {
+      return sendError(res, 'Invoice PDF is unavailable', 404);
+    }
+
+    const upstream = await fetch(downloadUrl);
+    if (!upstream.ok || !upstream.body) {
+      console.error('[Invoice] PDF fetch failed with', upstream.status);
+      return sendError(res, 'Invoice PDF is unavailable', 502);
+    }
+
+    // Scanning the QR should show the invoice; `?download=1` saves it instead.
+    // Phone browsers give an inline PDF no obvious save action, so the app and
+    // any "download" link append the flag.
+    const asDownload = ['1', 'true', 'yes'].includes(
+      String(req.query?.download || '').toLowerCase(),
+    );
+    const safeName = String(invoice.invoiceNumber).replace(/[^\w.-]+/g, '-');
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `${asDownload ? 'attachment' : 'inline'}; filename="${safeName}.pdf"`,
+    );
+    // Lets a browser show a progress bar and resume, instead of an unbounded
+    // stream that looks stalled on a slow phone connection.
+    const upstreamLength = upstream.headers?.get('content-length');
+    if (upstreamLength) res.setHeader('Content-Length', upstreamLength);
+    // The document never changes once generated, but it must not be cached by
+    // shared proxies: the token is the only thing protecting it.
+    res.setHeader('Cache-Control', 'private, max-age=300');
+
+    return Readable.fromWeb(upstream.body).pipe(res);
   } catch (err) {
     next(err);
   }
@@ -210,7 +564,12 @@ const getInvoices = async (req, res, next) => {
       Invoice.countDocuments({ businessId }),
     ]);
 
-    return sendSuccess(res, { invoices, total, page, limit });
+    return sendSuccess(res, {
+      invoices: invoices.map(withInvoiceUrl),
+      total,
+      page,
+      limit,
+    });
   } catch (err) {
     next(err);
   }
@@ -230,7 +589,7 @@ const getInvoice = async (req, res, next) => {
     if (!invoice) {
       return sendError(res, 'Invoice not found', 404);
     }
-    return sendSuccess(res, { invoice });
+    return sendSuccess(res, { invoice: withInvoiceUrl(invoice) });
   } catch (err) {
     next(err);
   }
@@ -249,4 +608,10 @@ const getNextInvoiceNumber = async (req, res, next) => {
   }
 };
 
-module.exports = { generateInvoice, getInvoices, getInvoice, getNextInvoiceNumber };
+module.exports = {
+  generateInvoice,
+  getInvoices,
+  getInvoice,
+  getNextInvoiceNumber,
+  getPublicInvoice,
+};

@@ -39,7 +39,10 @@ const envVarsSchema = joi.object({
   // Invoice PDF rendering; missing config previously surfaced only as a 502 at
   // request time, so it is declared here to be visible at startup.
   PDFMONKEY_API_SECRET: joi.string().allow('').default(''),
-  PDFMONKEY_TEMPLATE_ID: joi.string().allow('').default('')
+  PDFMONKEY_TEMPLATE_ID: joi.string().allow('').default(''),
+  // Origin this API is reachable at from outside. The invoice QR code encodes
+  // a URL under it, so it must be the public address, not localhost.
+  PUBLIC_BASE_URL: joi.string().uri().default('https://amitaash.com')
 })
   .unknown();
 
@@ -113,5 +116,6 @@ module.exports = {
   ocr: {
     maxEdgePx: envVars.OCR_MAX_EDGE_PX,
     jpegQuality: envVars.OCR_JPEG_QUALITY,
-  }
+  },
+  publicBaseUrl: String(envVars.PUBLIC_BASE_URL).replace(/\/+$/, ''),
 };

@@ -52,6 +52,12 @@ const businessSchema = new mongoose.Schema({
     ],
     default: 'GST_CONFIRMED'
   },
+  // Printed on the tax invoice. Optional so existing businesses stay valid.
+  bankName: { type: String, default: '' },
+  bankBranch: { type: String, default: '' },
+  bankAccountNumber: { type: String, default: '' },
+  bankIfsc: { type: String, default: '' },
+  invoiceTerms: { type: [String], default: [] },
   isRegistered: {
     type: Boolean,
     default: false

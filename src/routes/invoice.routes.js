@@ -3,7 +3,12 @@ const router = express.Router();
 const invoiceController = require('../controllers/invoice.controller');
 const { authenticateJWT } = require('../middleware/auth.middleware');
 
-// All invoice routes require a valid JWT
+// GET /api/v1/invoices/p/:token – the address printed as a QR code on the
+// invoice. Declared before the JWT guard because whoever holds the paper
+// invoice is not logged in; the random token is what authorises the read.
+router.get('/p/:token', invoiceController.getPublicInvoice);
+
+// Every other invoice route requires a valid JWT
 router.use(authenticateJWT);
 
 // POST /api/v1/invoices/generate  – generate PDF invoice via PDFMonkey

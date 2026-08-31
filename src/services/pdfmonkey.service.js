@@ -66,4 +66,35 @@ async function generateInvoicePdf(payload, filename) {
   };
 }
 
-module.exports = { generateInvoicePdf };
+/**
+ * Fetches a fresh download URL for an already-generated document.
+ *
+ * The URL returned by generateInvoicePdf is a signed link that expires, so it
+ * cannot be handed out later from a QR code. Given the stored document id this
+ * asks PDFMonkey for a currently-valid one.
+ *
+ * @param {string} docId – PDFMonkey document id stored on the invoice
+ * @returns {Promise<string>} a currently-valid download URL
+ */
+async function getDownloadUrl(docId) {
+  const response = await fetch(`${PDFMONKEY_BASE_URL}/documents/${docId}`, {
+    headers: { Authorization: `Bearer ${API_SECRET}` },
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`PDFMonkey API error ${response.status}: ${errorBody}`);
+  }
+
+  const data = await response.json();
+  const card = data.document ?? data.document_card;
+  const url = card?.download_url;
+
+  if (!url) {
+    throw new Error(`PDFMonkey returned no download_url for document ${docId}`);
+  }
+
+  return url;
+}
+
+module.exports = { generateInvoicePdf, getDownloadUrl };
