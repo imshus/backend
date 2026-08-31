@@ -61,6 +61,12 @@ const getBusinessProfile = async (req, res) => {
         pincode: business.pincode || '',
         phone: user?.phone || '',
         loginId: user?.userId || '',
+        // Printed on the invoice footer.
+        bankName: business.bankName || '',
+        bankBranch: business.bankBranch || '',
+        bankAccountNumber: business.bankAccountNumber || '',
+        bankIfsc: business.bankIfsc || '',
+        invoiceTerms: Array.isArray(business.invoiceTerms) ? business.invoiceTerms : [],
       },
     });
   } catch (error) {
