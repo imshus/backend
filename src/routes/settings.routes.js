@@ -8,10 +8,6 @@ const { requireRole } = require('../middleware/auth.middleware');
 
 router.use(authenticateJWT);
 
-// Business identity straight from the database, so the app never shows a
-// name cached at login after it has changed.
-router.get('/business-profile', settingsController.getBusinessProfile);
-
 router.get('/formula', settingsController.getFormulaConfig);
 router.post('/formula', requirePermission('manageFormulae'), settingsController.updateFormulaConfig);
 

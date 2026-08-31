@@ -1,7 +1,5 @@
 const FormulaConfig = require('../models/formulaConfig.model');
 const DashboardMetrics = require('../models/dashboardMetrics.model');
-const Business = require('../models/business.model');
-const BusinessUser = require('../models/businessUser.model');
 
 const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   '24k_mcx': true,
@@ -27,48 +25,6 @@ const normalizeDashboardMatrices = (values = {}) => ({
     Object.entries(values).filter(([key]) => Object.prototype.hasOwnProperty.call(DEFAULT_DASHBOARD_MATRIX_VALUES, key))
   ),
 });
-
-/**
- * GET /settings/business-profile
- *
- * The business name, GSTIN and address as they stand in the database. The app
- * caches these at login, so without this a rename (or a GST record repaired
- * after signup) would keep showing the stale copy until the user signed in
- * again.
- */
-const getBusinessProfile = async (req, res) => {
-  try {
-    const businessId = req.user.businessId;
-    const business = await Business.findById(businessId).lean();
-    if (!business) {
-      return res.status(404).json({ success: false, message: 'Business not found' });
-    }
-
-    // The signed-in user's own contact details, not the business owner's.
-    const user = req.user.userId
-      ? await BusinessUser.findById(req.user.userId).select('phone userId').lean()
-      : null;
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        businessId: business._id.toString(),
-        businessName: business.tradeName || business.legalName || '',
-        legalName: business.legalName || '',
-        gstNumber: business.gstNumber || '',
-        businessType: business.companyType || business.businessType || '',
-        address: business.address || '',
-        stateName: business.stateName || '',
-        pincode: business.pincode || '',
-        phone: user?.phone || '',
-        loginId: user?.userId || '',
-      },
-    });
-  } catch (error) {
-    console.error('Get Business Profile Error:', error);
-    return res.status(500).json({ success: false, message: 'Server Error' });
-  }
-};
 
 const getFormulaConfig = async (req, res) => {
   try {
@@ -227,7 +183,6 @@ const updateSupremeRates = async (req, res) => {
 };
 
 module.exports = {
-  getBusinessProfile,
   getFormulaConfig,
   updateFormulaConfig,
   getDashboardMatrices,
