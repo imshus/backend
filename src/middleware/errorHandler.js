@@ -31,6 +31,7 @@ const errorHandler = (err, req, res, next) => {
     'REFRESH_TOKEN_EXPIRED': { status: 401, msg: 'Your session has expired. Please log in again.' },
     'FORBIDDEN': { status: 403, msg: 'You do not have permission to access this resource.' },
     'INVALID_PHONE_CREDENTIALS': { status: 401, msg: 'Invalid phone number or password.' },
+    'NO_USER_ID_SET': { status: 404, msg: 'No User ID is set on this account. Sign in with your phone number and set one.' },
     'INVALID_EMPLOYEE_CREDENTIALS': { status: 401, msg: 'Invalid Employee ID or password.' },
     'OCR_IMAGE_PROCESSING_FAILED': {
       status: 422,

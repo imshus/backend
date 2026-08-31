@@ -155,6 +155,17 @@ const loginWithOtp = async (req, res, next) => {
   }
 };
 
+/** POST /auth/forgot-user-id — returns the User ID for a verified phone. */
+const recoverUserId = async (req, res, next) => {
+  try {
+    const { mobile, otp } = req.body;
+    const data = await registrationService.recoverUserId(mobile, otp);
+    sendSuccess(res, data);
+  } catch (err) {
+    next(err);
+  }
+};
+
 const requestPasswordReset = async (req, res, next) => {
   try {
     const data = await registrationService.requestPasswordReset(req.body.identifier);
@@ -252,6 +263,7 @@ module.exports = {
   sendOtp,
   verifyOtpByMobile,
   loginWithOtp,
+  recoverUserId,
   requestPasswordReset,
   verifyPasswordResetOtp,
   resetForgottenPassword,

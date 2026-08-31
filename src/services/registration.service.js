@@ -271,6 +271,35 @@ const login = async (mobile, password) => {
   return buildLoginPayload(user, business, tokens);
 };
 
+/**
+ * Looks up the User ID registered against a phone number, for the
+ * "Forgot User ID" flow.
+ *
+ * The OTP is verified first: without it, anyone could enumerate User IDs from
+ * phone numbers and would hold half of someone's login credentials. Unlike
+ * loginWithOtp this issues no tokens — recovering a username should not hand
+ * out a session.
+ */
+const recoverUserId = async (mobile, otp) => {
+  await otpService.verifyOtpByMobile({
+    mobile,
+    otp,
+    route: '/api/v1/auth/forgot-user-id',
+  });
+
+  const normalizedPhone = normalizePhone(mobile);
+  const user = await BusinessUser.findOne({ phone: normalizedPhone });
+  if (!user || !user.isActive) {
+    throw new Error('INVALID_PHONE_CREDENTIALS');
+  }
+
+  if (!user.userId) {
+    throw new Error('NO_USER_ID_SET');
+  }
+
+  return { userId: user.userId };
+};
+
 const loginWithOtp = async (mobile, otp) => {
   await otpService.verifyOtpByMobile({
     mobile,
@@ -489,6 +518,7 @@ module.exports = {
   createPassword,
   login,
   loginWithOtp,
+  recoverUserId,
   requestPasswordReset,
   verifyPasswordResetOtp,
   resetForgottenPassword,

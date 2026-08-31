@@ -32,6 +32,9 @@ router.post('/register', validate(registerSchema), authController.register);
 router.post('/send-otp', validate(sendOtpSchema), authController.sendOtp);
 router.post('/verify-otp', validate(verifyMobileOtpSchema), authController.verifyOtpByMobile);
 router.post('/login-otp', validate(loginOtpSchema), authController.loginWithOtp);
+// Recovers the User ID registered against a phone number. Same OTP proof as
+// login-otp, but returns only the User ID — no session is issued.
+router.post('/forgot-user-id', validate(loginOtpSchema), authController.recoverUserId);
 router.post('/forgot-password/request', validate(requestPasswordResetSchema), authController.requestPasswordReset);
 router.post('/forgot-password/verify-otp', validate(verifyPasswordResetOtpSchema), authController.verifyPasswordResetOtp);
 router.post('/forgot-password/reset', validate(resetPasswordSchema), authController.resetForgottenPassword);
