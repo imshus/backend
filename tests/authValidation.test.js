@@ -73,14 +73,23 @@ test('password rules are bounded consistently during registration', () => {
   assert.match(tooLong.error.message, /less than or equal to 128 characters/i);
 });
 
-test('business login accepts either phone number or chosen User ID', () => {
+test('business login takes a User ID; a digit-only ID is just another User ID', () => {
+  assert.equal(
+    loginSchema.validate({ mobile: 'owner.one', password: 'secret1' }).error,
+    undefined,
+  );
+  // Digits are legal in a User ID, so this is accepted by the schema — but the
+  // service resolves it against userId only, never against a phone number.
   assert.equal(
     loginSchema.validate({ mobile: '9876543210', password: 'secret1' }).error,
     undefined,
   );
-  assert.equal(
-    loginSchema.validate({ mobile: 'owner.one', password: 'secret1' }).error,
-    undefined,
+});
+
+test('business login rejects an identifier too short to be a User ID', () => {
+  assert.match(
+    loginSchema.validate({ mobile: 'ab', password: 'secret1' }).error.message,
+    /at least 3 characters/i,
   );
 });
 

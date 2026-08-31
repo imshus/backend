@@ -80,11 +80,13 @@ const registerSchema = Joi.object({
   }).required(),
 });
 
+// Business sign-in takes a User ID only; the field keeps its legacy `mobile`
+// name so existing clients keep working.
 const loginSchema = Joi.object({
-  mobile: Joi.alternatives().try(
-    Joi.string().pattern(/^[0-9]{10}$/),
-    userIdSchema,
-  ).required(),
+  mobile: userIdSchema.required().messages({
+    'any.required': 'User ID is required',
+    'string.empty': 'User ID is required',
+  }),
   password: Joi.string().required()
 });
 

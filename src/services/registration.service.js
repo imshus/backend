@@ -41,7 +41,11 @@ function buildLoginPayload(user, business, tokens) {
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
     businessId: user.businessId.toString(),
+    // NOTE: `userId` here is the Mongo _id, used to resolve the account.
+    // `loginId` is the handle the user actually signs in with — they are
+    // different values and the names unfortunately collide.
     userId: user._id.toString(),
+    loginId: user.userId || '',
     role: user.role,
     businessName: business ? (business.tradeName || business.legalName) : undefined,
     gstNumber: business ? business.gstNumber : undefined,
@@ -243,13 +247,11 @@ const createPassword = async (businessId, password, userId) => {
 };
 
 const login = async (mobile, password) => {
-  // The login field carries either a 10-digit phone number or a User ID.
-  const raw = String(mobile || '').trim();
-  const normalizedPhone = normalizePhone(raw);
-  const query = /^[0-9]{10}$/.test(normalizedPhone)
-    ? { $or: [{ phone: normalizedPhone }, { userId: raw }] }
-    : { userId: raw };
-  const user = await BusinessUser.findOne(query);
+  // Sign-in is by User ID only. Phone numbers are no longer accepted here, so
+  // a User ID that looks like a phone number resolves to its owner rather than
+  // being claimed by whoever holds that number.
+  const userId = String(mobile || '').trim();
+  const user = await BusinessUser.findOne({ userId });
   if (!user || !user.isActive) {
     throw new Error('INVALID_PHONE_CREDENTIALS');
   }
