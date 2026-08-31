@@ -7,9 +7,10 @@ This document summarizes all major backend services, their responsibilities, key
 - Responsibilities:
   - Persist scan sessions and their transient state (`setScan`, `getScan`, `updateScanStatus`).
   - Cache gold rates, MCX data, supreme rates and prompt customizations.
+  - Cache generated invoice PDF bytes for direct QR-code downloads, with MongoDB/PDFMonkey fallback.
   - In-memory fallback when Redis unavailable (development friendly).
-- Key functions: `setScan`, `getScan`, `updateScanStatus`, `getGoldRatesCache`, `setGoldRatesCache`, `getPromptCustomizations`, `addPromptCustomization`.
-- Notes: Uses TTL of 24 hours for most caches.
+- Key functions: `setScan`, `getScan`, `updateScanStatus`, `getInvoicePdfCache`, `setInvoicePdfCache`, `getGoldRatesCache`, `setGoldRatesCache`, `getPromptCustomizations`, `addPromptCustomization`.
+- Notes: Uses TTL of 24 hours for most caches; invoice PDFs default to 7 days.
 
 2. `scan.service` — Scan lifecycle & analysis orchestration
 - File: `backend/src/services/scan.service.js`

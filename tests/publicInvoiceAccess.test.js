@@ -2,7 +2,7 @@
  * The invoice QR code points at GET /api/v1/invoices/p/:token, which has to be
  * reachable without a JWT. These tests pin that contract: the token is the only
  * credential, it is validated before any database lookup, and the PDF is
- * streamed rather than redirected to an expiring signed URL.
+ * returned by our API rather than redirected to an expiring signed URL.
  */
 
 const test = require('node:test');
@@ -16,10 +16,15 @@ const CONTROLLER_DIR = path.dirname(CONTROLLER);
 const state = {
   invoice: null,
   findOneQuery: null,
+  cachedInvoice: null,
+  cacheGets: [],
+  cacheSets: [],
   freshUrlCalls: 0,
   freshUrlThrows: false,
   fetchedUrls: [],
   fetchStatus: 200,
+  qrPayloads: [],
+  generatedPdfPayloads: [],
 };
 
 const stub = (request, exports) => {
@@ -39,6 +44,12 @@ stub('../models/invoice.model', {
   create: async (doc) => doc,
   findByIdAndUpdate: async () => ({}),
 });
+stub('qrcode', {
+  toDataURL: async (payload) => {
+    state.qrPayloads.push(payload);
+    return 'data:image/png;base64,qr';
+  },
+});
 stub('../models/business.model', { findById: () => ({ lean: async () => null }) });
 stub('../models/businessUser.model', { findById: () => ({ select: () => ({ lean: async () => null }) }) });
 stub('../models/employee.model', { findById: () => ({ select: () => ({ lean: async () => null }) }) });
@@ -47,20 +58,35 @@ stub('../models/invoiceCounter.model', {
   peekNextInvoiceNumber: async () => '2/2026-27',
 });
 stub('../services/pdfmonkey.service', {
-  generateInvoicePdf: async () => ({ downloadUrl: 'https://pdf.test/new.pdf', docId: 'doc-1' }),
+  generateInvoicePdf: async (payload) => {
+    state.generatedPdfPayloads.push(payload);
+    return { downloadUrl: 'https://pdf.test/new.pdf', docId: 'doc-1' };
+  },
   getDownloadUrl: async () => {
     state.freshUrlCalls += 1;
     if (state.freshUrlThrows) throw new Error('pdfmonkey unavailable');
     return 'https://pdf.test/fresh.pdf';
   },
 });
-stub('../config/env', { publicBaseUrl: 'https://amitaash.com' });
+stub('../services/redis.service', {
+  getInvoicePdfCache: async (token) => {
+    state.cacheGets.push(token);
+    return state.cachedInvoice;
+  },
+  setInvoicePdfCache: async (token, invoiceNumber, pdfBuffer) => {
+    state.cacheSets.push({ token, invoiceNumber, pdfBuffer });
+  },
+});
+stub('../config/env', {
+  publicBaseUrl: 'https://amitaash.com',
+  invoicePdfCache: { maxBytes: 15 * 1024 * 1024 },
+});
 stub('../utils/apiResponse', {
   sendSuccess: (res, data, status = 200) => res.finish(status, data),
   sendError: (res, message, status = 400) => res.finish(status, { message }),
 });
 
-const { getPublicInvoice } = require(CONTROLLER);
+const { generateInvoice, getPublicInvoice } = require(CONTROLLER);
 
 const originalFetch = global.fetch;
 global.fetch = async (url) => {
@@ -75,6 +101,10 @@ global.fetch = async (url) => {
       'content-type': 'application/pdf',
       'content-length': String(bytes.byteLength),
     }),
+    arrayBuffer: async () => bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ),
     body: new ReadableStream({
       start(controller) {
         controller.enqueue(bytes);
@@ -99,7 +129,11 @@ const makeRes = () => {
     once() { return this; },
     emit() { return this; },
     write(c) { chunks.push(c); return true; },
-    end() { this.piped = true; this.body = Buffer.concat(chunks.map(Buffer.from)).toString(); },
+    end(c) {
+      if (c) chunks.push(c);
+      this.piped = true;
+      this.body = Buffer.concat(chunks.map(Buffer.from)).toString();
+    },
   };
 };
 
@@ -117,10 +151,15 @@ const VALID = 'a'.repeat(32);
 const reset = () => {
   state.invoice = null;
   state.findOneQuery = null;
+  state.cachedInvoice = null;
+  state.cacheGets = [];
+  state.cacheSets = [];
   state.freshUrlCalls = 0;
   state.freshUrlThrows = false;
   state.fetchedUrls = [];
   state.fetchStatus = 200;
+  state.qrPayloads = [];
+  state.generatedPdfPayloads = [];
 };
 
 test('a malformed token is rejected without querying the database', async () => {
@@ -140,6 +179,23 @@ test('an unknown token returns 404', async () => {
   assert.deepEqual(state.findOneQuery, { publicToken: VALID });
 });
 
+test('a Redis cache hit downloads the PDF without MongoDB or PDFMonkey', async () => {
+  reset();
+  state.cachedInvoice = {
+    invoiceNumber: '19/2026-27',
+    pdfBuffer: Buffer.from('%PDF-1.4 cached'),
+  };
+
+  const res = await call(VALID, { download: '1' });
+
+  assert.deepEqual(state.cacheGets, [VALID]);
+  assert.equal(state.findOneQuery, null);
+  assert.equal(state.freshUrlCalls, 0);
+  assert.equal(state.fetchedUrls.length, 0);
+  assert.match(res.headers['content-disposition'], /^attachment;/);
+  assert.equal(res.body, '%PDF-1.4 cached');
+});
+
 test('an invoice whose PDF is not ready returns 409, not a broken download', async () => {
   reset();
   state.invoice = { invoiceNumber: '1/2026-27', pdfStatus: 'pending', pdfMonkeyDocId: 'doc-1' };
@@ -148,7 +204,7 @@ test('an invoice whose PDF is not ready returns 409, not a broken download', asy
   assert.equal(state.fetchedUrls.length, 0);
 });
 
-test('a ready invoice streams the PDF using a freshly signed URL', async () => {
+test('a ready invoice serves the PDF using a freshly signed URL', async () => {
   reset();
   state.invoice = {
     invoiceNumber: '19/2026-27',
@@ -163,6 +219,8 @@ test('a ready invoice streams the PDF using a freshly signed URL', async () => {
   assert.equal(res.headers['content-type'], 'application/pdf');
   assert.match(res.headers['content-disposition'], /^inline; filename="19-2026-27\.pdf"$/);
   assert.match(res.headers['cache-control'], /private/);
+  assert.equal(state.cacheSets.length, 1, 'cache miss should be repopulated');
+  assert.equal(state.cacheSets[0].invoiceNumber, '19/2026-27');
 });
 
 test('a filename with path characters cannot escape the Content-Disposition header', async () => {
@@ -244,4 +302,28 @@ test('an upstream failure surfaces as 502, not a truncated PDF', async () => {
   };
   const res = await call(VALID);
   assert.equal(res.statusCode, 502);
+});
+
+test('the ordinary invoice QR requests a direct download and warms Redis', async () => {
+  reset();
+  const res = makeRes();
+
+  await generateInvoice({
+    user: { businessId: '507f1f77bcf86cd799439011' },
+    body: {
+      customer_name: 'Garg Jewellers',
+      line_items: [{ description: '18KT GOLD', qty: 1, qty_unit: 'Gms.', price: 100, amount: 100 }],
+      subtotal: 100,
+      gst_rate: 3,
+      gst_amount: 3,
+      grand_total: 103,
+    },
+  }, res, (err) => { throw err; });
+
+  assert.equal(res.statusCode, 201);
+  assert.match(state.qrPayloads[0], /^https:\/\/amitaash\.com\/api\/v1\/invoices\/p\/[a-f0-9]{32}\?download=1$/);
+  assert.equal(state.generatedPdfPayloads[0].qr_code_data, state.qrPayloads[0]);
+  assert.ok(!res.payload.invoiceUrl.includes('?download=1'), 'app preview URL stays inline');
+  assert.equal(state.cacheSets.length, 1, 'generated PDF should be cached before returning');
+  assert.equal(state.cacheSets[0].token, res.payload.invoiceUrl.split('/').pop());
 });

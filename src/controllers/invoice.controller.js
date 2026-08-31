@@ -1,5 +1,4 @@
 const crypto = require('crypto');
-const { Readable } = require('stream');
 const QRCode = require('qrcode');
 const Invoice = require('../models/invoice.model');
 const Business = require('../models/business.model');
@@ -7,8 +6,56 @@ const BusinessUser = require('../models/businessUser.model');
 const Employee = require('../models/employee.model');
 const { generateInvoiceNumber, peekNextInvoiceNumber } = require('../models/invoiceCounter.model');
 const { generateInvoicePdf, getDownloadUrl } = require('../services/pdfmonkey.service');
+const redisService = require('../services/redis.service');
 const config = require('../config/env');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
+
+const MAX_INVOICE_PDF_BYTES = config.invoicePdfCache?.maxBytes || (15 * 1024 * 1024);
+
+const isDownloadRequest = (query) => ['1', 'true', 'yes'].includes(
+  String(query?.download || '').toLowerCase(),
+);
+
+const safeInvoiceFilename = (invoiceNumber) => {
+  const safeName = String(invoiceNumber || 'invoice').replace(/[^\w.-]+/g, '-');
+  return `${safeName || 'invoice'}.pdf`;
+};
+
+const sendInvoicePdf = (res, invoiceNumber, pdfBuffer, query) => {
+  const asDownload = isDownloadRequest(query);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Content-Disposition',
+    `${asDownload ? 'attachment' : 'inline'}; filename="${safeInvoiceFilename(invoiceNumber)}"`,
+  );
+  res.setHeader('Content-Length', String(pdfBuffer.length));
+  // The token is the credential, so shared proxies must never retain a copy.
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  return res.end(pdfBuffer);
+};
+
+/** Downloads and validates a generated invoice before it enters Redis. */
+const fetchInvoicePdf = async (downloadUrl) => {
+  const upstream = await fetch(downloadUrl);
+  if (!upstream.ok) {
+    throw new Error(`PDF fetch failed with ${upstream.status}`);
+  }
+
+  const declaredLength = Number(upstream.headers?.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_INVOICE_PDF_BYTES) {
+    throw new Error('Invoice PDF is larger than the configured cache limit');
+  }
+
+  const pdfBuffer = Buffer.from(await upstream.arrayBuffer());
+  if (!pdfBuffer.length || pdfBuffer.length > MAX_INVOICE_PDF_BYTES) {
+    throw new Error('Invoice PDF is empty or larger than the configured cache limit');
+  }
+  if (pdfBuffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
+    throw new Error('Invoice provider returned a non-PDF response');
+  }
+
+  return pdfBuffer;
+};
 
 /**
  * Resolves the single quantity + unit pair a line prints.
@@ -239,13 +286,14 @@ const generateInvoice = async (req, res, next) => {
     // built, because the QR image is part of the document being generated.
     const publicToken = crypto.randomBytes(16).toString('hex');
     const invoiceUrl = `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`;
+    const invoiceDownloadUrl = `${invoiceUrl}?download=1`;
 
     // Rendered here as a data URI so the PDF has no external image dependency:
     // PDFMonkey would otherwise print an empty box if the fetch failed.
     // A government e-invoice must print the IRP's signed payload in its QR —
     // a convenience link cannot stand in for it. So when the caller supplies
     // one it wins; otherwise the QR resolves to our own invoice endpoint.
-    const qrPayload = String(qr_code_data || '').trim() || invoiceUrl;
+    const qrPayload = String(qr_code_data || '').trim() || invoiceDownloadUrl;
 
     let qrCodeImage = '';
     try {
@@ -386,10 +434,11 @@ const generateInvoice = async (req, res, next) => {
       ack_number: ack_number || '',
       ack_date: ack_date || '',
 
-      // QR code. Scanning it opens invoice_url, which serves the stored PDF.
+      // QR code. The ordinary invoice QR requests an attachment immediately;
+      // invoice_url remains flag-free so the app can preview the same PDF.
       // qr_code_data stays available for a caller that wants to render its own.
       invoice_url: invoiceUrl,
-      qr_code_data: qr_code_data || invoiceUrl,
+      qr_code_data: qr_code_data || invoiceDownloadUrl,
       qr_code_image: qrCodeImage,
 
       amount_in_words,
@@ -451,6 +500,17 @@ const generateInvoice = async (req, res, next) => {
       pdfStatus: 'success',
     });
 
+    // Warm Redis before returning so the first phone that scans the printed QR
+    // can receive the PDF without a MongoDB lookup or a PDFMonkey round trip.
+    // Cache failures do not invalidate a correctly generated invoice; the
+    // public endpoint can still rebuild the cache from the durable record.
+    try {
+      const pdfBuffer = await fetchInvoicePdf(pdfResult.downloadUrl);
+      await redisService.setInvoicePdfCache(publicToken, invoiceNumber, pdfBuffer);
+    } catch (cacheErr) {
+      console.warn('[Invoice] Could not warm Redis PDF cache:', cacheErr.message);
+    }
+
     return sendSuccess(res, {
       invoiceNumber,
       invoiceDate,
@@ -470,8 +530,9 @@ const generateInvoice = async (req, res, next) => {
  * reachable without a JWT by anyone holding the printed invoice. The token is
  * 128 bits of randomness and identifies exactly one invoice.
  *
- * Streams the PDF rather than redirecting, because the PDFMonkey link is
- * signed and short-lived; a fresh one is fetched on every request.
+ * Serves the Redis copy when available. On a cache miss it rebuilds the cache
+ * from the MongoDB record and a fresh PDFMonkey URL. The client never sees the
+ * provider's signed, short-lived URL.
  */
 const getPublicInvoice = async (req, res, next) => {
   try {
@@ -480,6 +541,17 @@ const getPublicInvoice = async (req, res, next) => {
     // Reject anything that is not a token before touching the database.
     if (!/^[a-f0-9]{32}$/.test(token)) {
       return sendError(res, 'Invoice not found', 404);
+    }
+
+    // The hot path for QR scans: Redis contains both the immutable PDF bytes
+    // and the safe filename, so no database or provider call is needed.
+    try {
+      const cached = await redisService.getInvoicePdfCache(token);
+      if (cached?.pdfBuffer) {
+        return sendInvoicePdf(res, cached.invoiceNumber, cached.pdfBuffer, req.query);
+      }
+    } catch (cacheErr) {
+      console.warn('[Invoice] Redis PDF cache read failed:', cacheErr.message);
     }
 
     const invoice = await Invoice.findOne({ publicToken: token })
@@ -507,34 +579,21 @@ const getPublicInvoice = async (req, res, next) => {
       return sendError(res, 'Invoice PDF is unavailable', 404);
     }
 
-    const upstream = await fetch(downloadUrl);
-    if (!upstream.ok || !upstream.body) {
-      console.error('[Invoice] PDF fetch failed with', upstream.status);
+    let pdfBuffer;
+    try {
+      pdfBuffer = await fetchInvoicePdf(downloadUrl);
+    } catch (pdfErr) {
+      console.error('[Invoice] PDF fetch failed:', pdfErr.message);
       return sendError(res, 'Invoice PDF is unavailable', 502);
     }
 
-    // Scanning the QR should show the invoice; `?download=1` saves it instead.
-    // Phone browsers give an inline PDF no obvious save action, so the app and
-    // any "download" link append the flag.
-    const asDownload = ['1', 'true', 'yes'].includes(
-      String(req.query?.download || '').toLowerCase(),
-    );
-    const safeName = String(invoice.invoiceNumber).replace(/[^\w.-]+/g, '-');
+    try {
+      await redisService.setInvoicePdfCache(token, invoice.invoiceNumber, pdfBuffer);
+    } catch (cacheErr) {
+      console.warn('[Invoice] Redis PDF cache write failed:', cacheErr.message);
+    }
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `${asDownload ? 'attachment' : 'inline'}; filename="${safeName}.pdf"`,
-    );
-    // Lets a browser show a progress bar and resume, instead of an unbounded
-    // stream that looks stalled on a slow phone connection.
-    const upstreamLength = upstream.headers?.get('content-length');
-    if (upstreamLength) res.setHeader('Content-Length', upstreamLength);
-    // The document never changes once generated, but it must not be cached by
-    // shared proxies: the token is the only thing protecting it.
-    res.setHeader('Cache-Control', 'private, max-age=300');
-
-    return Readable.fromWeb(upstream.body).pipe(res);
+    return sendInvoicePdf(res, invoice.invoiceNumber, pdfBuffer, req.query);
   } catch (err) {
     next(err);
   }

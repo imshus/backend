@@ -42,7 +42,9 @@ const envVarsSchema = joi.object({
   PDFMONKEY_TEMPLATE_ID: joi.string().allow('').default(''),
   // Origin this API is reachable at from outside. The invoice QR code encodes
   // a URL under it, so it must be the public address, not localhost.
-  PUBLIC_BASE_URL: joi.string().uri().default('https://amitaash.com')
+  PUBLIC_BASE_URL: joi.string().uri().default('https://amitaash.com'),
+  INVOICE_PDF_CACHE_TTL_SECONDS: joi.number().integer().min(60).max(2592000).default(604800),
+  INVOICE_PDF_CACHE_MAX_MB: joi.number().min(1).max(50).default(15)
 })
   .unknown();
 
@@ -118,4 +120,8 @@ module.exports = {
     jpegQuality: envVars.OCR_JPEG_QUALITY,
   },
   publicBaseUrl: String(envVars.PUBLIC_BASE_URL).replace(/\/+$/, ''),
+  invoicePdfCache: {
+    ttlSeconds: envVars.INVOICE_PDF_CACHE_TTL_SECONDS,
+    maxBytes: envVars.INVOICE_PDF_CACHE_MAX_MB * 1024 * 1024,
+  },
 };

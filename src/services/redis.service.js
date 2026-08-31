@@ -3,6 +3,11 @@ const redis = require('../redis/redisClient');
 
 // 24 hours
 const TTL = 24 * 60 * 60;
+// Invoice PDFs are immutable after generation. Keep a longer-lived copy in
+// Redis so a QR scan can download the document without calling PDFMonkey.
+// MongoDB + the PDFMonkey document id remain the durable fallback after expiry.
+const INVOICE_PDF_TTL = config.invoicePdfCache?.ttlSeconds || (7 * 24 * 60 * 60);
+const MAX_INVOICE_PDF_BYTES = config.invoicePdfCache?.maxBytes || (15 * 1024 * 1024);
 const memoryStore = new Map();
 
 let useMemoryStore = process.env.USE_MEMORY_STORE === 'true';
@@ -27,6 +32,10 @@ function scanKey(scanId) {
 
 function latestUserScanKey(businessId, userId) {
   return `latest_scan:${businessId}:${userId}`;
+}
+
+function invoicePdfKey(publicToken) {
+  return `invoice_pdf:${publicToken}`;
 }
 
 function enableMemoryFallback(reason) {
@@ -143,6 +152,76 @@ const updateScanStatus = async (scanId, status, extraData = {}) => {
   } finally {
     releaseLock(scanId);
   }
+};
+
+// === PUBLIC INVOICE PDF CACHING ===
+
+/**
+ * Saves an immutable invoice PDF under the same unguessable token encoded in
+ * its QR code. JSON/base64 is intentional: it works with both ioredis and the
+ * development in-memory client without a separate binary API.
+ */
+const setInvoicePdfCache = async (publicToken, invoiceNumber, pdfBuffer) => {
+  if (!/^[a-f0-9]{32}$/.test(String(publicToken || ''))) {
+    throw new Error('Invalid public invoice token');
+  }
+
+  const bytes = Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer || []);
+  if (!bytes.length || bytes.length > MAX_INVOICE_PDF_BYTES) {
+    throw new Error('Cannot cache an empty or oversized invoice PDF');
+  }
+  if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') {
+    throw new Error('Cannot cache a non-PDF invoice response');
+  }
+
+  const payload = JSON.stringify({
+    invoiceNumber: String(invoiceNumber || 'invoice'),
+    contentType: 'application/pdf',
+    pdfBase64: bytes.toString('base64'),
+  });
+
+  return runStoreOp(async (backend) => {
+    const key = invoicePdfKey(publicToken);
+    if (backend === 'memory') {
+      memoryStore.set(key, payload);
+      return;
+    }
+    await redis.set(key, payload, 'EX', INVOICE_PDF_TTL);
+  });
+};
+
+const getInvoicePdfCache = async (publicToken) => {
+  return runStoreOp(async (backend) => {
+    const key = invoicePdfKey(publicToken);
+    const data = backend === 'memory'
+      ? memoryStore.get(key)
+      : await redis.get(key);
+
+    if (!data) return null;
+
+    try {
+      const parsed = JSON.parse(data);
+      const pdfBuffer = Buffer.from(String(parsed.pdfBase64 || ''), 'base64');
+      if (
+        !pdfBuffer.length
+        || pdfBuffer.length > MAX_INVOICE_PDF_BYTES
+        || pdfBuffer.subarray(0, 5).toString('ascii') !== '%PDF-'
+      ) {
+        throw new Error('Cached value is not a valid invoice PDF');
+      }
+
+      return {
+        invoiceNumber: String(parsed.invoiceNumber || 'invoice'),
+        contentType: 'application/pdf',
+        pdfBuffer,
+      };
+    } catch (err) {
+      console.warn('[invoice-cache] Ignoring invalid cached PDF:', err.message);
+      if (backend === 'memory') memoryStore.delete(key);
+      else await redis.del(key);
+      return null;
+    }
+  });
 };
 
 // === GOLD RATES CACHING ===
@@ -370,6 +449,8 @@ module.exports = {
   getLatestScanIdForUser,
   setLatestScanIdForUser,
   updateScanStatus,
+  setInvoicePdfCache,
+  getInvoicePdfCache,
   setGoldRatesCache,
   getGoldRatesCache,
   invalidateGoldRatesCache,
