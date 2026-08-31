@@ -28,9 +28,11 @@ const normalizeMcxChange = (mcxChange) => {
 const getLiveGoldRates = async (businessId) => {
   if (!businessId) throw new Error('Business ID is required');
 
-  // 1. Check Redis Cache First
+  // 1. Check Redis Cache First. An entry without bhawSource was computed by a
+  // pre-vendor-selection build; serving it would pin stale rates for up to the
+  // cache TTL after a deploy, so treat it as a miss and recompute.
   const cachedData = await redisService.getGoldRatesCache(businessId.toString());
-  if (cachedData) {
+  if (cachedData && cachedData.bhawSource) {
     return cachedData;
   }
 
