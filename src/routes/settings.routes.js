@@ -8,6 +8,9 @@ const { requireRole } = require('../middleware/auth.middleware');
 
 router.use(authenticateJWT);
 
+// Business identity straight from the database, for the Profile screen.
+router.get('/business-profile', settingsController.getBusinessProfile);
+
 router.get('/formula', settingsController.getFormulaConfig);
 router.post('/formula', requirePermission('manageFormulae'), settingsController.updateFormulaConfig);
 
