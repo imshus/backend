@@ -28,6 +28,7 @@ const resolveBusinessIdFromUser = async (user) => {
  * {
  *   customer_name, customer_address, customer_phone,
  *   customer_email, customer_gstin,
+      customer_pan = '',
  *   place_of_supply, transport,
  *   line_items: [{ description, note, qty, price, amount }],
  *   subtotal, gst_rate, gst_amount, grand_total,
@@ -75,6 +76,11 @@ const generateInvoice = async (req, res, next) => {
     }
     if (!Array.isArray(line_items) || line_items.length === 0) {
       return sendError(res, 'line_items array is required and must not be empty', 400);
+    }
+    // Placed before generateInvoiceNumber so a stale or half-loaded client
+    // cannot consume an invoice number for a zero-value document.
+    if (!(Number(grand_total) > 0)) {
+      return sendError(res, 'grand_total must be greater than zero', 400);
     }
 
     // 2. Generate server-side invoice number (atomic, central)
@@ -136,6 +142,7 @@ const generateInvoice = async (req, res, next) => {
       customerPhone: customer_phone,
       customerEmail: customer_email,
       customerGstin: customer_gstin,
+      customerPan: customer_pan,
       invoiceDate,
       placeOfSupply: place_of_supply,
       transport,

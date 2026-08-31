@@ -31,6 +31,7 @@ const invoiceSchema = new mongoose.Schema({
   customerPhone: { type: String, default: '' },
   customerEmail: { type: String, default: '' },
   customerGstin: { type: String, default: '' },
+  customerPan: { type: String, default: '' },
 
   // Invoice metadata
   invoiceDate: { type: String, required: true },

@@ -1,34 +1,79 @@
 const axios = require('axios');
 
-// JMD Patil live bhaw feed (premium/discount over MCX).
-// GET -> { source, name, cash_bhaw, rtgs_bhaw, updated_at }
+/**
+ * Live bhaw feed (premium/discount over MCX) for both supported vendors.
+ *
+ * GET -> [ { source: 'jmd_patil',    name, cash_bhaw, rtgs_bhaw, ... },
+ *          { source: 'mega_bullion', name, cash_bhaw, rtgs_bhaw, ... } ]
+ *
+ * The endpoint returns an ARRAY containing every vendor, so the caller picks
+ * the one the business selected rather than trusting position or a single
+ * "active" record.
+ */
 const BHAW_URL = 'https://17gdivfex7.execute-api.ap-south-1.amazonaws.com/bhaw';
 const CACHE_TTL_MS = 30_000;
 
-let cache = { data: null, fetchedAt: 0 };
+const SOURCES = {
+  JMD_PATIL: 'jmd_patil',
+  MEGA_BULLION: 'mega_bullion',
+};
+
+let cache = { rows: null, fetchedAt: 0 };
 
 const toFiniteNumber = (value) => {
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
 };
 
-const getJmdBhaw = async () => {
+const fetchRows = async () => {
   const now = Date.now();
-  if (cache.data && now - cache.fetchedAt < CACHE_TTL_MS) return cache.data;
+  if (cache.rows && now - cache.fetchedAt < CACHE_TTL_MS) return cache.rows;
 
   try {
     const response = await axios.get(BHAW_URL, { timeout: 5000 });
-    const cashBhaw = toFiniteNumber(response.data?.cash_bhaw);
-    const rtgsBhaw = toFiniteNumber(response.data?.rtgs_bhaw);
-    if (cashBhaw === null || rtgsBhaw === null) {
-      return cache.data; // vendor hasn't updated yet — serve stale if we have it
-    }
-    cache = { data: { cashBhaw, rtgsBhaw }, fetchedAt: now };
-    return cache.data;
+    // Tolerate both the array form and a bare object, in case the upstream
+    // shape changes again.
+    const rows = Array.isArray(response.data)
+      ? response.data
+      : response.data
+        ? [response.data]
+        : [];
+    if (!rows.length) return cache.rows;
+
+    cache = { rows, fetchedAt: now };
+    return rows;
   } catch (error) {
-    console.warn('[Bhaw] Failed to fetch JMD bhaw feed:', error.message);
-    return cache.data; // serve stale on failure
+    console.warn('[Bhaw] Failed to fetch bhaw feed:', error.message);
+    return cache.rows; // serve stale rather than dropping to a wrong rate
   }
 };
 
-module.exports = { getJmdBhaw };
+/**
+ * @param {string} source one of SOURCES
+ * @returns {Promise<{ cashBhaw: number, rtgsBhaw: number, name: string } | null>}
+ */
+const getBhawForSource = async (source) => {
+  const rows = await fetchRows();
+  if (!rows) return null;
+
+  const wanted = String(source || '').toLowerCase();
+  const row = rows.find((entry) => String(entry?.source || '').toLowerCase() === wanted);
+  if (!row) {
+    console.warn(`[Bhaw] Feed does not contain source "${source}".`);
+    return null;
+  }
+
+  const cashBhaw = toFiniteNumber(row.cash_bhaw);
+  const rtgsBhaw = toFiniteNumber(row.rtgs_bhaw);
+  if (cashBhaw === null || rtgsBhaw === null) {
+    console.warn(`[Bhaw] Source "${source}" has not published rates yet.`);
+    return null;
+  }
+
+  return { cashBhaw, rtgsBhaw, name: row.name || source };
+};
+
+/** Back-compat helper used before both vendors were served from this feed. */
+const getJmdBhaw = () => getBhawForSource(SOURCES.JMD_PATIL);
+
+module.exports = { SOURCES, getBhawForSource, getJmdBhaw };

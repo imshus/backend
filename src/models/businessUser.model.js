@@ -21,6 +21,24 @@ const businessUserSchema = new mongoose.Schema({
     sparse: true,
     trim: true
   },
+  // Copied from the business at registration so a user record carries the
+  // GST-verified address directly. Kept in sync when the GSTIN is re-confirmed.
+  address: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  gstNumber: {
+    type: String,
+    default: '',
+    trim: true,
+    uppercase: true
+  },
+  businessName: {
+    type: String,
+    default: '',
+    trim: true
+  },
   passwordHash: {
     type: String,
     required: true

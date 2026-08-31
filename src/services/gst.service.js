@@ -72,6 +72,8 @@ const mockVerifyGST = (gstNumber) => {
 
   console.warn(`[GST Service] GST_VERIFY_MODE=mock — returning stub data for ${gstin} (no real GSTN lookup).`);
   return {
+    // Marked so callers never persist stub details over real GSTN data.
+    isMock: true,
     gstNumber: gstin,
     legalName: 'Dev Mode Business',
     tradeName: 'Dev Mode Business',

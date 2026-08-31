@@ -75,15 +75,24 @@ const getLiveGoldRates = async (businessId) => {
   } catch (metricsError) {
     console.warn('[Gold Rates] Could not read bhaw source preference:', metricsError.message);
   }
-  if (metrics?.metricsData?.bhaw_source_jmd) {
-    const jmdBhaw = await bhawService.getJmdBhaw();
-    if (jmdBhaw) {
-      supremeChanges = {
-        rtgsChange: jmdBhaw.rtgsBhaw,
-        cashChange: jmdBhaw.cashBhaw
-      };
-    }
+  // Both vendors are published by the same live feed, so the selected one is
+  // fetched by name. Only if that vendor is unavailable do we keep the stored
+  // supreme changes as a fallback.
+  const selectedBhawSource = metrics?.metricsData?.bhaw_source_jmd
+    ? bhawService.SOURCES.JMD_PATIL
+    : bhawService.SOURCES.MEGA_BULLION;
+  const vendorBhaw = await bhawService.getBhawForSource(selectedBhawSource);
+  if (vendorBhaw) {
+    supremeChanges = {
+      rtgsChange: vendorBhaw.rtgsBhaw,
+      cashChange: vendorBhaw.cashBhaw
+    };
   }
+  const bhawSource = {
+    key: selectedBhawSource,
+    name: vendorBhaw?.name || (selectedBhawSource === bhawService.SOURCES.JMD_PATIL ? 'JMD Patil' : 'Mega Bullion'),
+    live: Boolean(vendorBhaw),
+  };
 
   // Compose final rates: MCX + SupremeChange + Business (taxSettings)
   const supremeRtgsChange = supremeChanges.rtgsChange || 0;
@@ -170,6 +179,7 @@ const getLiveGoldRates = async (businessId) => {
   const responseData = {
     mcxLiveRate,
     mcxFinalRate,
+    bhawSource,
     supremeChanges: {
       rtgsChange: supremeRtgsChange,
       cashChange: supremeCashChange,

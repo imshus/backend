@@ -14,6 +14,28 @@ function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '').slice(-10);
 }
 
+/**
+ * Accounts created before the user record carried GST details have no address
+ * or gstNumber. Copy them across from the business on first sight so existing
+ * users heal without a migration run.
+ */
+async function backfillUserGstDetails(user, business) {
+  if (!user || !business) return;
+  const update = {};
+  if (!user.address && business.address) update.address = business.address;
+  if (!user.gstNumber && business.gstNumber) update.gstNumber = business.gstNumber;
+  const resolvedName = business.tradeName || business.legalName;
+  if (!user.businessName && resolvedName) update.businessName = resolvedName;
+  if (!Object.keys(update).length) return;
+
+  try {
+    await BusinessUser.updateOne({ _id: user._id }, { $set: update });
+    Object.assign(user, update);
+  } catch (error) {
+    console.warn('[Auth] Could not backfill user GST details:', error.message);
+  }
+}
+
 function buildLoginPayload(user, business, tokens) {
   return {
     accessToken: tokens.accessToken,
@@ -51,6 +73,37 @@ const confirmGst = async (gstData) => {
   let business = await Business.findOne({ gstNumber: gstData.gstNumber });
   
   if (business) {
+    // Refresh the stored details from this lookup so a record captured while
+    // the server ran in mock mode (e.g. "Dev Mode Address, India") is replaced
+    // by the real GSTN address. Stub responses never overwrite real data.
+    if (!gstData.isMock) {
+      const refreshed = {};
+      if (gstData.legalName) refreshed.legalName = gstData.legalName;
+      if (gstData.tradeName) refreshed.tradeName = gstData.tradeName;
+      if (gstData.address && gstData.address !== 'N/A') refreshed.address = gstData.address;
+      if (gstData.businessType) refreshed.businessType = gstData.businessType;
+      if (gstData.companyType) refreshed.companyType = gstData.companyType;
+      if (gstData.gstStatus) refreshed.gstStatus = gstData.gstStatus;
+      if (gstData.stateCode) refreshed.stateCode = gstData.stateCode;
+      if (gstData.stateName) refreshed.stateName = gstData.stateName;
+      if (gstData.pincode) refreshed.pincode = gstData.pincode;
+
+      if (Object.keys(refreshed).length) {
+        await Business.updateOne({ _id: business._id }, { $set: refreshed });
+
+        // Users hold a copy of the address, so refresh theirs too rather than
+        // leaving a stale (or dev-mode) value behind on the user record.
+        const userUpdate = {};
+        if (refreshed.address) userUpdate.address = refreshed.address;
+        if (gstData.gstNumber) userUpdate.gstNumber = gstData.gstNumber;
+        const freshName = refreshed.tradeName || refreshed.legalName;
+        if (freshName) userUpdate.businessName = freshName;
+        if (Object.keys(userUpdate).length) {
+          await BusinessUser.updateMany({ businessId: business._id }, { $set: userUpdate });
+        }
+      }
+    }
+
     // Multiple accounts may share one GST number: attach the new user to the
     // existing business instead of rejecting an already-registered GSTIN.
     return {
@@ -150,6 +203,9 @@ const createPassword = async (businessId, password, userId) => {
       businessId: business._id,
       phone: state.phone,
       ...(userId ? { userId } : {}),
+      address: business.address || '',
+      gstNumber: business.gstNumber || '',
+      businessName: business.tradeName || business.legalName || '',
       passwordHash,
       role: 'OWNER',
       phoneVerified: true,
@@ -208,6 +264,7 @@ const login = async (mobile, password) => {
 
   const tokens = authService.generateTokens(user.businessId.toString(), user._id.toString(), user.role);
   const business = await Business.findById(user.businessId);
+  await backfillUserGstDetails(user, business);
 
   return buildLoginPayload(user, business, tokens);
 };
@@ -230,6 +287,7 @@ const loginWithOtp = async (mobile, otp) => {
 
   const tokens = authService.generateTokens(user.businessId.toString(), user._id.toString(), user.role);
   const business = await Business.findById(user.businessId);
+  await backfillUserGstDetails(user, business);
 
   return buildLoginPayload(user, business, tokens);
 };
