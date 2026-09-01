@@ -230,17 +230,42 @@
           <td style="width: 25%;"></td>
           <td class="r nowrap" style="width: 14.5%;">{{ subtotal_display }}</td>
         </tr>
-        {% if is_intra_state %}
+        {%- comment -%}
+          Tax head, decided here rather than by the caller.
+
+          The rule is the supplier's own GSTIN: a state code of 07 is Delhi and
+          prints one combined "GST" line; every other state prints "IGST". The
+          buyer's state is not consulted. Deciding it in the template means the
+          right head prints even when the payload predates the backend that
+          sends is_intra_state — that flag is only the fallback for a business
+          whose GSTIN has not been filled in yet.
+
+          Both figures come from gst_rate / gst_amount, which every version of
+          the payload carries, so neither head can print a blank cell.
+        {%- endcomment -%}
+        {%- assign supplier_state_code = gstin_number | strip | slice: 0, 2 -%}
+        {%- if gstin_number and gstin_number != blank -%}
+          {%- if supplier_state_code == '07' -%}
+            {%- assign is_delhi_supplier = true -%}
+          {%- else -%}
+            {%- assign is_delhi_supplier = false -%}
+          {%- endif -%}
+        {%- else -%}
+          {%- assign is_delhi_supplier = is_intra_state -%}
+        {%- endif -%}
+        {%- assign tax_rate_display = gst_rate_display | default: gst_rate -%}
+        {%- assign tax_amount_display = gst_amount_display | default: gst_amount -%}
+        {% if is_delhi_supplier %}
           <tr>
             <td class="r">Add : GST</td>
-            <td class="c nowrap">@&nbsp;&nbsp;{{ gst_rate_display }} %</td>
-            <td class="r nowrap">{{ gst_amount_display }}</td>
+            <td class="c nowrap">@&nbsp;&nbsp;{{ tax_rate_display }} %</td>
+            <td class="r nowrap">{{ tax_amount_display }}</td>
           </tr>
         {% else %}
           <tr>
             <td class="r">Add : IGST</td>
-            <td class="c nowrap">@&nbsp;&nbsp;{{ igst_rate_display }} %</td>
-            <td class="r nowrap">{{ igst_amount_display }}</td>
+            <td class="c nowrap">@&nbsp;&nbsp;{{ tax_rate_display }} %</td>
+            <td class="r nowrap">{{ tax_amount_display }}</td>
           </tr>
         {% endif %}
         {% if rounded_off != 0 %}

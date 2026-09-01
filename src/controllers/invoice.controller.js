@@ -338,7 +338,10 @@ const buildInvoicePayload = (body, context) => {
       rounded_off: roundedOff,
 
       // Tax rates print to two decimals, e.g. "@ 3.00 %".
-      gst_rate_display: (isIntraState ? gstRateValue : 0).toFixed(2),
+      // The combined pair is never zeroed by state: the template decides which
+      // head to print from the GSTIN and reads these for either one, so
+      // blanking them here printed "IGST @ 0.00 %" on every outside-Delhi bill.
+      gst_rate_display: gstRateValue.toFixed(2),
       igst_rate_display: (isIntraState ? 0 : gstRateValue).toFixed(2),
       cgst_rate_display: (isIntraState ? halfRate : 0).toFixed(2),
       sgst_rate_display: (isIntraState ? halfRate : 0).toFixed(2),
@@ -346,7 +349,7 @@ const buildInvoicePayload = (body, context) => {
       // Pre-formatted for printing; the raw numbers above stay for any caller
       // that needs to compute with them.
       subtotal_display: formatInr(subtotalValue),
-      gst_amount_display: formatInr(isIntraState ? gstAmountValue : 0),
+      gst_amount_display: formatInr(gstAmountValue),
       igst_amount_display: formatInr(isIntraState ? 0 : gstAmountValue),
       cgst_amount_display: formatInr(isIntraState ? halfAmount : 0),
       sgst_amount_display: formatInr(isIntraState ? halfAmount : 0),
@@ -839,6 +842,9 @@ const getNextInvoiceNumber = async (req, res, next) => {
 };
 
 module.exports = {
+  // Exported so the template can be rendered offline from the very payload
+  // production sends, instead of a hand-written sample that drifts from it.
+  buildInvoicePayload,
   previewInvoiceHtml,
   reserveInvoiceQr,
   generateInvoice,
