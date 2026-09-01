@@ -15,6 +15,10 @@ router.use(authenticateJWT);
 // carry, so the preview shows the same code the PDF ends up printing
 router.post('/reserve-qr', invoiceController.reserveInvoiceQr);
 
+// POST /api/v1/invoices/preview-html – the invoice rendered from the same
+// template the PDF uses, for on-screen preview. Persists nothing.
+router.post('/preview-html', invoiceController.previewInvoiceHtml);
+
 // POST /api/v1/invoices/generate  – generate PDF invoice via PDFMonkey
 router.post('/generate', invoiceController.generateInvoice);
 

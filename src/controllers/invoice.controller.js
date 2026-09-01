@@ -1,4 +1,7 @@
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { Liquid } = require('liquidjs');
 const QRCode = require('qrcode');
 const Invoice = require('../models/invoice.model');
 const Business = require('../models/business.model');
@@ -208,111 +211,50 @@ const resolveBusinessIdFromUser = async (user) => {
  * Company fields (company_name, company_address, gstin_number) are
  * sourced from the authenticated business profile — not trusted from client.
  */
-const generateInvoice = async (req, res, next) => {
-  try {
-    const businessId = await resolveBusinessIdFromUser(req.user);
-    if (!businessId) {
-      return sendError(res, 'Unauthorized', 401);
-    }
-
-    // 1. Load business profile for company fields. If not found, do NOT fail the
-    // request — continue with blank company fields so invoice generation can
-    // still proceed (useful in development or when a user record is dangling).
-    const business = await Business.findById(businessId).lean();
-    if (!business) {
-      console.warn('[Invoice] Business profile not found for', businessId, '— proceeding with empty company fields');
-    }
-
-    const {
-      customer_name = '',
-      customer_address = '',
-      customer_phone = '',
-      customer_email = '',
-      customer_gstin = '',
-      place_of_supply = '',
-      transport = '',
-      line_items = [],
-      subtotal = 0,
-      gst_rate = 18,
-      gst_amount = 0,
-      grand_total = 0,
-      amount_in_words = '',
-      terms_and_conditions = '',
-      customer_pan = '',
-      reverse_charge = 'N',
-      gr_rr_number = '',
-      vehicle_number = '',
-      station = '',
-      shipped_to_name = '',
-      shipped_to_address = '',
-      shipped_to_gstin = '',
-      irn = '',
-      ack_number = '',
-      ack_date = '',
-      qr_code_data = '',
-    } = req.body;
-
-    // Validate required fields
-    if (!customer_name?.trim()) {
-      return sendError(res, 'customer_name is required', 400);
-    }
-    if (!Array.isArray(line_items) || line_items.length === 0) {
-      return sendError(res, 'line_items array is required and must not be empty', 400);
-    }
-    // Placed before generateInvoiceNumber so a stale or half-loaded client
-    // cannot consume an invoice number for a zero-value document.
-    if (!(Number(grand_total) > 0)) {
-      return sendError(res, 'grand_total must be greater than zero', 400);
-    }
-
-    // 2. Generate server-side invoice number (atomic, central)
-    const invoiceNumber = await generateInvoiceNumber();
-
-    // 3. Format the invoice date (server time). The printed tax invoice shows
-    // the date alone as DD-MM-YYYY — no time component.
-    const now = new Date();
-    const invoiceDate = now
-      .toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        timeZone: 'Asia/Kolkata',
-      })
-      .split('/')
-      .join('-');
-
-    // The QR code printed on the invoice resolves to this API, which then
-    // serves the stored PDF. The token has to exist before the payload is
-    // built, because the QR image is part of the document being generated.
-    // Use the token already shown in the preview when the caller reserved one,
-    // so the QR on screen and the QR on the PDF are the same code. Anything
-    // unclaimable falls back to a fresh token rather than failing the invoice.
-    const requestedToken = String(req.body?.public_token || '').trim();
-    const claimed = requestedToken
-      ? await redisService.claimInvoiceToken(requestedToken, businessId)
-      : false;
-    const publicToken = claimed ? requestedToken : crypto.randomBytes(16).toString('hex');
-    const invoiceUrl = `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`;
-    const invoiceDownloadUrl = `${invoiceUrl}?download=1`;
-
-    // Rendered here as a data URI so the PDF has no external image dependency:
-    // PDFMonkey would otherwise print an empty box if the fetch failed.
-    // This invoice's visible QR always resolves to the exact PDF generated
-    // below. Keep any IRP/e-invoice payload separately so caller-provided data
-    // can never replace the download link printed for the customer.
-    const qrPayload = invoiceDownloadUrl;
-
-    let qrCodeImage = '';
-    try {
-      qrCodeImage = await QRCode.toDataURL(qrPayload, {
-        margin: 0,
-        width: 240,
-        errorCorrectionLevel: 'M',
-      });
-    } catch (qrErr) {
-      // A missing QR must not cost the customer their invoice.
-      console.error('[Invoice] QR generation failed:', qrErr.message);
-    }
+/**
+ * Builds the payload the invoice template renders.
+ *
+ * Shared by generation and preview so the two cannot drift: the preview
+ * shows the same document the PDF is made from, rather than a lookalike
+ * maintained separately.
+ */
+const buildInvoicePayload = (body, context) => {
+  const {
+    customer_name = '',
+    customer_address = '',
+    customer_phone = '',
+    customer_email = '',
+    customer_gstin = '',
+    place_of_supply = '',
+    transport = '',
+    line_items = [],
+    subtotal = 0,
+    gst_rate = 18,
+    gst_amount = 0,
+    grand_total = 0,
+    amount_in_words = '',
+    terms_and_conditions = '',
+    customer_pan = '',
+    reverse_charge = 'N',
+    gr_rr_number = '',
+    vehicle_number = '',
+    station = '',
+    shipped_to_name = '',
+    shipped_to_address = '',
+    shipped_to_gstin = '',
+    irn = '',
+    ack_number = '',
+    ack_date = '',
+    qr_code_data = '',
+  } = body || {};
+  const {
+    business,
+    invoiceNumber,
+    invoiceDate,
+    qrCodeImage = '',
+    invoiceUrl = '',
+    invoiceDownloadUrl = '',
+  } = context;
 
     // GST is IGST across states, and CGST+SGST within the same state. The
     // supplier state comes from the GSTIN prefix; the customer's from theirs,
@@ -460,6 +402,193 @@ const generateInvoice = async (req, res, next) => {
               'Subject to Delhi Jurisdiction only.',
             ],
     };
+
+  return pdfPayload;
+};
+
+const INVOICE_TEMPLATE_PATH = path.join(__dirname, '..', '..', 'templates', 'invoice-pdfmonkey.html');
+const liquid = new Liquid();
+
+/**
+ * POST /api/v1/invoices/preview-html
+ *
+ * Renders the invoice template for on-screen preview and returns the HTML.
+ *
+ * Uses the same template file and the same payload builder as generation, so
+ * the preview is the document itself rather than a second layout that has to
+ * be kept in step by hand. Nothing is persisted: no invoice number is spent,
+ * no record written and no PDF service called.
+ */
+const previewInvoiceHtml = async (req, res, next) => {
+  try {
+    const businessId = await resolveBusinessIdFromUser(req.user);
+    if (!businessId) {
+      return sendError(res, 'Unauthorized', 401);
+    }
+
+    const business = await Business.findById(businessId).lean();
+
+    const invoiceNumber = String(req.body?.invoice_number || '').trim()
+      || (await peekNextInvoiceNumber());
+    const invoiceDate = new Date()
+      .toLocaleDateString('en-GB', {
+        day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata',
+      })
+      .split('/')
+      .join('-');
+
+    // The QR shown here is the one already reserved for this invoice, so the
+    // preview and the eventual PDF print the same code.
+    const publicToken = String(req.body?.public_token || '').trim();
+    const invoiceUrl = /^[a-f0-9]{32}$/.test(publicToken)
+      ? `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`
+      : '';
+    const invoiceDownloadUrl = invoiceUrl ? `${invoiceUrl}?download=1` : '';
+
+    let qrCodeImage = '';
+    if (invoiceDownloadUrl) {
+      try {
+        qrCodeImage = await QRCode.toDataURL(invoiceDownloadUrl, {
+          margin: 0, width: 240, errorCorrectionLevel: 'M',
+        });
+      } catch (qrErr) {
+        console.error('[Invoice] Preview QR render failed:', qrErr.message);
+      }
+    }
+
+    const payload = buildInvoicePayload(req.body, {
+      business,
+      invoiceNumber,
+      invoiceDate,
+      qrCodeImage,
+      invoiceUrl,
+      invoiceDownloadUrl,
+    });
+
+    const template = fs.readFileSync(INVOICE_TEMPLATE_PATH, 'utf8');
+    const html = await liquid.parseAndRender(template, payload);
+
+    return sendSuccess(res, { html });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const generateInvoice = async (req, res, next) => {
+  try {
+    const businessId = await resolveBusinessIdFromUser(req.user);
+    if (!businessId) {
+      return sendError(res, 'Unauthorized', 401);
+    }
+
+    // 1. Load business profile for company fields. If not found, do NOT fail the
+    // request — continue with blank company fields so invoice generation can
+    // still proceed (useful in development or when a user record is dangling).
+    const business = await Business.findById(businessId).lean();
+    if (!business) {
+      console.warn('[Invoice] Business profile not found for', businessId, '— proceeding with empty company fields');
+    }
+
+    const {
+      customer_name = '',
+      customer_address = '',
+      customer_phone = '',
+      customer_email = '',
+      customer_gstin = '',
+      place_of_supply = '',
+      transport = '',
+      line_items = [],
+      subtotal = 0,
+      gst_rate = 18,
+      gst_amount = 0,
+      grand_total = 0,
+      amount_in_words = '',
+      terms_and_conditions = '',
+      customer_pan = '',
+      reverse_charge = 'N',
+      gr_rr_number = '',
+      vehicle_number = '',
+      station = '',
+      shipped_to_name = '',
+      shipped_to_address = '',
+      shipped_to_gstin = '',
+      irn = '',
+      ack_number = '',
+      ack_date = '',
+      qr_code_data = '',
+    } = req.body;
+
+    // Validate required fields
+    if (!customer_name?.trim()) {
+      return sendError(res, 'customer_name is required', 400);
+    }
+    if (!Array.isArray(line_items) || line_items.length === 0) {
+      return sendError(res, 'line_items array is required and must not be empty', 400);
+    }
+    // Placed before generateInvoiceNumber so a stale or half-loaded client
+    // cannot consume an invoice number for a zero-value document.
+    if (!(Number(grand_total) > 0)) {
+      return sendError(res, 'grand_total must be greater than zero', 400);
+    }
+
+    // 2. Generate server-side invoice number (atomic, central)
+    const invoiceNumber = await generateInvoiceNumber();
+
+    // 3. Format the invoice date (server time). The printed tax invoice shows
+    // the date alone as DD-MM-YYYY — no time component.
+    const now = new Date();
+    const invoiceDate = now
+      .toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        timeZone: 'Asia/Kolkata',
+      })
+      .split('/')
+      .join('-');
+
+    // The QR code printed on the invoice resolves to this API, which then
+    // serves the stored PDF. The token has to exist before the payload is
+    // built, because the QR image is part of the document being generated.
+    // Use the token already shown in the preview when the caller reserved one,
+    // so the QR on screen and the QR on the PDF are the same code. Anything
+    // unclaimable falls back to a fresh token rather than failing the invoice.
+    const requestedToken = String(req.body?.public_token || '').trim();
+    const claimed = requestedToken
+      ? await redisService.claimInvoiceToken(requestedToken, businessId)
+      : false;
+    const publicToken = claimed ? requestedToken : crypto.randomBytes(16).toString('hex');
+    const invoiceUrl = `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`;
+    const invoiceDownloadUrl = `${invoiceUrl}?download=1`;
+
+    // Rendered here as a data URI so the PDF has no external image dependency:
+    // PDFMonkey would otherwise print an empty box if the fetch failed.
+    // This invoice's visible QR always resolves to the exact PDF generated
+    // below. Keep any IRP/e-invoice payload separately so caller-provided data
+    // can never replace the download link printed for the customer.
+    const qrPayload = invoiceDownloadUrl;
+
+    let qrCodeImage = '';
+    try {
+      qrCodeImage = await QRCode.toDataURL(qrPayload, {
+        margin: 0,
+        width: 240,
+        errorCorrectionLevel: 'M',
+      });
+    } catch (qrErr) {
+      // A missing QR must not cost the customer their invoice.
+      console.error('[Invoice] QR generation failed:', qrErr.message);
+    }
+
+    // 4. Build the payload the template renders (shared with preview)
+    const pdfPayload = buildInvoicePayload(req.body, {
+      business,
+      invoiceNumber,
+      invoiceDate,
+      qrCodeImage,
+      invoiceUrl,
+      invoiceDownloadUrl,
+    });
 
     // 5. Save invoice record (status: pending) before hitting PDFMonkey
     const invoice = await Invoice.create({
@@ -718,6 +847,7 @@ const getNextInvoiceNumber = async (req, res, next) => {
 };
 
 module.exports = {
+  previewInvoiceHtml,
   reserveInvoiceQr,
   generateInvoice,
   getInvoices,
