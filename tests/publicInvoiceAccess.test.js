@@ -304,7 +304,7 @@ test('an upstream failure surfaces as 502, not a truncated PDF', async () => {
   assert.equal(res.statusCode, 502);
 });
 
-test('the ordinary invoice QR requests a direct download and warms Redis', async () => {
+test('the QR requests a direct download, and Redis warms without delaying the reply', async () => {
   reset();
   const res = makeRes();
 
@@ -324,7 +324,13 @@ test('the ordinary invoice QR requests a direct download and warms Redis', async
   assert.match(state.qrPayloads[0], /^https:\/\/amitaash\.com\/api\/v1\/invoices\/p\/[a-f0-9]{32}\?download=1$/);
   assert.equal(state.generatedPdfPayloads[0].qr_code_data, state.qrPayloads[0]);
   assert.ok(!res.payload.invoiceUrl.includes('?download=1'), 'app preview URL stays inline');
-  assert.equal(state.cacheSets.length, 1, 'generated PDF should be cached before returning');
+
+  // The cache is warmed in the background: awaiting it added a full download
+  // of the PDF to every Share and Download the user waited through.
+  assert.equal(state.cacheSets.length, 0, 'the reply must not wait for the cache');
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(state.cacheSets.length, 1, 'the PDF is still cached, just afterwards');
   assert.equal(state.cacheSets[0].token, res.payload.invoiceUrl.split('/').pop());
 });
 

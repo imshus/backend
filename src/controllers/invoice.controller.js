@@ -636,16 +636,16 @@ const generateInvoice = async (req, res, next) => {
       pdfStatus: 'success',
     });
 
-    // Warm Redis before returning so the first phone that scans the printed QR
-    // can receive the PDF without a MongoDB lookup or a PDFMonkey round trip.
-    // Cache failures do not invalidate a correctly generated invoice; the
-    // public endpoint can still rebuild the cache from the durable record.
-    try {
-      const pdfBuffer = await fetchInvoicePdf(pdfResult.downloadUrl);
-      await redisService.setInvoicePdfCache(publicToken, invoiceNumber, pdfBuffer);
-    } catch (cacheErr) {
-      console.warn('[Invoice] Could not warm Redis PDF cache:', cacheErr.message);
-    }
+    // Warm Redis so the first phone that scans the printed QR gets the PDF
+    // without a PDFMonkey round trip — but do not make the user wait for it.
+    // Awaiting this added a full download of the PDF to every Share and
+    // Download. The public endpoint rebuilds the cache on a miss anyway, so a
+    // failure here costs nothing but a slower first scan.
+    void fetchInvoicePdf(pdfResult.downloadUrl)
+      .then((pdfBuffer) => redisService.setInvoicePdfCache(publicToken, invoiceNumber, pdfBuffer))
+      .catch((cacheErr) => {
+        console.warn('[Invoice] Could not warm Redis PDF cache:', cacheErr.message);
+      });
 
     return sendSuccess(res, {
       invoiceNumber,
