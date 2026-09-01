@@ -517,6 +517,9 @@ const generateInvoice = async (req, res, next) => {
       pdfUrl: pdfResult.downloadUrl,
       invoiceId: invoice._id,
       invoiceUrl,
+      // The same QR printed on the PDF, so the app can show it on screen
+      // instead of rendering a second one that could drift from it.
+      qrCodeImage,
     }, 201);
   } catch (err) {
     next(err);
