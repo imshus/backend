@@ -10,9 +10,9 @@
     parties ...... Billed to | Shipped to
     e-invoice .... IRN / Ack.No. / Ack.Date as one full-width band
     items ........ S.N. | Description of Goods | HSN/SAC Code | Qty. | Unit
-                   | Price Rate | Amount(₹)
-    totals ....... subtotal, IGST or CGST+SGST, Rounded Off, then Grand Total
-                   with the unit count
+                   | Price | Amount(₹)
+    totals ....... subtotal, GST (Delhi) or IGST, Rounded Off, then the
+                   Grand Total amount
     footer ....... amount in words, bank details, then terms | QR | signatures
 
   Optional blocks (e-invoice, bank details) collapse when the payload leaves
@@ -232,14 +232,9 @@
         </tr>
         {% if is_intra_state %}
           <tr>
-            <td class="r">Add : CGST</td>
-            <td class="c nowrap">@&nbsp;&nbsp;{{ cgst_rate_display }} %</td>
-            <td class="r nowrap">{{ cgst_amount_display }}</td>
-          </tr>
-          <tr>
-            <td class="r">Add : SGST</td>
-            <td class="c nowrap">@&nbsp;&nbsp;{{ sgst_rate_display }} %</td>
-            <td class="r nowrap">{{ sgst_amount_display }}</td>
+            <td class="r">Add : GST</td>
+            <td class="c nowrap">@&nbsp;&nbsp;{{ gst_rate_display }} %</td>
+            <td class="r nowrap">{{ gst_amount_display }}</td>
           </tr>
         {% else %}
           <tr>

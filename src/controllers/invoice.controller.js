@@ -78,9 +78,6 @@ const resolveQuantity = (item) => {
   return { value: qty, unit: item.qty_unit || '' };
 };
 
-/** True when a unit label denotes grams, in any of the spellings we accept. */
-const isGramUnit = (unit) => /^(g|gm|gms|gram|grams)\.?$/i.test(String(unit || '').trim());
-
 /** GST state codes, used to classify a supply when the buyer has no GSTIN. */
 const STATE_CODES = {
   'jammu and kashmir': '01', 'himachal pradesh': '02', punjab: '03', chandigarh: '04',
@@ -256,16 +253,13 @@ const buildInvoicePayload = (body, context) => {
     invoiceDownloadUrl = '',
   } = context;
 
-    // GST is IGST across states, and CGST+SGST within the same state. The
-    // supplier state comes from the GSTIN prefix; the customer's from theirs,
-    // falling back to the place of supply code in brackets e.g. "... (09)".
-    // Per the client's rule: a Delhi business — GSTIN beginning 07 — charges
-    // CGST + SGST, and any other business charges IGST. The buyer's own state
-    // is not consulted.
+    // Per the client's rule, Delhi is decided purely by the supplier's own
+    // GSTIN prefix: beginning "07" prints a single "GST" line, anything else
+    // prints "IGST". The buyer's state is not consulted.
     //
     // NOTE: statute splits this by supplier state vs place of supply, so a
-    // Delhi shop selling into UP should raise IGST. This rule will show
-    // CGST + SGST there instead.
+    // Delhi shop selling into UP should raise IGST. This rule prints the
+    // combined GST line there instead.
     const supplierStateCode = String(business?.gstNumber || '').trim().slice(0, 2);
     const isIntraState = supplierStateCode === '07';
 
@@ -282,24 +276,15 @@ const buildInvoicePayload = (body, context) => {
     const subtotalValue = round2(subtotal);
     const gstAmountValue = round2(gst_amount);
     const halfAmount = round2(gstAmountValue / 2);
-    const printedTax = isIntraState ? halfAmount * 2 : gstAmountValue;
+    // Delhi prints one combined "GST" line and everyone else prints "IGST", so
+    // either way a single figure is what the column has to close against.
+    const printedTax = gstAmountValue;
 
     // The printed grand total is rounded to the rupee. Rounded Off is the
     // residual against the figures actually printed above it — not against the
     // client's unrounded total — so the column always closes.
     const roundedTotal = Math.round(round2(grand_total));
     const roundedOff = round2(roundedTotal - (subtotalValue + printedTax));
-
-    // The printed "N Units" figure counts metal weight in grams only. Carats
-    // are a different dimension and must not be added into the same total, so
-    // each line is counted by the unit it actually prints.
-    const totalUnits = (Array.isArray(line_items) ? line_items : []).reduce(
-      (sum, item) => {
-        const { value, unit } = resolveQuantity(item);
-        return isGramUnit(unit) ? sum + value : sum;
-      },
-      0,
-    );
 
     // 4. Build the PDFMonkey payload exactly matching the template schema
     const pdfPayload = {
@@ -340,8 +325,9 @@ const buildInvoicePayload = (body, context) => {
       gst_amount: gstAmountValue,
       grand_total: roundedTotal,
 
-      // Tax split for the invoice footer. CGST and SGST are the same rounded
-      // half, so the two heads always agree with their printed rate.
+      // Tax split for the invoice footer. A Delhi supplier prints one combined
+      // "GST" line; everyone else prints IGST. CGST/SGST stay in the payload
+      // for any caller that files the two heads separately.
       is_intra_state: isIntraState,
       igst_rate: isIntraState ? 0 : gstRateValue,
       igst_amount: isIntraState ? 0 : gstAmountValue,
@@ -352,6 +338,7 @@ const buildInvoicePayload = (body, context) => {
       rounded_off: roundedOff,
 
       // Tax rates print to two decimals, e.g. "@ 3.00 %".
+      gst_rate_display: (isIntraState ? gstRateValue : 0).toFixed(2),
       igst_rate_display: (isIntraState ? 0 : gstRateValue).toFixed(2),
       cgst_rate_display: (isIntraState ? halfRate : 0).toFixed(2),
       sgst_rate_display: (isIntraState ? halfRate : 0).toFixed(2),
@@ -359,12 +346,12 @@ const buildInvoicePayload = (body, context) => {
       // Pre-formatted for printing; the raw numbers above stay for any caller
       // that needs to compute with them.
       subtotal_display: formatInr(subtotalValue),
+      gst_amount_display: formatInr(isIntraState ? gstAmountValue : 0),
       igst_amount_display: formatInr(isIntraState ? 0 : gstAmountValue),
       cgst_amount_display: formatInr(isIntraState ? halfAmount : 0),
       sgst_amount_display: formatInr(isIntraState ? halfAmount : 0),
       rounded_off_display: formatInr(Math.abs(roundedOff)),
       grand_total_display: formatInr(roundedTotal),
-      total_units: totalUnits.toFixed(3),
 
       // Consignment block.
       reverse_charge: reverse_charge || 'N',

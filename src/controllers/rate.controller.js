@@ -603,7 +603,7 @@ const getLabourRate = async (req, res) => {
 
 const upsertLabourRate = async (req, res) => {
   try {
-    const { chargeType, value, rupeesUnit } = req.body;
+    const { chargeType, value, rupeesUnit, weightBasis } = req.body;
     const businessId = req.user.businessId;
 
     if (!chargeType) {
@@ -632,10 +632,20 @@ const upsertLabourRate = async (req, res) => {
       });
     }
 
-    if (chargeType === 'AMOUNT' && !['Per Gram', 'Per 10 Gram'].includes(rupeesUnit)) {
+    // The edit screen charges per gram and no longer offers the choice, so an
+    // omitted unit is the per-gram default rather than a bad request.
+    const resolvedRupeesUnit = rupeesUnit || 'Per Gram';
+    if (chargeType === 'AMOUNT' && !['Per Gram', 'Per 10 Gram'].includes(resolvedRupeesUnit)) {
       return res.status(400).json({
         success: false,
         message: 'rupeesUnit must be "Per Gram" or "Per 10 Gram" when chargeType is AMOUNT',
+      });
+    }
+
+    if (weightBasis != null && !['net', 'gross'].includes(weightBasis)) {
+      return res.status(400).json({
+        success: false,
+        message: 'weightBasis must be "net" or "gross"',
       });
     }
 
@@ -656,7 +666,8 @@ const upsertLabourRate = async (req, res) => {
 
     const updateData = { chargeType, value: numericValue };
     if (chargeType === 'AMOUNT') {
-      updateData.rupeesUnit = rupeesUnit;
+      updateData.rupeesUnit = resolvedRupeesUnit;
+      updateData.weightBasis = weightBasis || 'gross';
     } else {
       updateData.$unset = { rupeesUnit: 1 };
     }

@@ -26,6 +26,13 @@ const labourRateSchema = new mongoose.Schema(
         return this.chargeType === 'AMOUNT';
       },
     },
+    // Which weight the rate is charged against. Older records predate the
+    // setting, so they keep the app's long-standing gross-weight behaviour.
+    weightBasis: {
+      type: String,
+      enum: ['net', 'gross'],
+      default: 'gross',
+    },
   },
   {
     timestamps: true,
