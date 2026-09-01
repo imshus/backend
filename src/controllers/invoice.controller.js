@@ -284,7 +284,14 @@ const generateInvoice = async (req, res, next) => {
     // The QR code printed on the invoice resolves to this API, which then
     // serves the stored PDF. The token has to exist before the payload is
     // built, because the QR image is part of the document being generated.
-    const publicToken = crypto.randomBytes(16).toString('hex');
+    // Use the token already shown in the preview when the caller reserved one,
+    // so the QR on screen and the QR on the PDF are the same code. Anything
+    // unclaimable falls back to a fresh token rather than failing the invoice.
+    const requestedToken = String(req.body?.public_token || '').trim();
+    const claimed = requestedToken
+      ? await redisService.claimInvoiceToken(requestedToken, businessId)
+      : false;
+    const publicToken = claimed ? requestedToken : crypto.randomBytes(16).toString('hex');
     const invoiceUrl = `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`;
     const invoiceDownloadUrl = `${invoiceUrl}?download=1`;
 
@@ -527,6 +534,46 @@ const generateInvoice = async (req, res, next) => {
 };
 
 /**
+ * POST /api/v1/invoices/reserve-qr
+ *
+ * Returns the token the next invoice will use, with the QR image drawn from
+ * it, so the preview can show the very code the PDF will carry. The token is
+ * held against this business for an hour; generateInvoice claims it.
+ *
+ * Reserving is deliberately server-side: letting a client choose its own token
+ * would let it pick a guessable one for its own invoices.
+ */
+const reserveInvoiceQr = async (req, res, next) => {
+  try {
+    const businessId = await resolveBusinessIdFromUser(req.user);
+    if (!businessId) {
+      return sendError(res, 'Unauthorized', 401);
+    }
+
+    const publicToken = crypto.randomBytes(16).toString('hex');
+    const invoiceUrl = `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`;
+    const downloadUrl = `${invoiceUrl}?download=1`;
+
+    let qrCodeImage = '';
+    try {
+      qrCodeImage = await QRCode.toDataURL(downloadUrl, {
+        margin: 0,
+        width: 240,
+        errorCorrectionLevel: 'M',
+      });
+    } catch (qrErr) {
+      console.error('[Invoice] QR reservation render failed:', qrErr.message);
+    }
+
+    await redisService.reserveInvoiceToken(publicToken, businessId);
+
+    return sendSuccess(res, { publicToken, invoiceUrl, qrCodeImage });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * GET /api/v1/invoices/p/:token
  *
  * Public — this is the address encoded in the invoice QR code, so it is
@@ -671,6 +718,7 @@ const getNextInvoiceNumber = async (req, res, next) => {
 };
 
 module.exports = {
+  reserveInvoiceQr,
   generateInvoice,
   getInvoices,
   getInvoice,

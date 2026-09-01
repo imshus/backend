@@ -11,6 +11,10 @@ router.get('/p/:token', invoiceController.getPublicInvoice);
 // Every other invoice route requires a valid JWT
 router.use(authenticateJWT);
 
+// POST /api/v1/invoices/reserve-qr – the token and QR the next invoice will
+// carry, so the preview shows the same code the PDF ends up printing
+router.post('/reserve-qr', invoiceController.reserveInvoiceQr);
+
 // POST /api/v1/invoices/generate  – generate PDF invoice via PDFMonkey
 router.post('/generate', invoiceController.generateInvoice);
 

@@ -38,6 +38,10 @@ function invoicePdfKey(publicToken) {
   return `invoice_pdf:${publicToken}`;
 }
 
+function invoiceTokenReservationKey(publicToken) {
+  return `invoice_token:${publicToken}`;
+}
+
 function enableMemoryFallback(reason) {
   if (!useMemoryStore) {
     useMemoryStore = true;
@@ -229,6 +233,41 @@ const getInvoicePdfCache = async (publicToken) => {
 function goldKey(businessId) {
   return `gold_rates:${businessId}`;
 }
+
+/**
+ * Holds a public invoice token that has been shown to a user but not yet
+ * spent, so the QR in the preview is the very same code the PDF ends up
+ * carrying. Bound to the business that reserved it, and short-lived because an
+ * abandoned preview should not keep one alive.
+ */
+const RESERVED_INVOICE_TOKEN_TTL = 60 * 60;
+
+const reserveInvoiceToken = async (publicToken, businessId) => {
+  if (!/^[a-f0-9]{32}$/.test(String(publicToken || ''))) {
+    throw new Error('Invalid public invoice token');
+  }
+  return runStoreOp(async (backend) => {
+    const key = invoiceTokenReservationKey(publicToken);
+    if (backend === 'memory') {
+      memoryStore.set(key, String(businessId));
+      return;
+    }
+    await redis.set(key, String(businessId), 'EX', RESERVED_INVOICE_TOKEN_TTL);
+  });
+};
+
+/** Claims a reservation, returning false unless this business made it. */
+const claimInvoiceToken = async (publicToken, businessId) => {
+  if (!/^[a-f0-9]{32}$/.test(String(publicToken || ''))) return false;
+  return runStoreOp(async (backend) => {
+    const key = invoiceTokenReservationKey(publicToken);
+    const owner = backend === 'memory' ? memoryStore.get(key) : await redis.get(key);
+    if (!owner || String(owner) !== String(businessId)) return false;
+    if (backend === 'memory') memoryStore.delete(key);
+    else await redis.del(key);
+    return true;
+  });
+};
 
 const setGoldRatesCache = async (businessId, data) => {
   return runStoreOp(async (backend) => {
@@ -451,6 +490,8 @@ module.exports = {
   updateScanStatus,
   setInvoicePdfCache,
   getInvoicePdfCache,
+  reserveInvoiceToken,
+  claimInvoiceToken,
   setGoldRatesCache,
   getGoldRatesCache,
   invalidateGoldRatesCache,
