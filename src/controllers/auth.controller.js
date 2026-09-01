@@ -55,15 +55,13 @@ const checkAvailability = async (req, res, next) => {
     const phone = String(mobile || '').replace(/\D/g, '').slice(-10);
     const normalizedUserId = String(userId || '').trim();
 
-    // A User ID is only free if no account uses it as a User ID AND no account
-    // owns it as a phone number - login would otherwise resolve it to the phone.
+    // A User ID is checked against stored User IDs only. It used to be refused
+    // when some account held it as a phone number, because login resolved a
+    // 10-digit entry to the phone first; login now matches on userId alone, so
+    // that no longer applies and the rule only blocked legitimate choices.
     const [phoneUser, userIdUser] = await Promise.all([
       /^[0-9]{10}$/.test(phone) ? BusinessUser.findOne({ phone }) : null,
-      normalizedUserId
-        ? BusinessUser.findOne({
-            $or: [{ userId: normalizedUserId }, { phone: normalizedUserId }],
-          })
-        : null,
+      normalizedUserId ? BusinessUser.findOne({ userId: normalizedUserId }) : null,
     ]);
 
     sendSuccess(res, {
