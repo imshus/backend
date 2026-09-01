@@ -229,7 +229,7 @@ const buildInvoicePayload = (body, context) => {
     transport = '',
     line_items = [],
     subtotal = 0,
-    gst_rate = 18,
+    gst_rate = 3,
     gst_amount = 0,
     grand_total = 0,
     amount_in_words = '',
@@ -259,10 +259,15 @@ const buildInvoicePayload = (body, context) => {
     // GST is IGST across states, and CGST+SGST within the same state. The
     // supplier state comes from the GSTIN prefix; the customer's from theirs,
     // falling back to the place of supply code in brackets e.g. "... (09)".
-    const supplierStateCode = String(business?.gstNumber || '').slice(0, 2);
-    const customerStateCode = resolveStateCode(customer_gstin, place_of_supply);
-    const isIntraState =
-      Boolean(supplierStateCode) && supplierStateCode === customerStateCode;
+    // Per the client's rule: a Delhi business — GSTIN beginning 07 — charges
+    // CGST + SGST, and any other business charges IGST. The buyer's own state
+    // is not consulted.
+    //
+    // NOTE: statute splits this by supplier state vs place of supply, so a
+    // Delhi shop selling into UP should raise IGST. This rule will show
+    // CGST + SGST there instead.
+    const supplierStateCode = String(business?.gstNumber || '').trim().slice(0, 2);
+    const isIntraState = supplierStateCode === '07';
 
     const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 
@@ -499,7 +504,7 @@ const generateInvoice = async (req, res, next) => {
       transport = '',
       line_items = [],
       subtotal = 0,
-      gst_rate = 18,
+      gst_rate = 3,
       gst_amount = 0,
       grand_total = 0,
       amount_in_words = '',
