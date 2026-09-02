@@ -181,6 +181,43 @@ test('calculateMRP: labour gross-weight basis and per-10g unit are respected', a
   assert.ok(approxEqual(res.body.data.finalMRP, expected));
 });
 
+test('calculateMRP: sends the preview amount before the cache write finishes', async () => {
+  setCommonMocks();
+
+  let releaseCacheWrite;
+  redisService.updateScanStatus = () => new Promise((resolve) => {
+    releaseCacheWrite = resolve;
+  });
+
+  const req = {
+    params: { scanId: 'scan-1' },
+    user: { userId: 'u1', businessId: 'b1', role: 'OWNER' },
+    body: {
+      jewelleryType: 'GOLD',
+      netWt: 10,
+      grossWt: 10,
+      purityKarat: '18K',
+      diamonds: [],
+      colorstones: [],
+      otherCharges: 0,
+      calculationMode: 'rtgs',
+    },
+  };
+  const res = mockRes();
+  let nextErr = null;
+  const controllerPromise = calculationController.calculateMRP(req, res, (err) => {
+    nextErr = err;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nextErr, null);
+  assert.equal(res.body?.success, true);
+  assert.ok(res.body.data.finalMRP > 0);
+
+  releaseCacheWrite();
+  await controllerPromise;
+});
+
 test('calculateMRP: rejects cross-user scan access', async () => {
   setCommonMocks({ scanOwnerUserId: 'user-a', scanBusinessId: 'b1' });
 

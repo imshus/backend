@@ -369,7 +369,10 @@ async function verifyPaymentAndApply({ businessId, userId, orderId, paymentId, s
     throw new Error('PAYMENT_AMOUNT_MISMATCH');
   }
 
-  if (!['captured', 'authorized'].includes(String(payment.status || '').toLowerCase())) {
+  // An authorized payment is not settled yet and can still fail or be
+  // cancelled. Only Razorpay's captured state is allowed to activate a
+  // license or add wallet credits.
+  if (String(payment.status || '').toLowerCase() !== 'captured') {
     txn.status = 'PAYMENT_PENDING';
     txn.paymentId = paymentId;
     txn.razorpaySignature = signature;

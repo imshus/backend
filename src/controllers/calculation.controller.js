@@ -78,9 +78,23 @@ const calculateMRP = async (req, res, next) => {
     } = req.body;
     
     const businessId = req.user.businessId;
+    const sessionContext = toSessionContext(req.user);
+
+    // These reads are independent. Running them together keeps the preview
+    // calculation bounded by the slowest lookup instead of their combined
+    // latency.
+    const employeePromise = req.user?.role === 'EMP'
+      ? Employee.findById(req.user.userId).select('permissions')
+      : Promise.resolve(null);
+    const [liveRatesData, globalLabour, scanResolution, employee] = await Promise.all([
+      rateCalculationService.getLiveGoldRates(businessId),
+      LabourRate.findOne({ businessId }),
+      resolveScanForCalculation(scanId, sessionContext),
+      employeePromise,
+    ]);
+    const { resolvedScanId, scan } = scanResolution;
 
     // 1. Fetch live gold rates and purity percentages for this business
-    const liveRatesData = await rateCalculationService.getLiveGoldRates(businessId);
     
     // Find the karat purity from the database rows (normalize '14K' vs '14Kt')
     const normalizedKarat = purityKarat ? purityKarat.replace(/t$/i, '').toUpperCase() : '';
@@ -98,7 +112,6 @@ const calculateMRP = async (req, res, next) => {
     }
 
     // Fetch global labour rate for this business
-    const globalLabour = await LabourRate.findOne({ businessId });
     const labourCharge = globalLabour 
       ? { type: globalLabour.chargeType, value: globalLabour.value, rupeesUnit: globalLabour.rupeesUnit } 
       : null;
@@ -181,12 +194,9 @@ const calculateMRP = async (req, res, next) => {
           : labourWeightGrams * labourRatePerUnit;
     }
 
-    const sessionContext = toSessionContext(req.user);
-    const { resolvedScanId, scan } = await resolveScanForCalculation(scanId, sessionContext);
     let resolvedMode = calculationMode || scan?.calculationMode || 'rtgs';
 
     if (req.user?.role === 'EMP') {
-      const employee = await Employee.findById(req.user.userId).select('permissions');
       if (!employee) {
         return res.status(403).json({ success: false, message: 'Unauthorized' });
       }
@@ -292,26 +302,35 @@ const calculateMRP = async (req, res, next) => {
       finalMRP
     };
 
+    // Send the amount as soon as it is calculated. Persisting the calculation
+    // is still awaited for reliability, but no longer delays the client UI.
+    sendSuccess(res, resultData);
+
     // Store in Redis
     if (resolvedScanId && scan) {
-      await redisService.updateScanStatus(resolvedScanId, scan.status, {
-        calculation: resultData,
-        calculationInputSnapshot: {
-          jewelleryType,
-          netWt: numericNetWt,
-          grossWt: numericGrossWt,
-          purityKarat,
-          customPurityPercent: hasCustomPurityPercent ? effectivePurityPercent : null,
-          diamonds,
-          colorstones,
-          otherCharges: otherChargesAmount,
+      try {
+        await redisService.updateScanStatus(resolvedScanId, scan.status, {
+          calculation: resultData,
+          calculationInputSnapshot: {
+            jewelleryType,
+            netWt: numericNetWt,
+            grossWt: numericGrossWt,
+            purityKarat,
+            customPurityPercent: hasCustomPurityPercent ? effectivePurityPercent : null,
+            diamonds,
+            colorstones,
+            otherCharges: otherChargesAmount,
+            calculationMode: resolvedMode,
+          },
           calculationMode: resolvedMode,
-        },
-        calculationMode: resolvedMode,
-      });
+        });
+      } catch (cacheError) {
+        console.warn('[MRP_CALC_CACHE_WRITE_FAILED]', {
+          scanId: resolvedScanId,
+          message: cacheError.message,
+        });
+      }
     }
-
-    sendSuccess(res, resultData);
   } catch (error) {
     next(error);
   }
