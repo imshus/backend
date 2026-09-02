@@ -26,7 +26,10 @@ const uploadFrontImage = async (req, res, next) => {
       sizeBytes: req.file.size,
     });
     
-    const updated = await scanService.saveImage(scanId, req.file.path, 'front', toSessionContext(req.user));
+    const updated = await scanService.saveImage(scanId, req.file.path, 'front', toSessionContext(req.user), {
+      speculate: String(req.body?.speculate || '') === '1',
+      businessId: req.user?.businessId,
+    });
     sendSuccess(res, { scanId: updated.scanId, status: updated.status });
   } catch (err) {
     next(err);
@@ -47,7 +50,10 @@ const uploadBackImage = async (req, res, next) => {
       sizeBytes: req.file.size,
     });
     
-    const updated = await scanService.saveImage(scanId, req.file.path, 'back', toSessionContext(req.user));
+    const updated = await scanService.saveImage(scanId, req.file.path, 'back', toSessionContext(req.user), {
+      speculate: String(req.body?.speculate || '') === '1',
+      businessId: req.user?.businessId,
+    });
     sendSuccess(res, { scanId: updated.scanId, status: updated.status });
   } catch (err) {
     next(err);

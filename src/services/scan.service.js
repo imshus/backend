@@ -64,7 +64,110 @@ const createScan = async (jewelleryType, scanType, session = {}) => {
   return scanData;
 };
 
-const saveImage = async (scanId, imagePath, type, session = {}) => {
+/**
+ * Speculative analysis.
+ *
+ * A scan's wait is the model call, and it used to start only when the user
+ * tapped Calculate, after they had already looked at the preview for a second
+ * or three. With the client's consent (a `speculate` field on the upload) the
+ * call now starts shortly after an image lands, keyed to the exact image set
+ * it saw. The analyze request collects that result when the set still
+ * matches, and runs fresh otherwise. Nothing is written to the scan and no
+ * credit is billed until the analyze request arrives, so an abandoned preview
+ * costs a model call and nothing else.
+ *
+ * The short settle delay lets a re-crop (a new upload for the same side)
+ * replace the first image before any call is made for it.
+ */
+const SPECULATIVE_ANALYSIS_ENABLED = String(process.env.SPECULATIVE_ANALYSIS || 'true').toLowerCase() !== 'false';
+const SPECULATIVE_SETTLE_MS = Number(process.env.SPECULATIVE_SETTLE_MS) || 1200;
+const SPECULATIVE_MAX_AGE_MS = 10 * 60 * 1000;
+const speculativeAnalyses = new Map();
+
+const imageSetKey = (scan, scannerSettings = {}) =>
+  `${scan.frontImagePath || ''}|${scan.backImagePath || ''}|${JSON.stringify(scannerSettings || {})}`;
+
+const dropSpeculative = (scanId) => {
+  const entry = speculativeAnalyses.get(scanId);
+  if (!entry) return;
+  if (entry.timer) clearTimeout(entry.timer);
+  speculativeAnalyses.delete(scanId);
+};
+
+const pruneSpeculative = () => {
+  const now = Date.now();
+  for (const [scanId, entry] of speculativeAnalyses) {
+    if (now - entry.createdAt > SPECULATIVE_MAX_AGE_MS) dropSpeculative(scanId);
+  }
+};
+
+const runModelForScan = async (scan, scannerSettings, businessId) => {
+  const { frontImagePath, backImagePath, jewelleryType, scanType } = scan;
+  let frontPreprocessedBase64 = null;
+  let backPreprocessedBase64 = null;
+  try {
+    const frontPromise = ocrPreprocessCache.takePreprocessed(scan.scanId, 'front', frontImagePath);
+    if (frontPromise) frontPreprocessedBase64 = await frontPromise;
+  } catch (error) {
+    frontPreprocessedBase64 = null;
+  }
+  try {
+    const backPromise = ocrPreprocessCache.takePreprocessed(scan.scanId, 'back', backImagePath);
+    if (backPromise) backPreprocessedBase64 = await backPromise;
+  } catch (error) {
+    backPreprocessedBase64 = null;
+  }
+  return openaiService.analyzeImages(
+    frontImagePath,
+    backImagePath,
+    jewelleryType,
+    scanType,
+    scannerSettings,
+    businessId,
+    { frontBase64: frontPreprocessedBase64, backBase64: backPreprocessedBase64 },
+  );
+};
+
+const scheduleSpeculativeAnalysis = (scan, businessId) => {
+  if (!SPECULATIVE_ANALYSIS_ENABLED || !scan?.scanId) return;
+  if (!scan.frontImagePath && !scan.backImagePath) return;
+  pruneSpeculative();
+  dropSpeculative(scan.scanId);
+  const key = imageSetKey(scan, {});
+  const entry = { key, promise: null, timer: null, createdAt: Date.now() };
+  entry.timer = setTimeout(() => {
+    entry.timer = null;
+    if (speculativeAnalyses.get(scan.scanId) !== entry) return;
+    console.info('[SPECULATIVE_ANALYSIS_START]', { scanId: scan.scanId });
+    entry.promise = runModelForScan(scan, {}, businessId);
+    entry.promise.catch((error) => {
+      console.warn('[SPECULATIVE_ANALYSIS_FAILED]', {
+        scanId: scan.scanId,
+        error: error?.message || String(error),
+      });
+    });
+  }, SPECULATIVE_SETTLE_MS);
+  speculativeAnalyses.set(scan.scanId, entry);
+};
+
+/** The speculative result for this exact image set, or null to run fresh. */
+const takeSpeculativeResult = async (scanId, scan, scannerSettings) => {
+  const entry = speculativeAnalyses.get(scanId);
+  if (!entry) return null;
+  dropSpeculative(scanId);
+  if (entry.key !== imageSetKey(scan, scannerSettings) || !entry.promise) {
+    return null;
+  }
+  try {
+    const result = await entry.promise;
+    console.info('[SPECULATIVE_ANALYSIS_USED]', { scanId });
+    return result;
+  } catch (error) {
+    return null;
+  }
+};
+
+const saveImage = async (scanId, imagePath, type, session = {}, options = {}) => {
   const statusMap = {
     front: 'FRONT_IMAGE_RECEIVED',
     back: 'BACK_IMAGE_RECEIVED'
@@ -77,6 +180,12 @@ const saveImage = async (scanId, imagePath, type, session = {}) => {
   });
   // Fire-and-forget: start OCR preprocessing now so /analyze can reuse the result.
   ocrPreprocessCache.warmPreprocess(scanId, type, imagePath);
+  // A new image invalidates any call made for the old set; start one for the
+  // new set if the client asked for it.
+  dropSpeculative(scanId);
+  if (options.speculate) {
+    scheduleSpeculativeAnalysis(updated, options.businessId);
+  }
   console.info('[IMAGE_UPLOAD_COMPLETE]', {
     scanId,
     side: type,
@@ -123,9 +232,9 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
   }
 
   // Call OpenAI to get structured data
-  let result;
+  let result = await takeSpeculativeResult(scanId, scan, scannerSettings);
   try {
-    result = await openaiService.analyzeImages(
+    if (!result) result = await openaiService.analyzeImages(
       frontImagePath,
       backImagePath,
       jewelleryType,
