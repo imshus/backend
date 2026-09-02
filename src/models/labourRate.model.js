@@ -31,7 +31,9 @@ const labourRateSchema = new mongoose.Schema(
     weightBasis: {
       type: String,
       enum: ['net', 'gross'],
-      default: 'gross',
+      // Net weight is the default basis; a rate saved before this field
+      // existed resolves to net rather than gross.
+      default: 'net',
     },
   },
   {
