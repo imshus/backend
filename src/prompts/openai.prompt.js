@@ -876,7 +876,7 @@ Below 70
 
 Place the field in unknownFields.
 
-Confidence applies independently to every extracted field.
+Confidence applies independently to every extracted field; it is the second element of that field's array.
 
 
 ==============================================================
@@ -1096,6 +1096,9 @@ SECTION 6: OUTPUT FORMAT
 ==============================================================
 
 Return ONLY valid JSON.
+Every field inside structuredData is a two-element array [value, confidence]:
+the value as a string ("" when not present) and the confidence as a number (0 when not present).
+Do not wrap fields in objects.
 
 {
   "provider": "openai-gpt-5.6-luna",
@@ -1106,116 +1109,53 @@ Return ONLY valid JSON.
 
   "structuredData": {
 
-    "serialNumber": {
-      "value": "",
-      "confidence": 0
-    },
+    "serialNumber": ["", 0],
 
-    "packetCode": {
-      "value": "",
-      "confidence": 0
-    },
+    "packetCode": ["", 0],
 
-    "grossWeight": {
-      "value": "",
-      "confidence": 0
-    },
+    "grossWeight": ["", 0],
 
-    "netWeight": {
-      "value": "",
-      "confidence": 0
-    },
+    "netWeight": ["", 0],
 
-    "purity": {
-      "value": "",
-      "confidence": 0
-    },
+    "purity": ["", 0],
 
-    "karat": {
-      "value": "",
-      "confidence": 0
-    },
+    "karat": ["", 0],
 
     "diamonds": [
       {
-        "shape": {
-          "value": "",
-          "confidence": 0
-        },
+        "shape": ["", 0],
 
-        "packetCode": {
-          "value": "",
-          "confidence": 0
-        },
+        "packetCode": ["", 0],
 
-        "weight": {
-          "value": "",
-          "confidence": 0
-        },
+        "weight": ["", 0],
 
-        "pieces": {
-          "value": "",
-          "confidence": 0
-        },
+        "pieces": ["", 0],
 
-        "rate": {
-          "value": "",
-          "confidence": 0
-        },
+        "rate": ["", 0],
 
-        "quality": {
-          "value": "",
-          "confidence": 0
-        },
+        "quality": ["", 0],
 
-        "color": {
-          "value": "",
-          "confidence": 0
-        },
+        "color": ["", 0],
 
-        "clarity": {
-          "value": "",
-          "confidence": 0
-        }
+        "clarity": ["", 0]
       }
     ],
 
     "colorstones": [
       {
-        "type": {
-          "value": "",
-          "confidence": 0
-        },
+        "type": ["", 0],
 
-        "weight": {
-          "value": "",
-          "confidence": 0
-        },
+        "weight": ["", 0],
 
-        "pieces": {
-          "value": "",
-          "confidence": 0
-        },
+        "pieces": ["", 0],
 
-        "rate": {
-          "value": "",
-          "confidence": 0
-        },
+        "rate": ["", 0],
 
-        "quality": {
-          "value": "",
-          "confidence": 0
-        },
+        "quality": ["", 0],
 
-        "color": {
-          "value": "",
-          "confidence": 0
-        },
+        "color": ["", 0],
 
-        "clarity": {
-          "value": "",
-          "confidence": 0
-        }
+        "clarity": ["", 0]
       }
     ]
   },

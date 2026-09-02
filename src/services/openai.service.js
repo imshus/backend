@@ -323,6 +323,41 @@ const getContextCached = (businessId) => {
   return promise;
 };
 
+/**
+ * The model answers with [value, confidence] pairs (fewer output tokens than
+ * objects, same information). Everything downstream reads { value, confidence },
+ * so restore that shape here; objects pass through untouched and a bare scalar
+ * (a lapse) becomes a zero-confidence field so it gets reviewed, not trusted.
+ */
+const toFieldObject = (field) => {
+  if (Array.isArray(field)) {
+    const [value, confidence] = field;
+    return { value: String(value ?? ''), confidence: Number(confidence) || 0 };
+  }
+  if (field && typeof field === 'object') return field;
+  if (field == null || field === '') return { value: '', confidence: 0 };
+  return { value: String(field), confidence: 0 };
+};
+
+const normalizeFieldShapes = (parsedData) => {
+  const sd = parsedData?.structuredData;
+  if (!sd || typeof sd !== 'object') return parsedData;
+  for (const key of Object.keys(sd)) {
+    if (key === 'diamonds' || key === 'colorstones') continue;
+    sd[key] = toFieldObject(sd[key]);
+  }
+  for (const group of ['diamonds', 'colorstones']) {
+    if (!Array.isArray(sd[group])) continue;
+    sd[group] = sd[group].map((stone) => {
+      if (!stone || typeof stone !== 'object' || Array.isArray(stone)) return stone;
+      const out = {};
+      for (const key of Object.keys(stone)) out[key] = toFieldObject(stone[key]);
+      return out;
+    });
+  }
+  return parsedData;
+};
+
 const analyzeImages = async (
   frontImagePath,
   backImagePath,
@@ -460,6 +495,7 @@ const analyzeImages = async (
 
     const responseText = response.choices[0].message.content;
     const parsedData = JSON.parse(responseText);
+    normalizeFieldShapes(parsedData);
 
     // Deterministic guard against separator glyphs read as digits — runs
     // before the flattening below so corrected stone weights propagate.
