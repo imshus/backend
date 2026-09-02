@@ -5,7 +5,7 @@
  *
  * Usage: node scripts/latency_test.js [imagePath] [--model=gpt-5.6-mini] [--effort=low] [--tier=priority] [--edge=1600]
  *   --model   override the OpenAI model for this run
- *   --effort  set reasoning_effort (low|medium|high)
+ *   --effort  set reasoning_effort (minimal|low|medium|high)
  *   --tier    set service_tier (e.g. priority)
  *   --edge    override OCR_MAX_EDGE_PX for this run
  * NOTE: makes ONE real OpenAI call (billed to OPENAI_API_KEY).

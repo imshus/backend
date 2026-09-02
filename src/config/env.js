@@ -75,7 +75,7 @@ module.exports = {
   openai: {
     apiKey: envVars.OPENAI_API_KEY,
     serviceTier: envVars.OPENAI_SERVICE_TIER || null,
-    reasoningEffort: envVars.OPENAI_REASONING_EFFORT || null,
+    reasoningEffort: envVars.OPENAI_REASONING_EFFORT || 'minimal',
   },
   razorpay: {
     keyId: envVars.RAZORPAY_KEY_ID,
