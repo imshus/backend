@@ -327,39 +327,47 @@ patterns.
 
 Examples
 
-PCEGSI 0.54 6400
+Read each character of the token from the image BEFORE consulting any list.
+The organization lists and the examples below never decide which letter you
+see: E/F, C/G, S/5, O/0 and I/1 are common confusions and must be resolved
+from the pixels. If a letter is genuinely unclear, keep the more likely
+reading and give that field a confidence below 70 so it is reviewed.
+The examples are illustrations only; never expect an example's letters on a
+real tag.
+
+RDGHVS1 0.30 9000
 
 Interpretation
 
-PC
+RD
 ↓
-Shape = PC
+Shape = RD
 
-EG
+GH
 ↓
-Color = EG
+Color = GH
 
-SI
+VS1
 ↓
-Clarity = SI
+Clarity = VS1
 
-0.54
+0.30
 ↓
-Diamond Weight = 0.54
+Diamond Weight = 0.30
 
-6400
+9000
 ↓
-Diamond Rate = 6400
+Diamond Rate = 9000
 
 Final
 
-shape = PC
+shape = RD
 
-color = EG
+color = GH
 
-clarity = SI
+clarity = VS1
 
-quality = EG SI
+quality = GH VS1
 
 Second example
 
