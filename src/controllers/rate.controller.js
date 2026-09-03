@@ -462,7 +462,12 @@ const lookupDiamondRate = async (req, res) => {
     if (normalizedPacketCode) {
       const packetKey = normKey(normalizedPacketCode);
       match = rows.find((row) => normKey(row.packetCode) === packetKey);
-    } else {
+    }
+    // A packet code the table does not know cannot pin a row. Fall back to
+    // colour + clarity when the tag printed them: a labour code such as
+    // LBR-850 landing in the packet-code field used to block the lookup and
+    // answer 404 although a colour/clarity row existed.
+    if (!match && trimmedColor && trimmedClarity) {
       const colorKey = normKey(trimmedColor);
       const clarityKey = normKey(trimmedClarity);
       const candidates = rows.filter(
