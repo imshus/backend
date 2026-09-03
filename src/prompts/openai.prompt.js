@@ -361,6 +361,17 @@ clarity = SI
 
 quality = EG SI
 
+Second example
+
+PCFGSI 0.54 8400
+
+Interpretation
+
+Shape = PC, Color = FG, Clarity = SI, weight = 0.54, rate = 8400.
+FG is read as FG even if the organization master list contains EG and not FG.
+A printed grade is never moved to a neighbouring grade; only a character that
+cannot be a grade character (for example S1 for SI, F6 for FG) is corrected.
+
 --------------------------------------------------
 PATTERN 2B — SEPARATOR GLYPHS ARE NEVER DIGITS
 --------------------------------------------------
@@ -1057,7 +1068,7 @@ abc_cut
 
 ABC CUT
 
-4. If the OCR result differs by only one or two visually similar characters (OCR error), match it to the closest organization master value.
+4. Correct only characters that cannot be part of a valid value (for example S1 read for SI, or 0 read for O in a packet code). A printed value that is itself a valid grade or code is never changed to a different one, even when it differs from a master value by a single visually similar character: FG stays FG when the master list has EG and no FG.
 
 Examples
 
