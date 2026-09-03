@@ -358,6 +358,71 @@ const normalizeFieldShapes = (parsedData) => {
   return parsedData;
 };
 
+
+/**
+ * Deterministic repair for compact grade tokens the model could not split.
+ *
+ * A tag printing "PCFGSI" read as "PCEFGSI" (one extra letter) made the model
+ * push the whole token into unknownFields and leave shape, colour and clarity
+ * empty, although PC and SI were plainly readable. Shape is matched from the
+ * start and clarity from the end using the organisation's lists plus the
+ * standard grades; whatever remains is the colour, kept as printed and marked
+ * low-confidence when it is not a known grade. Only empty fields are filled.
+ */
+const hasFieldValue = (field) =>
+  field && typeof field === 'object' && String(field.value ?? '').trim() !== '';
+
+const splitCompactGrade = (token, shapes, colors, clarities) => {
+  if (!token || token.length < 3) return null;
+  let rest = token;
+  let shape = '';
+  for (const candidate of [...shapes].sort((a, b) => b.length - a.length)) {
+    if (rest.startsWith(candidate) && rest.length > candidate.length) {
+      shape = candidate;
+      rest = rest.slice(candidate.length);
+      break;
+    }
+  }
+  let clarity = '';
+  for (const candidate of [...clarities].sort((a, b) => b.length - a.length)) {
+    if (rest.endsWith(candidate) && rest.length > candidate.length) {
+      clarity = candidate;
+      rest = rest.slice(0, -candidate.length);
+      break;
+    }
+  }
+  if (!shape || !clarity) return null;
+  const color = /^[A-Z]{1,3}$/.test(rest) ? rest : '';
+  return { shape, clarity, color, colorKnown: color !== '' && colors.has(color) };
+};
+
+const repairCompactGradeTokens = (parsedData, diamondCustoms) => {
+  const sd = parsedData?.structuredData;
+  if (!sd || !Array.isArray(sd.diamonds) || sd.diamonds.length === 0) return;
+  const upper = (list) => (Array.isArray(list) ? list : []).map((v) => String(v).toUpperCase());
+  const shapes = new Set([...DEFAULT_DIAMOND_SHAPES, ...upper(diamondCustoms?.shapes)]);
+  const colors = new Set([...DEFAULT_DIAMOND_COLORS, ...upper(diamondCustoms?.colors)]);
+  const clarities = new Set([...DEFAULT_DIAMOND_CLARITIES, ...upper(diamondCustoms?.clarities)]);
+  const unknown = Array.isArray(parsedData.unknownFields) ? parsedData.unknownFields : [];
+  for (const entry of unknown) {
+    const token = String(entry?.detectedValue || entry?.abbreviation || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+    const parsed = splitCompactGrade(token, shapes, colors, clarities);
+    if (!parsed) continue;
+    const target = sd.diamonds.find(
+      (d) => d && (!hasFieldValue(d.shape) || !hasFieldValue(d.color) || !hasFieldValue(d.clarity)),
+    );
+    if (!target) return;
+    if (!hasFieldValue(target.shape)) target.shape = { value: parsed.shape, confidence: 85 };
+    if (!hasFieldValue(target.clarity)) target.clarity = { value: parsed.clarity, confidence: 85 };
+    if (!hasFieldValue(target.color) && parsed.color) {
+      target.color = { value: parsed.color, confidence: parsed.colorKnown ? 85 : 55 };
+    }
+    console.info('[COMPACT_GRADE_REPAIRED]', { token, ...parsed });
+  }
+};
+
 const analyzeImages = async (
   frontImagePath,
   backImagePath,
@@ -498,6 +563,7 @@ const analyzeImages = async (
     const responseText = response.choices[0].message.content;
     const parsedData = JSON.parse(responseText);
     normalizeFieldShapes(parsedData);
+    repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
 
     // Deterministic guard against separator glyphs read as digits — runs
     // before the flattening below so corrected stone weights propagate.

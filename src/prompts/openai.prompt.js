@@ -372,6 +372,15 @@ FG is read as FG even if the organization master list contains EG and not FG.
 A printed grade is never moved to a neighbouring grade; only a character that
 cannot be a grade character (for example S1 for SI, F6 for FG) is corrected.
 
+Partial token
+
+If the middle part is not a recognisable colour (for example PCEFGSI), the
+token is still split: shape and clarity are taken from the recognisable
+ends (PC and SI) and go into their fields; the middle part goes into the
+colour field exactly as printed with confidence below 70, and the whole
+token is added to unknownFields. Never leave shape, colour and clarity all
+empty because one part of the token is doubtful.
+
 --------------------------------------------------
 PATTERN 2B — SEPARATOR GLYPHS ARE NEVER DIGITS
 --------------------------------------------------
@@ -718,10 +727,22 @@ XYZ
 Colour = XYZ
 
 -------------------------
+LABOUR / MAKING CHARGE
+-------------------------
+
+Labels such as LBR, LAB, LABOUR, LABOR, MKG, MAKING, MC followed by a number
+(for example "LBR-850", "LAB 850", "MKG 12%") are the making charge of the
+piece. Put the number exactly as printed into structuredData.labour: "850",
+or "12%" when a percent sign is printed. A labour value is NEVER a packet
+code, an identifier, a weight or a rate.
+
+-------------------------
 PACKET CODE
 -------------------------
 
 Packet codes are organisation-specific identifiers.
+A labour or making charge (LBR, LAB, MKG, MAKING, MC + number, e.g. "LBR-850")
+is never a packet code; it belongs in structuredData.labour.
 
 Detect packet codes printed anywhere on the tag.
 
@@ -909,7 +930,8 @@ ABSOLUTE RULES
 
 3a. SERIAL / IDENTIFIER LABELS ARE NEVER WEIGHTS OR RATES.
    Labels such as SR NO, ST NO, S NO, S.NO, SL NO, STYLE NO, ITEM NO, TAG NO,
-   DESIGN NO, HUID identify the item. They must NEVER go into any weight,
+   DESIGN NO, HUID identify the item. Labour labels (LBR, LAB, MKG, MAKING,
+   MC) are NOT identifiers; see LABOUR / MAKING CHARGE. They must NEVER go into any weight,
    rate, purity, or pieces field. Weights on jewellery tags are small decimal
    numbers; a 5-6 digit plain integer is an identifier, not a weight.
    The item's number goes into structuredData.serialNumber, exactly as printed
@@ -956,7 +978,7 @@ These values are provided dynamically by the backend for every scan.
 
 Use these values to recognise and format what the tag prints: matching case, spacing, punctuation and known synonyms (for example "Princess" or "PRINC" for a master shape "PC").
 
-Normalizing means writing the SAME value the way the master list spells it. A grade is never changed to a different grade: if the tag prints a colour or clarity that is not in the master list (for example the tag prints FG and the list has EF and GH), keep the printed value exactly and add it to unknownFields with the nearest master value as suggestedMeaning.
+Normalizing means writing the SAME value the way the master list spells it. A grade is never changed to a different grade: if the tag prints a colour or clarity that is not in the master list (for example the tag prints FG and the list has EF and GH), keep the printed value exactly IN ITS FIELD (for example diamonds[].color = "FG"; the field is never left empty) and ADDITIONALLY list it in unknownFields with the nearest master value as suggestedMeaning.
 
 The same applies to shapes and packet codes: the printed value stays; the master list only fixes its spelling.
 
@@ -1135,6 +1157,7 @@ Do not wrap fields in objects.
     "purity": ["", 0],
 
     "karat": ["", 0],
+    "labour": ["", 0],
 
     "diamonds": [
       {
@@ -1242,9 +1265,9 @@ CS = Colour Stone. Stone types: Red, Blue, Green, Pink, Clean.`,
 
   let dynamicSettings = '';
   if (scannerSettings?.labourChargePreference === 'PERCENTAGE') {
-    dynamicSettings += `\nCRITICAL OVERRIDE: Scanner Settings specify "Always Use Percentage". You MUST ALWAYS populate labourPercentage (and set labourChargeType="PERCENTAGE") regardless of the detected labour value (>100 or <=100). Keep labourAmount empty.\n`;
+    dynamicSettings += `\nCRITICAL OVERRIDE: Scanner Settings specify "Always Use Percentage". Write structuredData.labour as a percentage with a % sign (for example "12%") whatever the printed form.\n`;
   } else if (scannerSettings?.labourChargePreference === 'AMOUNT') {
-    dynamicSettings += `\nCRITICAL OVERRIDE: Scanner Settings specify "Always Use Amount". You MUST ALWAYS populate labourAmount (and set labourChargeType="AMOUNT") regardless of the detected labour value (>100 or <=100). Keep labourPercentage empty.\n`;
+    dynamicSettings += `\nCRITICAL OVERRIDE: Scanner Settings specify "Always Use Amount". Write structuredData.labour as a plain amount without a % sign (for example "850") whatever the printed form.\n`;
   }
 
   return `Analyse the provided jewellery tag image(s).
