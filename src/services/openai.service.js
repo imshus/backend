@@ -393,14 +393,16 @@ const analyzeImages = async (
   if (frontBase64) {
     userContent.push({
       type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${frontBase64}` },
+      // Always full-resolution tiles: with 'auto' a small cropped tag can be
+      // processed as a 512px thumbnail, which blurs the digits.
+      image_url: { url: `data:image/jpeg;base64,${frontBase64}`, detail: 'high' },
     });
   }
 
   if (backBase64) {
     userContent.push({
       type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${backBase64}` },
+      image_url: { url: `data:image/jpeg;base64,${backBase64}`, detail: 'high' },
     });
   }
 

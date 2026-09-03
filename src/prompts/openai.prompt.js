@@ -909,10 +909,14 @@ ABSOLUTE RULES
 
 3a. SERIAL / IDENTIFIER LABELS ARE NEVER WEIGHTS OR RATES.
    Labels such as SR NO, ST NO, S NO, S.NO, SL NO, STYLE NO, ITEM NO, TAG NO,
-   HUID identify the item. Their values (e.g. 261440, GR10286) must go into
-   unknownFields as { "label": "SR NO", "value": "261440" } — NEVER into any
-   weight, rate, purity, or pieces field. Weights on jewellery tags are small
-   decimal numbers; a 5-6 digit plain integer is an identifier, not a weight.
+   DESIGN NO, HUID identify the item. They must NEVER go into any weight,
+   rate, purity, or pieces field. Weights on jewellery tags are small decimal
+   numbers; a 5-6 digit plain integer is an identifier, not a weight.
+   The item's number goes into structuredData.serialNumber, exactly as printed
+   (letters included, e.g. GR10286). When a tag prints more than one identifier,
+   choose in this order: ITEM NO, STYLE NO, DESIGN NO, ST NO, TAG NO, then
+   SR NO / S NO / SL NO. Put every other identifier (and HUID) into
+   unknownFields as { "label": "SR NO", "value": "261440" }.
 
 4. NEVER convert purity values.
    Examples:
