@@ -612,40 +612,51 @@ const generateInvoice = async (req, res, next) => {
       publicToken,
     });
 
-    // 6. Call PDFMonkey synchronous endpoint
+    // 6. Answer now; render the PDF in the background.
+    //
+    // The PDFMonkey render was the slow part of every Share, Download, Email
+    // and Print, and nothing in the response depends on it: the durable
+    // invoiceUrl answers 409 until the PDF exists and the app polls that,
+    // and the app can print its own copy from the same template meanwhile.
+    // The record already holds the number, so nothing can drift.
     const pdfFilename = `${invoiceNumber}-${(customer_name || 'customer').replace(/\s+/g, '-')}.pdf`;
-    let pdfResult;
-    try {
-      pdfResult = await generateInvoicePdf(pdfPayload, pdfFilename);
-    } catch (pdfErr) {
-      // Mark as failed in DB but don't crash — return meaningful error
-      await Invoice.findByIdAndUpdate(invoice._id, { pdfStatus: 'failure' });
-      console.error('[Invoice] PDFMonkey generation failed:', pdfErr.message);
-      return sendError(res, `PDF generation failed: ${pdfErr.message}`, 502);
-    }
-
-    // 7. Update invoice record with PDF URL
-    await Invoice.findByIdAndUpdate(invoice._id, {
-      pdfUrl: pdfResult.downloadUrl,
-      pdfMonkeyDocId: pdfResult.docId,
-      pdfStatus: 'success',
+    setImmediate(async () => {
+      let pdfResult;
+      try {
+        pdfResult = await generateInvoicePdf(pdfPayload, pdfFilename);
+      } catch (pdfErr) {
+        console.error('[Invoice] PDFMonkey generation failed:', pdfErr.message);
+        try {
+          await Invoice.findByIdAndUpdate(invoice._id, { pdfStatus: 'failure' });
+        } catch (updateErr) {
+          console.error('[Invoice] Could not mark PDF failure:', updateErr.message);
+        }
+        return;
+      }
+      try {
+        await Invoice.findByIdAndUpdate(invoice._id, {
+          pdfUrl: pdfResult.downloadUrl,
+          pdfMonkeyDocId: pdfResult.docId,
+          pdfStatus: 'success',
+        });
+      } catch (updateErr) {
+        console.error('[Invoice] Could not record the PDF URL:', updateErr.message);
+        return;
+      }
+      // Warm Redis so the first phone that scans the printed QR gets the PDF
+      // without a PDFMonkey round trip.
+      void fetchInvoicePdf(pdfResult.downloadUrl)
+        .then((pdfBuffer) => redisService.setInvoicePdfCache(publicToken, invoiceNumber, pdfBuffer))
+        .catch((cacheErr) => {
+          console.warn('[Invoice] Could not warm Redis PDF cache:', cacheErr.message);
+        });
     });
-
-    // Warm Redis so the first phone that scans the printed QR gets the PDF
-    // without a PDFMonkey round trip — but do not make the user wait for it.
-    // Awaiting this added a full download of the PDF to every Share and
-    // Download. The public endpoint rebuilds the cache on a miss anyway, so a
-    // failure here costs nothing but a slower first scan.
-    void fetchInvoicePdf(pdfResult.downloadUrl)
-      .then((pdfBuffer) => redisService.setInvoicePdfCache(publicToken, invoiceNumber, pdfBuffer))
-      .catch((cacheErr) => {
-        console.warn('[Invoice] Could not warm Redis PDF cache:', cacheErr.message);
-      });
 
     return sendSuccess(res, {
       invoiceNumber,
       invoiceDate,
-      pdfUrl: pdfResult.downloadUrl,
+      // The signed PDFMonkey link does not exist yet; the app uses invoiceUrl.
+      pdfUrl: '',
       invoiceId: invoice._id,
       invoiceUrl,
       // The same QR printed on the PDF, so the app can show it on screen
@@ -734,6 +745,9 @@ const getPublicInvoice = async (req, res, next) => {
 
     if (!invoice) {
       return sendError(res, 'Invoice not found', 404);
+    }
+    if (invoice.pdfStatus === 'failure') {
+      return sendError(res, 'This invoice could not be rendered', 502);
     }
     if (invoice.pdfStatus !== 'success') {
       return sendError(res, 'This invoice is still being prepared', 409);
