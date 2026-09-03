@@ -3,7 +3,25 @@ const assert = require('node:assert/strict');
 
 const { _internal } = require('../src/services/openai.service');
 
-const { reconcileStoneWeightsWithGrossNet, normalizeFieldShapes, buildReadContent } = _internal;
+const { reconcileStoneWeightsWithGrossNet, normalizeFieldShapes, buildReadContent, syncStoneQuality } = _internal;
+
+test('quality is rebuilt from colour and clarity after they change', () => {
+  const data = {
+    structuredData: {
+      diamonds: [
+        { color: { value: 'FG', confidence: 85 }, clarity: { value: 'SI', confidence: 92 }, quality: { value: 'EG SI', confidence: 90 } },
+        { color: { value: '', confidence: 0 }, clarity: { value: 'VS1', confidence: 88 }, quality: { value: '', confidence: 0 } },
+        { weight: { value: '0.10', confidence: 90 } },
+      ],
+      colorstones: [{ color: { value: 'Red', confidence: 80 }, clarity: { value: '', confidence: 0 } }],
+    },
+  };
+  syncStoneQuality(data);
+  assert.deepEqual(data.structuredData.diamonds[0].quality, { value: 'FG SI', confidence: 85 });
+  assert.deepEqual(data.structuredData.diamonds[1].quality, { value: 'VS1', confidence: 88 });
+  assert.equal(data.structuredData.diamonds[2].quality, undefined);
+  assert.deepEqual(data.structuredData.colorstones[0].quality, { value: 'Red', confidence: 80 });
+});
 
 const field = (value, confidence = 95) => ({ value, confidence });
 

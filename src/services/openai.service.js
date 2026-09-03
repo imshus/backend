@@ -440,6 +440,30 @@ const reconcileStoneWeightsWithGrossNet = (parsedData) => {
   }
 };
 
+/**
+ * quality = colour + clarity, always. The model writes all three, and a
+ * consensus or repair can change the colour or the clarity afterwards, which
+ * would leave a quality string that names a grade the row no longer has.
+ * The combined string is derived from the two parts it is made of, at the
+ * lower of their confidences, so nothing downstream reads a stale one.
+ */
+const syncStoneQuality = (parsedData) => {
+  const sd = parsedData?.structuredData;
+  if (!sd) return;
+  for (const group of ['diamonds', 'colorstones']) {
+    if (!Array.isArray(sd[group])) continue;
+    for (const stone of sd[group]) {
+      if (!stone || typeof stone !== 'object') continue;
+      const color = hasFieldValue(stone.color) ? String(stone.color.value).trim() : '';
+      const clarity = hasFieldValue(stone.clarity) ? String(stone.clarity.value).trim() : '';
+      if (!color && !clarity) continue;
+      const parts = [stone.color, stone.clarity].filter(hasFieldValue);
+      const confidence = Math.min(...parts.map((field) => Number(field.confidence) || 0));
+      stone.quality = { value: [color, clarity].filter(Boolean).join(' '), confidence };
+    }
+  }
+};
+
 // Model selection and speed knobs. process.env first so scripts/latency_test.js
 // --model/--tier/--effort still override the .env config.
 const resolveModelSettings = () => ({
@@ -702,6 +726,7 @@ const analyzeImages = async (
 
     repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
     reconcileStoneWeightsWithGrossNet(parsedData);
+    syncStoneQuality(parsedData);
 
     // Deterministic guard against separator glyphs read as digits — runs
     // before the flattening below so corrected stone weights propagate.
@@ -817,6 +842,7 @@ module.exports = {
     normalizeFieldShapes,
     repairCompactGradeTokens,
     reconcileStoneWeightsWithGrossNet,
+    syncStoneQuality,
     correctSeparatorMisreads,
     buildReadContent,
     buildAdjudicationContent,
