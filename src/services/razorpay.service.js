@@ -44,6 +44,9 @@ function verifyPaymentSignature({ orderId, paymentId, signature }) {
 }
 
 function verifyWebhookSignature({ rawBody, signature, webhookSecret }) {
+  if (!webhookSecret && !config.razorpay.webhookSecret) {
+    console.warn('[WEBHOOK_SECRET_MISSING] RAZORPAY_WEBHOOK_SECRET is not set; webhooks are checked against the key secret, which only matches if the dashboard webhook secret equals it.');
+  }
   const secret = webhookSecret || config.razorpay.webhookSecret || config.razorpay.keySecret;
   const expectedSignature = crypto
     .createHmac('sha256', secret)
