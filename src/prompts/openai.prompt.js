@@ -945,6 +945,15 @@ ABSOLUTE RULES
    SR NO / S NO / SL NO. Put every other identifier (and HUID) into
    unknownFields as { "label": "SR NO", "value": "261440" }.
 
+3b. WEIGHTS CROSS-CHECK EACH OTHER.
+   Net weight = gross weight - 0.2 g per carat of stones. After reading the
+   weights, check them against this identity. If a stone weight contradicts
+   it while a reading with a different leading digit or decimal position
+   fits (for example .54 where 5.54 was first read, with gross 8.208 and
+   net 8.100), report the consistent reading and give it confidence below
+   80. Stone weights under 1 ct are often printed with a leading dot and no
+   zero; never turn that dot into a digit.
+
 4. NEVER convert purity values.
    Examples:
    - Do NOT convert 750 → 18K

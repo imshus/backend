@@ -423,6 +423,69 @@ const repairCompactGradeTokens = (parsedData, diamondCustoms) => {
   }
 };
 
+
+/**
+ * Weight identity check. A jewellery tag's net weight is its gross weight
+ * minus the stones at 0.2 g per carat, so gross - net fixes the total stone
+ * carats. When a single stone weight was read and contradicts that total
+ * while a digit-level variant of the reading (a dropped leading digit, a
+ * shifted decimal point) matches it closely, the variant is taken and the
+ * field marked for review. A reading that already fits, or a tag without
+ * both weights, is never touched. This is arithmetic the tag provides, not a
+ * rule about any particular tag.
+ */
+const parseWeightNumber = (field) => {
+  const text = String(field?.value ?? '').replace(/[^0-9.]/g, '');
+  if (!text) return null;
+  const num = Number(text);
+  return Number.isFinite(num) && num > 0 ? num : null;
+};
+
+const weightVariants = (raw) => {
+  const text = String(raw ?? '').replace(/[^0-9.]/g, '');
+  const num = Number(text);
+  if (!text || !Number.isFinite(num)) return [];
+  const out = new Set();
+  const [intPart = '', fracPart = ''] = text.split('.');
+  if (intPart.length >= 1 && (intPart.length > 1 || fracPart)) {
+    out.add(`0.${intPart.slice(1)}${fracPart}`.replace(/^0\.$/, ''));      // dropped leading digit
+    out.add(`${intPart.slice(1) || '0'}.${fracPart}`);                       // dropped leading digit, keep point
+  }
+  out.add(String(num / 10));
+  out.add(String(num / 100));
+  out.add(String(num * 10));
+  return [...out].map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0);
+};
+
+const reconcileStoneWeightWithGrossNet = (parsedData) => {
+  const sd = parsedData?.structuredData;
+  if (!sd) return;
+  const gross = parseWeightNumber(sd.grossWeight);
+  const net = parseWeightNumber(sd.netWeight);
+  if (gross == null || net == null || gross <= net) return;
+  const expectedCarats = (gross - net) / 0.2;
+  const stones = []
+    .concat(Array.isArray(sd.diamonds) ? sd.diamonds : [])
+    .concat(Array.isArray(sd.colorstones) ? sd.colorstones : [])
+    .filter((stone) => stone && parseWeightNumber(stone.weight) != null);
+  if (stones.length !== 1) return; // several stones: the split is unknown, leave it
+  const stone = stones[0];
+  const read = parseWeightNumber(stone.weight);
+  const relative = Math.abs(read - expectedCarats) / expectedCarats;
+  if (relative <= 0.05) return; // consistent with the tag's own arithmetic
+  const fit = weightVariants(stone.weight.value).find(
+    (candidate) => Math.abs(candidate - expectedCarats) / expectedCarats <= 0.03,
+  );
+  if (fit != null) {
+    console.info('[STONE_WEIGHT_RECONCILED]', { read, expectedCarats, corrected: fit, gross, net });
+    stone.weight = { value: String(fit), confidence: Math.min(Number(stone.weight.confidence) || 0, 75) };
+    return;
+  }
+  // No variant fits: keep the reading but make sure it is reviewed.
+  console.info('[STONE_WEIGHT_INCONSISTENT]', { read, expectedCarats, gross, net });
+  stone.weight = { value: stone.weight.value, confidence: Math.min(Number(stone.weight.confidence) || 0, 55) };
+};
+
 const analyzeImages = async (
   frontImagePath,
   backImagePath,
@@ -564,6 +627,7 @@ const analyzeImages = async (
     const parsedData = JSON.parse(responseText);
     normalizeFieldShapes(parsedData);
     repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
+    reconcileStoneWeightWithGrossNet(parsedData);
 
     // Deterministic guard against separator glyphs read as digits — runs
     // before the flattening below so corrected stone weights propagate.
