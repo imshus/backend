@@ -939,11 +939,11 @@ The following master data belongs ONLY to the current organization.
 
 These values are provided dynamically by the backend for every scan.
 
-Use these values as the HIGHEST PRIORITY reference when extracting Shape, Packet Code, Diamond Color, Diamond Clarity and Colour Stone information.
+Use these values to recognise and format what the tag prints: matching case, spacing, punctuation and known synonyms (for example "Princess" or "PRINC" for a master shape "PC").
 
-If an extracted value closely matches one of these master values, normalize it to the corresponding master value.
+Normalizing means writing the SAME value the way the master list spells it. A grade is never changed to a different grade: if the tag prints a colour or clarity that is not in the master list (for example the tag prints FG and the list has EF and GH), keep the printed value exactly and add it to unknownFields with the nearest master value as suggestedMeaning.
 
-If no close match exists, preserve the original OCR text exactly as printed.
+The same applies to shapes and packet codes: the printed value stays; the master list only fixes its spelling.
 
 Never invent new master values.
 
@@ -1079,11 +1079,11 @@ RDD
 
 RD
 
-5. If multiple organization values are possible, select the closest visible match.
+5. If several organization values could apply, choose only when the printed text itself decides it; never pick a neighbouring grade.
 
 6. If no confident match exists, preserve the OCR value exactly as detected.
 
-7. Never replace a visible value with another organization value unless there is a high-confidence match.
+7. Never replace a visible value with a different organization value. Matching spelling and format of the same value is allowed; choosing a nearby value is not.
 
 8. Never hallucinate packet codes, shapes, colors or clarities that are not visible.
 
