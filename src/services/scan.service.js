@@ -103,20 +103,7 @@ const pruneSpeculative = () => {
 
 const runModelForScan = async (scan, scannerSettings, businessId) => {
   const { frontImagePath, backImagePath, jewelleryType, scanType } = scan;
-  let frontPreprocessedBase64 = null;
-  let backPreprocessedBase64 = null;
-  try {
-    const frontPromise = ocrPreprocessCache.takePreprocessed(scan.scanId, 'front', frontImagePath);
-    if (frontPromise) frontPreprocessedBase64 = await frontPromise;
-  } catch (error) {
-    frontPreprocessedBase64 = null;
-  }
-  try {
-    const backPromise = ocrPreprocessCache.takePreprocessed(scan.scanId, 'back', backImagePath);
-    if (backPromise) backPreprocessedBase64 = await backPromise;
-  } catch (error) {
-    backPreprocessedBase64 = null;
-  }
+  const views = await takePreparedViews(scan.scanId, frontImagePath, backImagePath);
   return openaiService.analyzeImages(
     frontImagePath,
     backImagePath,
@@ -124,8 +111,28 @@ const runModelForScan = async (scan, scannerSettings, businessId) => {
     scanType,
     scannerSettings,
     businessId,
-    { frontBase64: frontPreprocessedBase64, backBase64: backPreprocessedBase64 },
+    views,
   );
+};
+
+/**
+ * Image views prepared at upload time for this scan's exact files, or null
+ * per side; any failure degrades to on-demand preparation inside analyzeImages.
+ */
+const takePreparedViews = async (scanId, frontImagePath, backImagePath) => {
+  const take = async (side, filePath) => {
+    try {
+      const promise = ocrPreprocessCache.takePreprocessed(scanId, side, filePath);
+      return promise ? await promise : null;
+    } catch (error) {
+      return null;
+    }
+  };
+  const [frontViews, backViews] = await Promise.all([
+    take('front', frontImagePath),
+    take('back', backImagePath),
+  ]);
+  return { frontViews, backViews };
 };
 
 const scheduleSpeculativeAnalysis = (scan, businessId) => {
@@ -213,23 +220,9 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
     hasFrontImage: Boolean(frontImagePath),
     hasBackImage: Boolean(backImagePath),
   });
-  // Reuse upload-time preprocessed images when available; entries only match
-  // the exact file path of this scan's stored upload, and any failure here
-  // degrades to the on-demand preprocessing inside analyzeImages.
-  let frontPreprocessedBase64 = null;
-  let backPreprocessedBase64 = null;
-  try {
-    const frontPromise = ocrPreprocessCache.takePreprocessed(scanId, 'front', frontImagePath);
-    if (frontPromise) frontPreprocessedBase64 = await frontPromise;
-  } catch (error) {
-    frontPreprocessedBase64 = null;
-  }
-  try {
-    const backPromise = ocrPreprocessCache.takePreprocessed(scanId, 'back', backImagePath);
-    if (backPromise) backPreprocessedBase64 = await backPromise;
-  } catch (error) {
-    backPreprocessedBase64 = null;
-  }
+  // Reuse upload-time image views when available; entries only match the
+  // exact file path of this scan's stored upload.
+  const views = await takePreparedViews(scanId, frontImagePath, backImagePath);
 
   // Call OpenAI to get structured data
   let result = await takeSpeculativeResult(scanId, scan, scannerSettings);
@@ -241,10 +234,7 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
       scanType,
       scannerSettings,
       businessId,
-      {
-        frontBase64: frontPreprocessedBase64,
-        backBase64: backPreprocessedBase64,
-      },
+      views,
     );
   } catch (error) {
     console.error('[OCR_ANALYSIS_FAILED]', {

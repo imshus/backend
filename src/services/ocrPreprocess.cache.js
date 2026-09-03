@@ -1,25 +1,25 @@
-const { processImageToBase64 } = require('./openai.service');
+const { prepareImageViews } = require('./ocrViews');
 
 /**
- * Upload-time OCR preprocessing cache.
+ * Upload-time image view cache.
  *
- * When an image upload lands, sharp preprocessing starts immediately so the
- * /analyze call can reuse the result instead of paying that cost on its
- * critical path.
+ * When an image upload lands, the decode and the magnified parts are produced
+ * immediately so the /analyze call (or the speculative call) can reuse them
+ * instead of paying that cost on its critical path.
  *
  * Correctness guarantees:
  *  - Entries are keyed by scanId:side AND verified against the exact filePath
  *    stored at warm time — a re-uploaded (different) file never matches.
  *  - warmPreprocess REPLACES any existing entry for the key, so a re-upload
- *    of the same side always supersedes the old preprocessed result.
+ *    of the same side always supersedes the old result.
  *  - takePreprocessed is single-use (the entry is deleted on take).
  *  - Any warm failure deletes the entry; analyze falls back to on-demand
- *    preprocessing from the file on disk — identical output either way.
+ *    preparation from the file on disk — identical output either way.
  */
 
 const MAX_ENTRY_AGE_MS = 30 * 60 * 1000;
 
-/** @type {Map<string, { promise: Promise<string>, filePath: string, createdAt: number }>} */
+/** @type {Map<string, { promise: Promise<object>, filePath: string, createdAt: number }>} */
 const entries = new Map();
 
 const keyFor = (scanId, side) => `${scanId}:${side}`;
@@ -38,7 +38,7 @@ const warmPreprocess = (scanId, side, filePath) => {
   pruneStale();
 
   const key = keyFor(scanId, side);
-  const promise = processImageToBase64(filePath);
+  const promise = prepareImageViews(filePath);
   entries.set(key, { promise, filePath, createdAt: Date.now() });
 
   promise.catch((error) => {

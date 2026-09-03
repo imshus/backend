@@ -1,10 +1,11 @@
 const OpenAI = require('openai');
 const { Agent, fetch: undiciFetch } = require('undici');
-const sharp = require('sharp');
 const config = require('../config/env');
 const fs = require('fs');
 const { getSystemPrompt, getUserPrompt } = require('../prompts/openai.prompt');
 const { getPromptCustomizations } = require('./redis.service');
+const { prepareImageViews } = require('./ocrViews');
+const { compareReads, applyAdjudication, describeDisagreements } = require('./ocrConsensus');
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 
@@ -142,74 +143,6 @@ const mergeCustomizations = (base, extra) => {
   (extra.packetCodes ?? []).forEach((value) => addUnique(merged.packetCodes, value));
 
   return merged;
-};
-
-// Normalize orientation and conditionally downscale for consistent OCR across devices.
-const processImageToBase64 = async (filePath) => {
-  const image = sharp(filePath, { failOn: 'none' });
-  const metadata = await image.metadata();
-  const originalWidth = metadata.width || 0;
-  const originalHeight = metadata.height || 0;
-  const originalFormat = metadata.format || 'unknown';
-
-  const maxEdgePx = config.ocr?.maxEdgePx || 2200;
-  const jpegQuality = config.ocr?.jpegQuality || 82;
-  const shouldResize = originalWidth > maxEdgePx || originalHeight > maxEdgePx;
-
-  // Passthrough: an already-JPEG image with no EXIF rotation, within the edge
-  // budget and a modest byte size gains nothing from re-encoding (OpenAI
-  // rescales internally anyway) — skip sharp and send the file as-is.
-  const orientation = metadata.orientation;
-  if (
-    originalFormat === 'jpeg' &&
-    (orientation === undefined || orientation === 1) &&
-    !shouldResize
-  ) {
-    const { size: fileBytes } = await fs.promises.stat(filePath);
-    if (fileBytes <= 1.5 * 1024 * 1024) {
-      const raw = await fs.promises.readFile(filePath);
-      console.info('[OCR_IMAGE_PREPROCESS]', {
-        filePath,
-        originalFormat,
-        originalWidth,
-        originalHeight,
-        outputBytes: raw.length,
-        maxEdgePx,
-        jpegQuality,
-        resized: false,
-        passthrough: true,
-      });
-      return raw.toString('base64');
-    }
-  }
-
-  let pipeline = image.rotate();
-  if (shouldResize) {
-    pipeline = pipeline.resize({
-      width: maxEdgePx,
-      height: maxEdgePx,
-      fit: 'inside',
-      withoutEnlargement: true,
-      fastShrinkOnLoad: true,
-    });
-  }
-
-  const compressedBuffer = await pipeline
-    .jpeg({ quality: jpegQuality, mozjpeg: true })
-    .toBuffer();
-
-  console.info('[OCR_IMAGE_PREPROCESS]', {
-    filePath,
-    originalFormat,
-    originalWidth,
-    originalHeight,
-    outputBytes: compressedBuffer.length,
-    maxEdgePx,
-    jpegQuality,
-    resized: shouldResize,
-  });
-
-  return compressedBuffer.toString('base64');
 };
 
 // Deterministic post-correction for the separator-misread class:
@@ -427,11 +360,11 @@ const repairCompactGradeTokens = (parsedData, diamondCustoms) => {
 /**
  * Weight identity check. A jewellery tag's net weight is its gross weight
  * minus the stones at 0.2 g per carat, so gross - net fixes the total stone
- * carats. When a single stone weight was read and contradicts that total
- * while a digit-level variant of the reading (a dropped leading digit, a
- * shifted decimal point) matches it closely, the variant is taken and the
- * field marked for review. A reading that already fits, or a tag without
- * both weights, is never touched. This is arithmetic the tag provides, not a
+ * carats. When the stone weights read contradict that total while a
+ * digit-level variant of exactly one of them (a dropped leading digit, a
+ * shifted decimal point) makes the total fit, that variant is taken and the
+ * field marked for review. Readings that already fit, or a tag without both
+ * weights, are never touched. This is arithmetic the tag provides, not a
  * rule about any particular tag.
  */
 const parseWeightNumber = (field) => {
@@ -457,34 +390,196 @@ const weightVariants = (raw) => {
   return [...out].map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0);
 };
 
-const reconcileStoneWeightWithGrossNet = (parsedData) => {
+const reconcileStoneWeightsWithGrossNet = (parsedData) => {
   const sd = parsedData?.structuredData;
   if (!sd) return;
   const gross = parseWeightNumber(sd.grossWeight);
   const net = parseWeightNumber(sd.netWeight);
   if (gross == null || net == null || gross <= net) return;
   const expectedCarats = (gross - net) / 0.2;
-  const stones = []
-    .concat(Array.isArray(sd.diamonds) ? sd.diamonds : [])
-    .concat(Array.isArray(sd.colorstones) ? sd.colorstones : [])
-    .filter((stone) => stone && parseWeightNumber(stone.weight) != null);
-  if (stones.length !== 1) return; // several stones: the split is unknown, leave it
-  const stone = stones[0];
-  const read = parseWeightNumber(stone.weight);
-  const relative = Math.abs(read - expectedCarats) / expectedCarats;
-  if (relative <= 0.05) return; // consistent with the tag's own arithmetic
-  const fit = weightVariants(stone.weight.value).find(
-    (candidate) => Math.abs(candidate - expectedCarats) / expectedCarats <= 0.03,
-  );
-  if (fit != null) {
-    console.info('[STONE_WEIGHT_RECONCILED]', { read, expectedCarats, corrected: fit, gross, net });
-    stone.weight = { value: String(fit), confidence: Math.min(Number(stone.weight.confidence) || 0, 75) };
+  const withWeight = (list) =>
+    (Array.isArray(list) ? list : []).filter((stone) => stone && parseWeightNumber(stone.weight) != null);
+  const diamonds = withWeight(sd.diamonds);
+  const colorstones = withWeight(sd.colorstones);
+  const stones = diamonds.concat(colorstones);
+  if (stones.length === 0) return;
+  const total = (list) => list.reduce((sum, stone) => sum + parseWeightNumber(stone.weight), 0);
+  const fits = (value, tolerance) => Math.abs(value - expectedCarats) / expectedCarats <= tolerance;
+  if (fits(total(stones), 0.05)) return; // consistent with the tag's own arithmetic
+
+  // Exactly one stone whose digit-level variant makes the total fit is a
+  // misread; two candidates would be a guess, so then nothing changes.
+  const candidates = [];
+  stones.forEach((stone, index) => {
+    const others = total(stones) - parseWeightNumber(stone.weight);
+    const variant = weightVariants(stone.weight.value).find((candidate) => fits(others + candidate, 0.03));
+    if (variant != null) candidates.push({ index, variant });
+  });
+  if (candidates.length === 1) {
+    const { index, variant } = candidates[0];
+    const stone = stones[index];
+    console.info('[STONE_WEIGHT_RECONCILED]', {
+      read: parseWeightNumber(stone.weight),
+      expectedCarats,
+      corrected: variant,
+      gross,
+      net,
+      stones: stones.length,
+    });
+    stone.weight = { value: String(variant), confidence: Math.min(Number(stone.weight.confidence) || 0, 75) };
     return;
   }
-  // No variant fits: keep the reading but make sure it is reviewed.
-  console.info('[STONE_WEIGHT_INCONSISTENT]', { read, expectedCarats, gross, net });
-  stone.weight = { value: stone.weight.value, confidence: Math.min(Number(stone.weight.confidence) || 0, 55) };
+  // No single repair explains the tag. Colour-stone weights are sometimes
+  // printed in grams, which breaks the identity legitimately, so only a tag
+  // carrying diamonds alone has its stone weights marked for review.
+  if (colorstones.length === 0) {
+    console.info('[STONE_WEIGHT_INCONSISTENT]', { total: total(stones), expectedCarats, gross, net, stones: stones.length });
+    for (const stone of stones) {
+      stone.weight = { value: stone.weight.value, confidence: Math.min(Number(stone.weight.confidence) || 0, 55) };
+    }
+  }
 };
+
+// Model selection and speed knobs. process.env first so scripts/latency_test.js
+// --model/--tier/--effort still override the .env config.
+const resolveModelSettings = () => ({
+  model: process.env.OPENAI_MODEL || 'gpt-5.6-luna',
+  serviceTier: process.env.OPENAI_SERVICE_TIER || config.openai.serviceTier,
+  reasoningEffort: process.env.OPENAI_REASONING_EFFORT || config.openai.reasoningEffort,
+});
+
+// Reasoning tokens count against max_completion_tokens. The JSON answer is
+// under a thousand tokens; the rest is headroom so a low or medium effort
+// read is never cut off in the middle of its JSON.
+const READ_MAX_COMPLETION_TOKENS = 6000;
+const ADJUDICATION_MAX_COMPLETION_TOKENS = 3000;
+
+/**
+ * One JSON-mode call. Optional speed params (service_tier / prompt_cache_key /
+ * reasoning_effort) can be rejected depending on org/model eligibility; a
+ * rejection is logged and the call retried once without them, so a speed
+ * knob never kills scanning. Returns the parsed JSON, token usage and time.
+ */
+const callModel = async (messages, { label, businessId, maxCompletionTokens = READ_MAX_COMPLETION_TOKENS }) => {
+  const { model, serviceTier, reasoningEffort } = resolveModelSettings();
+  const requestOptions = {
+    model,
+    messages,
+    response_format: { type: 'json_object' },
+    max_completion_tokens: maxCompletionTokens,
+    // Stable per-business cache routing so repeated scans hit the same
+    // prompt-cache shard (system prompt + customizations are identical).
+    prompt_cache_key: String(businessId || 'global'),
+  };
+  if (reasoningEffort) requestOptions.reasoning_effort = reasoningEffort;
+  if (serviceTier) requestOptions.service_tier = serviceTier;
+
+  const started = Date.now();
+  let response;
+  try {
+    response = await openai.chat.completions.create(requestOptions);
+  } catch (requestError) {
+    console.error('[OPENAI_REQUEST_FALLBACK]', {
+      label,
+      error: requestError?.message || String(requestError),
+      status: requestError?.status || null,
+      hadServiceTier: Boolean(requestOptions.service_tier),
+      hadPromptCacheKey: Boolean(requestOptions.prompt_cache_key),
+      hadReasoningEffort: Boolean(requestOptions.reasoning_effort),
+    });
+    response = await openai.chat.completions.create({
+      model,
+      messages,
+      response_format: { type: 'json_object' },
+      max_completion_tokens: maxCompletionTokens,
+    });
+  }
+  const ms = Date.now() - started;
+  const usage = response.usage || {};
+  const choice = response.choices?.[0];
+  console.log('[OPENAI_TOKEN_USAGE]', {
+    label,
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+    finishReason: choice?.finish_reason,
+    ms,
+  });
+  const text = choice?.message?.content;
+  if (!text) {
+    throw new Error(`Empty model answer (${label}, finish_reason=${choice?.finish_reason || 'unknown'})`);
+  }
+  return { parsedData: JSON.parse(text), usage, ms, model };
+};
+
+const imagePart = (base64) => ({
+  type: 'image_url',
+  // Always full-resolution tiles: with 'auto' a small cropped tag can be
+  // processed as a 512px thumbnail, which blurs the digits.
+  image_url: { url: `data:image/jpeg;base64,${base64}`, detail: 'high' },
+});
+
+/**
+ * The user turn for one read: the prompt, then per side the whole image
+ * followed by that read's magnified parts of it ('quarters' or 'thirds').
+ */
+const buildReadContent = (userPromptText, sides, layout) => {
+  const content = [{ type: 'text', text: userPromptText }];
+  for (const side of sides) {
+    const parts = Array.isArray(side.views[layout]) ? side.views[layout] : [];
+    content.push({ type: 'text', text: `${side.label} of the tag, whole image:` });
+    content.push(imagePart(side.views.full));
+    if (parts.length) {
+      content.push({
+        type: 'text',
+        text: `${side.label} of the tag, magnified parts of the same image (${parts
+          .map((part) => part.name)
+          .join(', ')}; they overlap). Same print, larger: read the characters from these.`,
+      });
+      for (const part of parts) content.push(imagePart(part.base64));
+    }
+  }
+  return content;
+};
+
+/** The user turn for the third look at the fields two reads disagree on. */
+const buildAdjudicationContent = (sides, disagreements) => {
+  const content = [
+    {
+      type: 'text',
+      text:
+        'Two independent readings of this jewellery tag disagree on the fields listed below. ' +
+        'Look at the magnified parts and transcribe, for each field, exactly the characters printed on the tag. ' +
+        'A third value is the right answer when that is what is printed; answer "" when nothing is printed for that field. ' +
+        'For a ".count" entry answer the number of separate printed lines.\n\n' +
+        `${describeDisagreements(disagreements)}\n\n` +
+        'Return only JSON: { "answers": { "<field exactly as listed>": ["<printed value>", <confidence 0-100>] } }',
+    },
+  ];
+  for (const side of sides) {
+    content.push({ type: 'text', text: `${side.label} of the tag, whole image:` });
+    content.push(imagePart(side.views.full));
+    const parts = side.views.quarters?.length ? side.views.quarters : side.views.thirds || [];
+    if (parts.length) {
+      content.push({
+        type: 'text',
+        text: `${side.label} of the tag, magnified parts (${parts.map((part) => part.name).join(', ')}):`,
+      });
+      for (const part of parts) content.push(imagePart(part.base64));
+    }
+  }
+  return content;
+};
+
+// Views prepared at upload time, or the whole-image base64 string older
+// callers pass.
+const asViews = (value) => {
+  if (!value) return null;
+  if (typeof value === 'string') return { full: value, quarters: [], thirds: [] };
+  return value;
+};
+
+const isOff = (name) => String(process.env[name] || '').toLowerCase() === 'false';
 
 const analyzeImages = async (
   frontImagePath,
@@ -496,44 +591,29 @@ const analyzeImages = async (
   preprocessed = {},
 ) => {
   const tPipelineStart = Date.now();
-  // Process images and fetch prompt customizations in parallel.
-  // A pre-warmed base64 override (produced by the SAME processImageToBase64 on
-  // the SAME file at upload time) skips on-demand preprocessing for that side.
+  // Image views and prompt customizations in parallel. Views prepared at
+  // upload time (by prepareImageViews on the SAME file) skip the decode here.
   const [
-    frontBase64,
-    backBase64,
+    frontViews,
+    backViews,
     [customizations, colorstoneCustomizations, orgCustomizations],
   ] = await Promise.all([
-    preprocessed?.frontBase64
-      ? preprocessed.frontBase64
-      : (frontImagePath && fs.existsSync(frontImagePath) ? processImageToBase64(frontImagePath) : null),
-    preprocessed?.backBase64
-      ? preprocessed.backBase64
-      : (backImagePath && fs.existsSync(backImagePath) ? processImageToBase64(backImagePath) : null),
+    preprocessed?.frontViews || preprocessed?.frontBase64
+      ? asViews(preprocessed.frontViews || preprocessed.frontBase64)
+      : (frontImagePath && fs.existsSync(frontImagePath) ? prepareImageViews(frontImagePath) : null),
+    preprocessed?.backViews || preprocessed?.backBase64
+      ? asViews(preprocessed.backViews || preprocessed.backBase64)
+      : (backImagePath && fs.existsSync(backImagePath) ? prepareImageViews(backImagePath) : null),
     getContextCached(businessId),
   ]);
   const preprocessMs = Date.now() - tPipelineStart;
   console.log(`[TIMING] preprocess_and_context_ms=${preprocessMs}`);
 
+  const sides = [];
+  if (frontViews) sides.push({ label: 'Front', views: frontViews });
+  if (backViews) sides.push({ label: 'Back', views: backViews });
+
   const userPromptText = getUserPrompt(jewelleryType, scanType, scannerSettings);
-  const userContent = [{ type: 'text', text: userPromptText }];
-
-  if (frontBase64) {
-    userContent.push({
-      type: 'image_url',
-      // Always full-resolution tiles: with 'auto' a small cropped tag can be
-      // processed as a 512px thumbnail, which blurs the digits.
-      image_url: { url: `data:image/jpeg;base64,${frontBase64}`, detail: 'high' },
-    });
-  }
-
-  if (backBase64) {
-    userContent.push({
-      type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${backBase64}`, detail: 'high' },
-    });
-  }
-
   const mergedDiamondCustoms = mergeCustomizations(
     customizations,
     orgCustomizations?.diamond,
@@ -543,91 +623,85 @@ const analyzeImages = async (
     orgCustomizations?.colorstone,
   );
   const systemPromptText = getSystemPrompt(mergedDiamondCustoms, mergedColorstoneCustoms);
-  const messages = [
-    { role: 'system', content: systemPromptText },
-    { role: 'user', content: userContent },
-  ];
+  const systemMessage = { role: 'system', content: systemPromptText };
+  // Two reads over different parts of the same pixels: quarters for the
+  // primary, thirds for the second, so a misread in one is unlikely in the other.
+  const messagesA = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'quarters') }];
+  const messagesB = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'thirds') }];
 
-  const promptText = `${systemPromptText}\n\n${userPromptText}`;
-  const promptWords = promptText.replace(/\s+/g, ' ').trim().split(' ');
-  const promptPreview = promptWords.slice(0, 100).join(' ');
-  const promptCharacters = promptText.length;
-  const estimatedTokens = Math.ceil(promptCharacters / 4);
-  // Overridable for A/B latency testing (scripts/latency_test.js) and ops tuning.
-  const model = process.env.OPENAI_MODEL || 'gpt-5.6-luna';
-  // process.env first so scripts/latency_test.js --tier/--effort still override .env config.
-  const serviceTier = process.env.OPENAI_SERVICE_TIER || config.openai.serviceTier;
-  const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || config.openai.reasoningEffort;
-  const imageCount = Number(Boolean(frontBase64)) + Number(Boolean(backBase64));
-  const timestamp = new Date().toISOString();
-
-  if (process.env.DEBUG_AI_LOGS === 'true') {
-    console.log('========== OPENAI PROMPT ==========');
-    console.log(promptPreview);
-    console.log(`Prompt Characters: ${promptCharacters}`);
-    console.log(`Estimated Tokens: ${estimatedTokens}`);
-    console.log(`Model: ${model}`);
-    console.log(`Images: ${imageCount}`);
-    console.log(`Timestamp: ${timestamp}`);
-    console.log('==================================');
-  }
-  console.log(`[OPENAI_REQUEST] model=${model} images=${imageCount} promptChars=${promptCharacters} estTokens=${estimatedTokens} tier=${serviceTier || 'default'} at=${timestamp}`);
+  const { model, serviceTier, reasoningEffort } = resolveModelSettings();
+  const promptCharacters = systemPromptText.length + userPromptText.length;
+  const imageCount = sides.reduce((count, side) => count + 1 + (side.views.quarters?.length || 0), 0);
+  const doubleRead = config.ocr?.doubleRead !== false && !isOff('OCR_DOUBLE_READ');
+  const adjudicate = config.ocr?.adjudicate !== false && !isOff('OCR_ADJUDICATE');
+  console.log(
+    `[OPENAI_REQUEST] model=${model} images=${imageCount} promptChars=${promptCharacters} tier=${serviceTier || 'default'} effort=${reasoningEffort || 'default'} doubleRead=${doubleRead} at=${new Date().toISOString()}`,
+  );
 
   try {
-    const requestOptions = {
-      model,
-      messages: messages,
-      response_format: { type: 'json_object' },
-      max_completion_tokens: 3000,
-      // Stable per-business cache routing so repeated scans hit the same
-      // prompt-cache shard (system prompt + customizations are identical).
-      prompt_cache_key: String(businessId || 'global'),
-    };
-    if (reasoningEffort) {
-      requestOptions.reasoning_effort = reasoningEffort;
-    }
-    if (serviceTier) {
-      requestOptions.service_tier = serviceTier;
-    }
-
     const tAiStart = Date.now();
-    let response;
-    try {
-      response = await openai.chat.completions.create(requestOptions);
-    } catch (requestError) {
-      // Optional speed params (service_tier / prompt_cache_key / reasoning_effort)
-      // can be rejected depending on org/model eligibility. Never let a speed
-      // knob kill scanning: log the real cause and retry once without them.
-      console.error('[OPENAI_REQUEST_FALLBACK]', {
-        error: requestError?.message || String(requestError),
-        status: requestError?.status || null,
-        hadServiceTier: Boolean(requestOptions.service_tier),
-        hadPromptCacheKey: Boolean(requestOptions.prompt_cache_key),
-        hadReasoningEffort: Boolean(requestOptions.reasoning_effort),
-      });
-      const minimalOptions = {
-        model,
-        messages: messages,
-        response_format: { type: 'json_object' },
-        max_completion_tokens: 3000,
-      };
-      response = await openai.chat.completions.create(minimalOptions);
+    const [primary, secondary] = await Promise.allSettled([
+      callModel(messagesA, { label: 'read-a', businessId }),
+      doubleRead
+        ? callModel(messagesB, { label: 'read-b', businessId })
+        : Promise.reject(new Error('second read disabled')),
+    ]);
+    const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    const addUsage = (u) => {
+      usage.prompt_tokens += Number(u?.prompt_tokens || 0);
+      usage.completion_tokens += Number(u?.completion_tokens || 0);
+      usage.total_tokens += Number(u?.total_tokens || 0);
+    };
+    if (primary.status === 'fulfilled') addUsage(primary.value.usage);
+    if (secondary.status === 'fulfilled') addUsage(secondary.value.usage);
+
+    let parsedData;
+    let consensus = { mode: 'single', agreements: 0, disagreements: 0, adjudicated: 0 };
+    if (primary.status === 'rejected' && secondary.status === 'rejected') {
+      throw primary.reason;
     }
-    const aiMs = Date.now() - tAiStart;
+    if (primary.status === 'rejected' || secondary.status === 'rejected') {
+      // One read is a complete answer on its own; the other's failure is logged.
+      if (doubleRead) {
+        const failed = primary.status === 'rejected' ? primary : secondary;
+        console.warn('[OCR_READ_FAILED]', {
+          label: primary.status === 'rejected' ? 'read-a' : 'read-b',
+          error: failed.reason?.message || String(failed.reason),
+        });
+      }
+      const survivor = primary.status === 'fulfilled' ? primary : secondary;
+      parsedData = normalizeFieldShapes(survivor.value.parsedData);
+    } else {
+      const readA = normalizeFieldShapes(primary.value.parsedData);
+      const readB = normalizeFieldShapes(secondary.value.parsedData);
+      const { merged, disagreements, agreements } = compareReads(readA, readB);
+      parsedData = merged;
+      consensus = { mode: 'double', agreements, disagreements: disagreements.length, adjudicated: 0 };
+      if (disagreements.length && adjudicate) {
+        try {
+          const verdict = await callModel(
+            [systemMessage, { role: 'user', content: buildAdjudicationContent(sides, disagreements) }],
+            { label: 'adjudicate', businessId, maxCompletionTokens: ADJUDICATION_MAX_COMPLETION_TOKENS },
+          );
+          addUsage(verdict.usage);
+          const answers = verdict.parsedData?.answers || verdict.parsedData;
+          consensus.adjudicated = applyAdjudication(parsedData, disagreements, answers).applied;
+        } catch (adjudicationError) {
+          // The contested fields stay at low confidence and get reviewed.
+          console.warn('[OCR_ADJUDICATION_FAILED]', {
+            error: adjudicationError?.message || String(adjudicationError),
+          });
+        }
+      }
+      console.info('[OCR_CONSENSUS]', {
+        ...consensus,
+        fields: disagreements.map((d) => `${d.path}: "${d.a}" vs "${d.b}"`),
+      });
+    }
+    console.log(`[TIMING] openai_call_ms=${Date.now() - tAiStart} analyze_total_ms=${Date.now() - tPipelineStart}`);
 
-    const usage = response.usage || {};
-    console.log('[OPENAI_TOKEN_USAGE]', {
-      promptTokens: usage.prompt_tokens,
-      completionTokens: usage.completion_tokens,
-      totalTokens: usage.total_tokens,
-    });
-    console.log(`[TIMING] openai_call_ms=${aiMs} analyze_total_ms=${Date.now() - tPipelineStart}`);
-
-    const responseText = response.choices[0].message.content;
-    const parsedData = JSON.parse(responseText);
-    normalizeFieldShapes(parsedData);
     repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
-    reconcileStoneWeightWithGrossNet(parsedData);
+    reconcileStoneWeightsWithGrossNet(parsedData);
 
     // Deterministic guard against separator glyphs read as digits — runs
     // before the flattening below so corrected stone weights propagate.
@@ -726,6 +800,7 @@ const analyzeImages = async (
       completionTokens: Number(usage.completion_tokens || 0),
       totalTokens: Number(usage.total_tokens || 0),
     };
+    parsedData.consensus = consensus;
 
     return parsedData;
   } catch (err) {
@@ -734,4 +809,16 @@ const analyzeImages = async (
   }
 };
 
-module.exports = { analyzeImages, processImageToBase64 };
+module.exports = {
+  analyzeImages,
+  prepareImageViews,
+  // Deterministic pieces, exported for the test suite.
+  _internal: {
+    normalizeFieldShapes,
+    repairCompactGradeTokens,
+    reconcileStoneWeightsWithGrossNet,
+    correctSeparatorMisreads,
+    buildReadContent,
+    buildAdjudicationContent,
+  },
+};

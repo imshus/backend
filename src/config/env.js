@@ -34,8 +34,14 @@ const envVarsSchema = joi.object({
   MCX_TRADING_END_TIME: joi.string().default('23:55:00').description('Trading session end time in HH:mm:ss'),
   MCX_POLL_INTERVAL_SECONDS: joi.number().integer().min(1).default(140),
   MAX_UPLOAD_MB: joi.number().min(5).max(200).default(80),
-  OCR_MAX_EDGE_PX: joi.number().min(1000).max(8000).default(1800),
+  OCR_MAX_EDGE_PX: joi.number().min(1000).max(8000).default(2400),
   OCR_JPEG_QUALITY: joi.number().min(40).max(95).default(82),
+  // Tag reading accuracy: magnified parts of each image alongside the whole
+  // image, a second independent read compared field by field, and a third
+  // targeted look at whatever the two reads disagree on.
+  OCR_MULTI_VIEW: joi.boolean().default(true),
+  OCR_DOUBLE_READ: joi.boolean().default(true),
+  OCR_ADJUDICATE: joi.boolean().default(true),
   // Invoice PDF rendering; missing config previously surfaced only as a 502 at
   // request time, so it is declared here to be visible at startup.
   PDFMONKEY_API_SECRET: joi.string().allow('').default(''),
@@ -118,6 +124,9 @@ module.exports = {
   ocr: {
     maxEdgePx: envVars.OCR_MAX_EDGE_PX,
     jpegQuality: envVars.OCR_JPEG_QUALITY,
+    multiView: envVars.OCR_MULTI_VIEW,
+    doubleRead: envVars.OCR_DOUBLE_READ,
+    adjudicate: envVars.OCR_ADJUDICATE,
   },
   publicBaseUrl: String(envVars.PUBLIC_BASE_URL).replace(/\/+$/, ''),
   invoicePdfCache: {

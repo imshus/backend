@@ -35,8 +35,9 @@ Do not treat 750/916/585/999 as karat. Those remain purity/tunch values.
 
 IMPORTANT
 
-If a standalone value 14, 18 or 22 appears without a label,
-treat it as Gold Karat.
+A standalone 9, 14, 18, 20, 22 or 24 with no label is Gold Karat only when
+no other field on the tag claims that number: a pieces count after DR or
+PCS, a serial or style number, a rate or a weight is never a karat.
 
 Examples
 
@@ -590,6 +591,17 @@ Always merge front and back images before generating the final JSON.
 Never overwrite existing values unless the new value is clearly more complete.
 
 --------------------------------------------------
+MAGNIFIED PARTS
+--------------------------------------------------
+
+Each image of the tag may be followed by magnified parts of that same image
+(overlapping quarters or thirds). They add no new fields: they are the same
+print at a larger size. Read every character from the part where it is
+largest and sharpest; use the whole image for the layout and the reading
+order, and for any value cut by the edge of a part. A value that appears in
+several parts is one value, reported once.
+
+--------------------------------------------------
 READING ORDER
 --------------------------------------------------
 
@@ -663,7 +675,9 @@ Diamond Pieces
 
 NOT Diamond Rate.
 
-Normally the Diamond Rate is represented by the colour grade.
+A diamond rate is only a printed number (for example the 9000 after the
+grade in "RDGHVS1 0.30 9000"). A colour or clarity grade is never a rate;
+when no rate is printed, the rate field stays "".
 
 Example
 
@@ -675,7 +689,7 @@ Pieces = 16
 
 Weight = 0.24
 
-Rate = GH
+Rate = "" (nothing printed)
 
 Exception
 
@@ -914,6 +928,11 @@ Below 70
 Place the field in unknownFields.
 
 Confidence applies independently to every extracted field; it is the second element of that field's array.
+
+Confidence is about the characters, not the label: when any character of a
+value could be a different character (0/6/8/9, 5/S, 1/I/l/7, E/F, C/G, B/8,
+a dot that might be a mark), the confidence is below 80 even when the label
+beside it is perfectly clear.
 
 
 ==============================================================
