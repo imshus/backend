@@ -36,11 +36,43 @@ const getLiveGoldRates = async (businessId) => {
     return cachedData;
   }
 
-  // 2. Fetch MCX Live Rate (The Supreme Truth)
-  const mcxLiveRate = await mcxService.getLiveMcxRate24K();
+  // 2-6. Independent reads, fetched together. They used to run one after
+  // another, so a cache miss (every MCX tick clears the cache for every
+  // business) paid for five round trips in sequence plus the vendor feed.
+  // The vendor rows are warmed here too, so the lookup by name below finds
+  // them ready.
+  const bhawWarm = bhawService.prefetch();
+  const [mcxLiveRate, taxSettingsDoc, supremeRead, metrics, karatRowsRead] = await Promise.all([
+    mcxService.getLiveMcxRate24K(),
+    GoldTaxSetting.findOne({ businessId }),
+    (async () => {
+      const supremeCache = await redisService.getSupremeCache();
+      if (supremeCache) {
+        return {
+          rtgsChange: supremeCache.rtgsChange || 0,
+          cashChange: supremeCache.cashChange || 0
+        };
+      }
+      const supreme = await SupremeChange.findOne().sort({ updatedAt: -1, createdAt: -1 });
+      return {
+        rtgsChange: supreme && typeof supreme.rtgsChange === 'number' ? supreme.rtgsChange : 0,
+        cashChange: supreme && typeof supreme.cashChange === 'number' ? supreme.cashChange : 0
+      };
+    })(),
+    // Never let the bhaw-source lookup break rate delivery: a malformed
+    // businessId or a metrics outage falls back to the supreme changes.
+    Promise.resolve()
+      .then(() => DashboardMetrics.findOne({ businessId }))
+      .catch((metricsError) => {
+        console.warn('[Gold Rates] Could not read bhaw source preference:', metricsError.message);
+        return null;
+      }),
+    GoldRate.find({ businessId }),
+  ]);
+  await bhawWarm;
 
-  // 3. Fetch Gold Tax Settings from DB (or assume defaults)
-  let taxSettings = await GoldTaxSetting.findOne({ businessId });
+  // 3. Gold Tax Settings (or defaults)
+  let taxSettings = taxSettingsDoc;
   if (!taxSettings) {
     taxSettings = {
       mcxChange: { operation: '+', amount: 0 },
@@ -50,33 +82,8 @@ const getLiveGoldRates = async (businessId) => {
     };
   }
 
-  // 4. Fetch Supreme changes (global) and compute Live Final Tax Rates
-  let supremeCache = await redisService.getSupremeCache();
-  let supremeChanges = null;
-  if (supremeCache) {
-    supremeChanges = {
-      rtgsChange: supremeCache.rtgsChange || 0,
-      cashChange: supremeCache.cashChange || 0
-    };
-  } else {
-    const supreme = await SupremeChange.findOne().sort({ updatedAt: -1, createdAt: -1 });
-    supremeChanges = {
-      rtgsChange: supreme && typeof supreme.rtgsChange === 'number' ? supreme.rtgsChange : 0,
-      cashChange: supreme && typeof supreme.cashChange === 'number' ? supreme.cashChange : 0
-    };
-  }
-
-  // 4b. Bhaw source: a business can adjust its gold rates from the JMD Patil
-  // live feed instead of the Mega Bullion (supreme) changes. Falls back to
-  // supreme values whenever the feed is unavailable.
-  // Never let the bhaw-source lookup break rate delivery: a malformed
-  // businessId or a metrics outage falls back to the supreme changes.
-  let metrics = null;
-  try {
-    metrics = await DashboardMetrics.findOne({ businessId });
-  } catch (metricsError) {
-    console.warn('[Gold Rates] Could not read bhaw source preference:', metricsError.message);
-  }
+  // 4. Supreme changes, unless the selected bhaw vendor is live (4b).
+  let supremeChanges = supremeRead;
   // Both vendors are published by the same live feed, so the selected one is
   // fetched by name. Only if that vendor is unavailable do we keep the stored
   // supreme changes as a fallback.
@@ -112,7 +119,7 @@ const getLiveGoldRates = async (businessId) => {
   const baseRate = taxSettings.scannerCalculationUse === 'cash' ? cashFinalRate : rtgsFinalRate;
 
   // 6. Fetch Gold Rate Rows from DB
-  let karatRows = await GoldRate.find({ businessId });
+  let karatRows = karatRowsRead;
   
   // Initialize missing default rows if they don't exist
   const requiredCarats = [

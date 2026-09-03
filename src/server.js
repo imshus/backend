@@ -3,6 +3,7 @@ const app = require('./app');
 const config = require('./config/env');
 const connectDB = require('./config/db');
 const { initMcxScheduler } = require('./services/mcxScheduler.service');
+const { startKeepWarm: startBhawKeepWarm } = require('./services/bhaw.service');
 const DiamondRate = require('./models/diamondRate.model');
 const PaymentTransaction = require('./models/paymentTransaction.model');
 
@@ -84,6 +85,8 @@ connectDB().then(async () => {
 
   // Initialize the background polling scheduler for MCX rates
   await initMcxScheduler();
+  // Keep the vendor bhaw feed warm so rate requests never wait on it.
+  startBhawKeepWarm();
 
   app.listen(PORT, HOST, () => {
     console.log(`Server is running on port ${PORT} in ${config.env} mode`);

@@ -25,9 +25,9 @@ const toFiniteNumber = (value) => {
   return Number.isFinite(num) ? num : null;
 };
 
-const fetchRows = async () => {
+const fetchRows = async (force = false) => {
   const now = Date.now();
-  if (cache.rows && now - cache.fetchedAt < CACHE_TTL_MS) return cache.rows;
+  if (!force && cache.rows && now - cache.fetchedAt < CACHE_TTL_MS) return cache.rows;
 
   try {
     const response = await axios.get(BHAW_URL, { timeout: 5000 });
@@ -76,4 +76,24 @@ const getBhawForSource = async (source) => {
 /** Back-compat helper used before both vendors were served from this feed. */
 const getJmdBhaw = () => getBhawForSource(SOURCES.JMD_PATIL);
 
-module.exports = { SOURCES, getBhawForSource, getJmdBhaw };
+/** Fetch the feed now, or hand back the fresh cache. Never throws. */
+const prefetch = () => fetchRows().catch(() => null);
+
+const KEEP_WARM_MS = 25_000;
+
+/**
+ * Refresh the feed on a timer so no user request waits on the vendor. The
+ * cache used to expire between requests and the next reader paid the round
+ * trip (0.7 to 0.9 s measured). An interval shorter than the TTL keeps it
+ * always fresh; a failed refresh keeps serving the last good rows.
+ */
+const startKeepWarm = () => {
+  void fetchRows(true).catch(() => null);
+  const timer = setInterval(() => {
+    void fetchRows(true).catch(() => null);
+  }, KEEP_WARM_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  return timer;
+};
+
+module.exports = { SOURCES, getBhawForSource, getJmdBhaw, prefetch, startKeepWarm };
