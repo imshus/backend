@@ -81,14 +81,85 @@ test('different stone counts become one count disagreement and doubt every stone
   assert.equal(merged.structuredData.diamonds[0].weight.confidence, CONTESTED_CONFIDENCE);
 });
 
-test('adjudication confirming one reading sets it at the adjudicated ceiling', () => {
+test('adjudication confirming one reading writes it as that reading printed it', () => {
   const a = read({ diamonds: [{ weight: field('5.54', 90) }] });
   const b = read({ diamonds: [{ weight: field('0.54', 90) }] });
   const { merged, disagreements } = compareReads(a, b);
+  // '.54' is the same weight as read B's '0.54', so B's text is what is kept;
+  // an answer that came back as the number 0.54 must not lose a leading dot
+  // or a trailing zero either.
   const { applied } = applyAdjudication(merged, disagreements, { 'diamonds[0].weight': ['.54', 97] });
   assert.equal(applied, 1);
-  assert.equal(merged.structuredData.diamonds[0].weight.value, '.54');
+  assert.equal(merged.structuredData.diamonds[0].weight.value, '0.54');
   assert.equal(merged.structuredData.diamonds[0].weight.confidence, ADJUDICATED_CONFIDENCE);
+});
+
+test('a stone group sent as one object rather than an array is still read', () => {
+  const a = read({ diamonds: { weight: field('0.54'), color: field('FG') } });
+  const b = read({ diamonds: { weight: field('0.54'), color: field('FG') } });
+  const { merged, disagreements } = compareReads(a, b);
+  assert.equal(merged.structuredData.diamonds.length, 1);
+  assert.equal(merged.structuredData.diamonds[0].weight.value, '0.54');
+  assert.deepEqual(disagreements, []);
+});
+
+test('empty template stones are dropped, so an adjudicated value reaches the stone it was asked about', () => {
+  const a = read({
+    diamonds: [
+      { shape: field('', 0), weight: field('', 0), color: field('', 0) },
+      { shape: field('PC'), weight: field('5.54') },
+    ],
+  });
+  const b = read({ diamonds: [{ shape: field('PC'), weight: field('0.54') }] });
+  const { merged, disagreements } = compareReads(a, b);
+  assert.equal(merged.structuredData.diamonds.length, 1);
+  assert.deepEqual(
+    disagreements.map((d) => d.path),
+    ['diamonds[0].weight'],
+  );
+  applyAdjudication(merged, disagreements, { 'diamonds[0].weight': ['0.54', 96] });
+  assert.equal(merged.structuredData.diamonds[0].weight.value, '0.54');
+  assert.equal(merged.structuredData.diamonds[0].shape.value, 'PC');
+});
+
+test('stones only the second read found are kept, flagged, rather than dropped', () => {
+  const a = read({ diamonds: [] });
+  const b = read({ diamonds: [{ weight: field('0.54', 95) }, { weight: field('0.12', 95) }] });
+  const { merged, disagreements } = compareReads(a, b);
+  assert.equal(merged.structuredData.diamonds.length, 2);
+  assert.equal(merged.structuredData.diamonds[0].weight.value, '0.54');
+  assert.equal(merged.structuredData.diamonds[0].weight.confidence, CONTESTED_CONFIDENCE);
+  assert.equal(disagreements[0].path, 'diamonds.count');
+});
+
+test('settling the stone count caps confidence instead of raising it', () => {
+  const a = read({
+    diamonds: [
+      { weight: field('0.50', 30), color: field('GH', 35) },
+      { weight: field('0.20', 88) },
+    ],
+  });
+  const b = read({ diamonds: [{ weight: field('0.70', 90) }] });
+  const { merged, disagreements } = compareReads(a, b);
+  applyAdjudication(merged, disagreements, { 'diamonds.count': ['2', 90] });
+  const [first, second] = merged.structuredData.diamonds;
+  // The answer settles how many lines are printed, not what they say, so a
+  // weight the reader itself rated 30 stays at 30 and none of them reaches
+  // the threshold that would drop the review card's check mark.
+  assert.equal(first.weight.confidence, 30);
+  assert.equal(first.color.confidence, 35);
+  assert.equal(second.weight.confidence, SINGLE_SOURCE_CONFIDENCE);
+  assert.ok(merged.structuredData.diamonds.every((s) => Object.values(s).every((f) => f.confidence < 80)));
+});
+
+test('an empty answer from the third look never deletes a value a read found', () => {
+  const a = read({ netWeight: field('10.512', 92) });
+  const b = read({ netWeight: field('', 0) });
+  const { merged, disagreements } = compareReads(a, b);
+  const { applied } = applyAdjudication(merged, disagreements, { netWeight: ['', 90] });
+  assert.equal(applied, 0);
+  assert.equal(merged.structuredData.netWeight.value, '10.512');
+  assert.ok(merged.structuredData.netWeight.confidence < 80);
 });
 
 test('adjudication with a third value keeps it below the review threshold', () => {
@@ -107,7 +178,7 @@ test('adjudication choosing the other stone count swaps in that reading of the s
   applyAdjudication(merged, disagreements, { 'diamonds.count': ['1', 90] });
   assert.equal(merged.structuredData.diamonds.length, 1);
   assert.equal(merged.structuredData.diamonds[0].weight.value, '0.66');
-  assert.equal(merged.structuredData.diamonds[0].color.confidence, ADJUDICATED_CONFIDENCE);
+  assert.equal(merged.structuredData.diamonds[0].color.confidence, SINGLE_SOURCE_CONFIDENCE);
 });
 
 test('missing adjudication answers leave the contested value at low confidence', () => {

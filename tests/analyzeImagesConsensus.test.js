@@ -15,6 +15,8 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrpscan-analyze-'));
 
 // The fake API answers by what the request asks for.
 const requests = [];
+/** Set to fail every read that carries magnified parts. */
+let failPartReads = false;
 const answerFor = (body) => {
   const user = body.messages.find((m) => m.role === 'user');
   const texts = user.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
@@ -23,8 +25,11 @@ const answerFor = (body) => {
     ? 'adjudicate'
     : texts.includes('quarter')
       ? 'read-a'
-      : 'read-b';
-  requests.push({ kind, images, body, texts });
+      : texts.includes('third')
+        ? 'read-b'
+        : 'read-plain';
+  requests.push({ kind, images, body, texts, system: body.messages[0]?.content ?? '' });
+  if (failPartReads && (kind === 'read-a' || kind === 'read-b')) return null;
   if (kind === 'adjudicate') {
     return { answers: { 'diamonds[0].weight': ['.54', 96] } };
   }
@@ -70,7 +75,13 @@ test.before(async () => {
     });
     req.on('end', () => {
       const body = JSON.parse(raw);
-      const content = JSON.stringify(answerFor(body));
+      const answer = answerFor(body);
+      if (answer === null) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'upstream unavailable' } }));
+        return;
+      }
+      const content = JSON.stringify(answer);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -133,7 +144,9 @@ test('two reads, one disagreement, one adjudication: the tag comes out consisten
     assert.equal(r.body.messages[0].role, 'system');
   }
   const adjudication = requests.find((r) => r.kind === 'adjudicate');
-  assert.match(adjudication.texts, /diamonds\[0\]\.weight: reading A "5\.54", reading B "\.54"/);
+  // Each reading is normalised before they are compared, so the leading zero
+  // read B omitted is already there when the two are put side by side.
+  assert.match(adjudication.texts, /diamonds\[0\]\.weight: reading A "5\.54", reading B "0\.54"/);
 
   const sd = result.structuredData;
   assert.equal(sd.grossWeight.value, '8.208');
@@ -149,6 +162,45 @@ test('two reads, one disagreement, one adjudication: the tag comes out consisten
   assert.equal(result.unknownFields.length, 1);
   assert.equal(result.billingMeta.promptTokens, 3000);
   assert.equal(result.billingMeta.totalTokens, 3600);
+});
+
+test('the third look is briefed on its own question, not on the extraction schema', async () => {
+  const adjudication = requests.find((r) => r.kind === 'adjudicate');
+  assert.ok(adjudication, 'an adjudication call was made');
+  assert.match(adjudication.system, /You read characters off photographs/);
+  assert.ok(
+    !/structuredData/.test(adjudication.system),
+    'the tag schema must not be what the adjudicator is told to return',
+  );
+  assert.ok(adjudication.system.length < 1000);
+});
+
+test('a scan whose images are gone is refused rather than answered from the prompt alone', async () => {
+  const openaiService = require('../src/services/openai.service');
+  const before = requests.length;
+  await assert.rejects(
+    () => openaiService.analyzeImages(path.join(tmpDir, 'deleted.jpg'), null, 'DIAMOND', 'SINGLE_SIDE', {}, null),
+    /No readable image/,
+  );
+  assert.equal(requests.length, before, 'no model call is made without an image');
+});
+
+test('when both reads fail, one plain whole-image call is made instead of giving up', async () => {
+  requests.length = 0;
+  failPartReads = true;
+  try {
+    const openaiService = require('../src/services/openai.service');
+    const file = await tagImage();
+    const result = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
+    const kinds = requests.map((r) => r.kind);
+    assert.deepEqual(kinds.filter((k) => k === 'read-plain'), ['read-plain']);
+    const plain = requests.find((r) => r.kind === 'read-plain');
+    assert.equal(plain.images, 1, 'the whole image only');
+    assert.equal(result.consensus.mode, 'plain');
+    assert.equal(result.structuredData.grossWeight.value, '8.208');
+  } finally {
+    failPartReads = false;
+  }
 });
 
 test('with the second read switched off a single read still answers', async () => {

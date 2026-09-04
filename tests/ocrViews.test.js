@@ -5,6 +5,11 @@ const path = require('path');
 const fs = require('fs');
 const sharp = require('sharp');
 
+// Set before the config module snapshots the environment: magnified parts are
+// only cut while they still carry more pixels than the model keeps, so the
+// cap has to be the one the reader is meant to run at (dotenv does not
+// override values already present).
+process.env.OCR_MAX_EDGE_PX = '2400';
 const config = require('../src/config/env');
 const { prepareImageViews, MIN_SOURCE_EDGE_PX } = require('../src/services/ocrViews');
 
@@ -86,6 +91,24 @@ test('a source larger than the edge cap is downscaled once and the parts follow 
   assert.ok(Math.abs(views.quarters[0].width - views.width * 0.6) <= 1);
 });
 
+test('parts that would carry fewer pixels than the model keeps are not cut at all', async () => {
+  // 1400x875 upright: a quarter is 840x525 = 0.44MP, well under the budget,
+  // so cutting it would only add a second lossy generation.
+  const file = await writeTag('modest.jpg', 1400, 875);
+  const views = await prepareImageViews(file);
+  assert.equal(views.quarters.length, 0);
+  assert.equal(views.thirds.length, 0);
+  assert.ok(views.full.length > 0);
+});
+
+test('a tightly cropped tag keeps only the layout whose parts are still large enough', async () => {
+  // 2400x1000: thirds are 960x1000 = 0.96MP (too small), quarters 1440x600 = 0.86MP.
+  const file = await writeTag('wide.jpg', 2400, 1000);
+  const views = await prepareImageViews(file);
+  assert.equal(views.quarters.length, 0);
+  assert.equal(views.thirds.length, 0);
+});
+
 test('a small source gets no magnified parts', async () => {
   const size = MIN_SOURCE_EDGE_PX - 100;
   const file = await writeTag('small.jpg', size, Math.round(size * 0.6));
@@ -111,7 +134,7 @@ test('EXIF rotation is applied before the parts are cut', async () => {
 });
 
 test('a PNG upload is delivered as JPEG', async () => {
-  const file = await writeTag('tag.png', 2000, 1200, { format: 'png' });
+  const file = await writeTag('tag.png', 2400, 1600, { format: 'png' });
   const views = await prepareImageViews(file);
   const full = await decode(views.full);
   assert.equal(full.format, 'jpeg');

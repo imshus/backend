@@ -155,79 +155,90 @@ const mergeCustomizations = (base, extra) => {
 // the review screen highlights it for the user. Never touches clean values.
 const SEPARATOR_ADJACENT = /[|IlL\\\/A-Za-z]/;
 
+/** Every weight field of one reading, with a label for the logs. */
+const eachWeightField = (sd, visit) => {
+  if (!sd) return;
+  for (const name of ['grossWeight', 'netWeight', 'diamondWeight', 'coloredStoneWeight']) {
+    visit(sd[name], name);
+  }
+  for (const group of ['diamonds', 'colorstones']) {
+    if (!Array.isArray(sd[group])) continue;
+    sd[group].forEach((stone, i) => visit(stone?.weight, `${group}[${i}].weight`));
+  }
+};
+
+/**
+ * Weights that cannot be weights, and weights written without their leading
+ * zero. This runs on each reading before anything compares or reconciles
+ * them, so a serial number that leaked into a weight field is gone before it
+ * can poison the gross-minus-net arithmetic.
+ */
+const sanitizeWeights = (parsedData) => {
+  eachWeightField(parsedData?.structuredData, (field, label) => {
+    if (!field || typeof field !== 'object') return;
+    const raw = String(field.value ?? '').trim();
+    if (!raw) return;
+    // Thousands separators are separators, not digits: '1,250.50' is 1250.50.
+    const numeric = Number(raw.replace(/,/g, '').replace(/[^0-9.]/g, ''));
+    const digitsOnly = raw.replace(/[^0-9]/g, '');
+    const isPlainLongInteger = /^\d{4,}$/.test(digitsOnly) && !raw.includes('.');
+    if (isPlainLongInteger || (Number.isFinite(numeric) && numeric >= 1000)) {
+      console.warn('[WEIGHT_PLAUSIBILITY_REJECTED]', { field: label, value: raw });
+      field.value = '';
+      field.confidence = 0;
+      return;
+    }
+    if (/^\.\d+$/.test(raw)) field.value = `0${raw}`;
+  });
+  return parsedData;
+};
+
+/**
+ * The separator-misread repair, applied to ONE reading against that reading's
+ * own transcript. Running it after the two readings were merged compared a
+ * value that may have come from the other read, or from the third look,
+ * against a transcript that never contained it.
+ */
 const correctSeparatorMisreads = (parsedData) => {
   const raw = String(parsedData?.rawText?.merged ?? '');
   const sd = parsedData?.structuredData;
-  if (!sd) return;
+  if (!sd || !raw) return parsedData;
 
-  const fixField = (field, label) => {
+  // The number must sit at its own boundary: '0.64' inside '10.64' is not
+  // this value, it is the tail of another one.
+  const followedBySeparator = (text, needle) => {
+    let index = text.indexOf(needle);
+    while (index !== -1) {
+      const before = index === 0 ? '' : text[index - 1];
+      const after = text[index + needle.length] || '';
+      if (!/[0-9.]/.test(before) && SEPARATOR_ADJACENT.test(after)) return true;
+      index = text.indexOf(needle, index + 1);
+    }
+    return false;
+  };
+
+  eachWeightField(sd, (field, label) => {
     if (!field || typeof field !== 'object') return;
     const val = String(field.value ?? '');
     if (!/^\d*\.\d+1$/.test(val)) return; // only decimals ending in 1
-    if (!raw) return;
     if (raw.includes(val)) return; // the full value really is printed
     const trimmed = val.slice(0, -1);
     if (!/\d$/.test(trimmed)) return;
-    const idx = raw.indexOf(trimmed);
-    if (idx === -1) {
-      // Neither variant appears in the OCR text — ambiguous; flag for review.
+    if (followedBySeparator(raw, trimmed)) {
+      console.warn('[WEIGHT_SEPARATOR_CORRECTED]', { field: label, from: val, to: trimmed });
+      // A rewritten value is never a confident one.
+      field.value = trimmed;
+      field.confidence = Math.min(Number(field.confidence) || 0, 60);
+      return;
+    }
+    if (!raw.includes(trimmed)) {
+      // Neither variant appears in the transcript — ambiguous; flag for review.
       if (typeof field.confidence === 'number' && field.confidence > 40) {
         field.confidence = 40;
       }
-      return;
     }
-    const nextChar = raw[idx + trimmed.length] || '';
-    if (SEPARATOR_ADJACENT.test(nextChar)) {
-      console.warn('[WEIGHT_SEPARATOR_CORRECTED]', { field: label, from: val, to: trimmed });
-      field.value = trimmed;
-    }
-  };
-
-  // Plausibility guard: jewellery weights are small decimals. A long plain
-  // integer (e.g. 261440) in a weight field is a serial number that leaked in
-  // from an SR NO / ST NO line — reject it rather than trust it.
-  const rejectImplausibleWeight = (field, label) => {
-    if (!field || typeof field !== 'object') return;
-    const val = String(field.value ?? '').trim();
-    if (!val) return;
-    const numeric = Number(val.replace(/[^0-9.]/g, ''));
-    const isPlainLongInteger = /^\d{4,}$/.test(val.replace(/[^0-9]/g, '')) && !val.includes('.');
-    if (isPlainLongInteger || (Number.isFinite(numeric) && numeric >= 1000)) {
-      console.warn('[WEIGHT_PLAUSIBILITY_REJECTED]', { field: label, value: val });
-      field.value = '';
-      field.confidence = 0;
-    }
-  };
-
-  // Tags often print weights without a leading zero (".54") — normalize so
-  // display/calculation code never drops a leading-dot decimal.
-  const normalizeLeadingDot = (field) => {
-    if (!field || typeof field !== 'object') return;
-    const val = String(field.value ?? '').trim();
-    if (/^\.\d+$/.test(val)) {
-      field.value = `0${val}`;
-    }
-  };
-
-  ['grossWeight', 'netWeight', 'diamondWeight', 'coloredStoneWeight'].forEach((name) => {
-    fixField(sd[name], name);
-    rejectImplausibleWeight(sd[name], name);
-    normalizeLeadingDot(sd[name]);
   });
-  if (Array.isArray(sd.diamonds)) {
-    sd.diamonds.forEach((diamond, i) => {
-      fixField(diamond?.weight, `diamonds[${i}].weight`);
-      rejectImplausibleWeight(diamond?.weight, `diamonds[${i}].weight`);
-      normalizeLeadingDot(diamond?.weight);
-    });
-  }
-  if (Array.isArray(sd.colorstones)) {
-    sd.colorstones.forEach((stone, i) => {
-      fixField(stone?.weight, `colorstones[${i}].weight`);
-      rejectImplausibleWeight(stone?.weight, `colorstones[${i}].weight`);
-      normalizeLeadingDot(stone?.weight);
-    });
-  }
+  return parsedData;
 };
 
 // Per-business prompt-context cache: customizations change rarely, so a short
@@ -325,8 +336,12 @@ const splitCompactGrade = (token, shapes, colors, clarities) => {
     }
   }
   if (!shape || !clarity) return null;
-  const color = /^[A-Z]{1,3}$/.test(rest) ? rest : '';
-  return { shape, clarity, color, colorKnown: color !== '' && colors.has(color) };
+  // Whatever sits between them has to look like a colour grade. Without this
+  // an ordinary printed word split into a shape and a clarity: PRINCESS
+  // became shape PR + clarity SS, and the row was filled with grades nobody
+  // had read.
+  if (!/^[A-Z]{1,3}$/.test(rest)) return null;
+  return { shape, clarity, color: rest, colorKnown: colors.has(rest) };
 };
 
 const repairCompactGradeTokens = (parsedData, diamondCustoms) => {
@@ -343,15 +358,20 @@ const repairCompactGradeTokens = (parsedData, diamondCustoms) => {
       .replace(/[^A-Z0-9]/g, '');
     const parsed = splitCompactGrade(token, shapes, colors, clarities);
     if (!parsed) continue;
-    const target = sd.diamonds.find(
-      (d) => d && (!hasFieldValue(d.shape) || !hasFieldValue(d.color) || !hasFieldValue(d.clarity)),
+    // Only a row the reader left completely empty can be the one this token
+    // belongs to, and only when it is the sole candidate: filling in the
+    // first row that happens to be missing a colour put one stone's grades
+    // onto another stone's line.
+    const candidates = sd.diamonds.filter(
+      (d) => d && !hasFieldValue(d.shape) && !hasFieldValue(d.color) && !hasFieldValue(d.clarity),
     );
-    if (!target) return;
-    if (!hasFieldValue(target.shape)) target.shape = { value: parsed.shape, confidence: 85 };
-    if (!hasFieldValue(target.clarity)) target.clarity = { value: parsed.clarity, confidence: 85 };
-    if (!hasFieldValue(target.color) && parsed.color) {
-      target.color = { value: parsed.color, confidence: parsed.colorKnown ? 85 : 55 };
-    }
+    if (candidates.length !== 1) return;
+    const target = candidates[0];
+    // The token was in unknownFields because the reader could not place it,
+    // so what is recovered from it is always reviewed.
+    target.shape = { value: parsed.shape, confidence: 70 };
+    target.clarity = { value: parsed.clarity, confidence: 70 };
+    target.color = { value: parsed.color, confidence: parsed.colorKnown ? 70 : 55 };
     console.info('[COMPACT_GRADE_REPAIRED]', { token, ...parsed });
   }
 };
@@ -401,7 +421,11 @@ const reconcileStoneWeightsWithGrossNet = (parsedData) => {
     (Array.isArray(list) ? list : []).filter((stone) => stone && parseWeightNumber(stone.weight) != null);
   const diamonds = withWeight(sd.diamonds);
   const colorstones = withWeight(sd.colorstones);
-  const stones = diamonds.concat(colorstones);
+  // Colour-stone weights are often printed in grams, which breaks this
+  // identity legitimately: a mismatch on such a tag says nothing about any
+  // single reading, so neither the repair nor the flag applies.
+  if (colorstones.length > 0) return;
+  const stones = diamonds;
   if (stones.length === 0) return;
   const total = (list) => list.reduce((sum, stone) => sum + parseWeightNumber(stone.weight), 0);
   const fits = (value, tolerance) => Math.abs(value - expectedCarats) / expectedCarats <= tolerance;
@@ -429,13 +453,17 @@ const reconcileStoneWeightsWithGrossNet = (parsedData) => {
     stone.weight = { value: String(variant), confidence: Math.min(Number(stone.weight.confidence) || 0, 75) };
     return;
   }
-  // No single repair explains the tag. Colour-stone weights are sometimes
-  // printed in grams, which breaks the identity legitimately, so only a tag
-  // carrying diamonds alone has its stone weights marked for review.
-  if (colorstones.length === 0) {
-    console.info('[STONE_WEIGHT_INCONSISTENT]', { total: total(stones), expectedCarats, gross, net, stones: stones.length });
-    for (const stone of stones) {
-      stone.weight = { value: stone.weight.value, confidence: Math.min(Number(stone.weight.confidence) || 0, 55) };
+  // No single repair explains the tag. The arithmetic has three inputs, so
+  // the fault may be in the gross or the net weight rather than in a stone:
+  // flag the whole group instead of pointing only at the stones.
+  console.info('[STONE_WEIGHT_INCONSISTENT]', { total: total(stones), expectedCarats, gross, net, stones: stones.length });
+  for (const stone of stones) {
+    stone.weight = { value: stone.weight.value, confidence: Math.min(Number(stone.weight.confidence) || 0, 55) };
+  }
+  for (const name of ['grossWeight', 'netWeight']) {
+    const field = sd[name];
+    if (field && typeof field === 'object') {
+      field.confidence = Math.min(Number(field.confidence) || 0, 70);
     }
   }
 };
@@ -456,12 +484,92 @@ const syncStoneQuality = (parsedData) => {
       if (!stone || typeof stone !== 'object') continue;
       const color = hasFieldValue(stone.color) ? String(stone.color.value).trim() : '';
       const clarity = hasFieldValue(stone.clarity) ? String(stone.clarity.value).trim() : '';
+      if (color && clarity) {
+        const confidence = Math.min(
+          Number(stone.color.confidence) || 0,
+          Number(stone.clarity.confidence) || 0,
+        );
+        stone.quality = { value: `${color} ${clarity}`, confidence };
+        continue;
+      }
+      // With only one of the two in hand, the model's own quality string may
+      // still carry the grade that is missing from its own field. Rewriting
+      // it from the single part would delete that grade, so it is left alone
+      // and marked for review instead.
+      if (!hasFieldValue(stone.quality)) continue;
       if (!color && !clarity) continue;
-      const parts = [stone.color, stone.clarity].filter(hasFieldValue);
-      const confidence = Math.min(...parts.map((field) => Number(field.confidence) || 0));
-      stone.quality = { value: [color, clarity].filter(Boolean).join(' '), confidence };
+      stone.quality = {
+        value: String(stone.quality.value).trim(),
+        confidence: Math.min(Number(stone.quality.confidence) || 0, 70),
+      };
     }
   }
+};
+
+const emptyField = () => ({ value: '', confidence: 0 });
+
+// The review screen is driven by the stones arrays, but the model sometimes
+// answers with only the flat diamondWeight / coloredStoneWeight fields (typical
+// on GOLD-type scans), so both shapes are guaranteed. This runs on each reading
+// BEFORE the two are compared: a flat-only answer would otherwise never have
+// its stone fields compared, adjudicated or weight-checked at all.
+const synthesizeStoneArrays = (parsedData) => {
+  const sd = parsedData?.structuredData;
+  if (!sd) return parsedData;
+
+  if (
+    !Array.isArray(sd.diamonds) ||
+    sd.diamonds.length === 0
+  ) {
+    if (hasFieldValue(sd.diamondWeight) || hasFieldValue(sd.diamondPieces) || hasFieldValue(sd.diamondRate)) {
+      console.info('[STONE_ARRAY_SYNTHESIZED]', { kind: 'diamond' });
+      sd.diamonds = [{
+        weight: sd.diamondWeight || emptyField(),
+        pieces: sd.diamondPieces || emptyField(),
+        rate: sd.diamondRate || emptyField(),
+        quality: sd.diamondQuality || emptyField(),
+        color: sd.diamondColor || emptyField(),
+        clarity: sd.diamondClarity || emptyField(),
+        shape: sd.diamondShape || emptyField(),
+        ...(hasFieldValue(sd.packetCode) ? { packetCode: sd.packetCode } : {}),
+      }];
+    }
+  }
+
+  if (
+    !Array.isArray(sd.colorstones) ||
+    sd.colorstones.length === 0
+  ) {
+    if (
+      hasFieldValue(sd.coloredStoneWeight) ||
+      hasFieldValue(sd.coloredStonePieces) ||
+      hasFieldValue(sd.coloredStoneRate)
+    ) {
+      console.info('[STONE_ARRAY_SYNTHESIZED]', { kind: 'colorstone' });
+      sd.colorstones = [{
+        weight: sd.coloredStoneWeight || emptyField(),
+        pieces: sd.coloredStonePieces || emptyField(),
+        rate: sd.coloredStoneRate || emptyField(),
+        quality: sd.coloredStoneQuality || emptyField(),
+        color: sd.coloredStoneColor || emptyField(),
+        clarity: sd.coloredStoneClarity || emptyField(),
+      }];
+    }
+  }
+  return parsedData;
+};
+
+/**
+ * One reading, made comparable: field shapes restored, weights that cannot be
+ * weights removed, both stone representations present, and the separator
+ * repair applied against this reading's own transcript.
+ */
+const prepareRead = (parsedData) => {
+  normalizeFieldShapes(parsedData);
+  sanitizeWeights(parsedData);
+  synthesizeStoneArrays(parsedData);
+  correctSeparatorMisreads(parsedData);
+  return parsedData;
 };
 
 // Model selection and speed knobs. process.env first so scripts/latency_test.js
@@ -478,13 +586,48 @@ const resolveModelSettings = () => ({
 const READ_MAX_COMPLETION_TOKENS = 6000;
 const ADJUDICATION_MAX_COMPLETION_TOKENS = 3000;
 
+// The app gives up on /analyze at 90s. Finishing after that spends tokens and
+// a credit on an answer nobody receives, so the whole pipeline is bounded
+// below it and the optional third call is skipped when time runs short.
+const PIPELINE_DEADLINE_MS = Number(process.env.OCR_PIPELINE_DEADLINE_MS) || 75_000;
+const ADJUDICATION_MIN_BUDGET_MS = 15_000;
+
+// The extraction system prompt describes a completely different answer shape
+// (the whole tag schema), which is a good way to get a third look that
+// answers the wrong question. The adjudicator gets its own short brief.
+const ADJUDICATION_SYSTEM_PROMPT =
+  'You read characters off photographs of jewellery tags. You are given a tag and a short list of fields ' +
+  'two readers disagree about. For each one, answer with the characters printed on the tag, exactly as ' +
+  'printed, or "" when nothing is printed for it. Never guess and never explain. Return only JSON.';
+
+// Speed params the org or the model may not accept. A 400 naming one of them
+// is the only reason to retry a request without them; any other failure —
+// a timeout, a rate limit, a 5xx — must NOT be answered by sending the same
+// several megabytes of images again.
+const OPTIONAL_SPEED_PARAMS = ['service_tier', 'prompt_cache_key', 'reasoning_effort'];
+
+const isOptionalParamRejection = (error) => {
+  if (Number(error?.status) !== 400) return false;
+  let detail = '';
+  try {
+    detail = JSON.stringify(error?.error ?? '');
+  } catch (_) {
+    detail = '';
+  }
+  const text = `${error?.message || ''} ${detail}`.toLowerCase();
+  return OPTIONAL_SPEED_PARAMS.some((param) => text.includes(param));
+};
+
 /**
- * One JSON-mode call. Optional speed params (service_tier / prompt_cache_key /
- * reasoning_effort) can be rejected depending on org/model eligibility; a
- * rejection is logged and the call retried once without them, so a speed
- * knob never kills scanning. Returns the parsed JSON, token usage and time.
+ * One JSON-mode call, with its own slice of the pipeline's time budget.
+ * Returns the parsed JSON, token usage and time. Tokens the API already
+ * charged for are attached to any error thrown after a response arrived, so
+ * a truncated answer still shows up in the scan's cost.
  */
-const callModel = async (messages, { label, businessId, maxCompletionTokens = READ_MAX_COMPLETION_TOKENS }) => {
+const callModel = async (
+  messages,
+  { label, businessId, maxCompletionTokens = READ_MAX_COMPLETION_TOKENS, timeoutMs },
+) => {
   const { model, serviceTier, reasoningEffort } = resolveModelSettings();
   const requestOptions = {
     model,
@@ -498,25 +641,33 @@ const callModel = async (messages, { label, businessId, maxCompletionTokens = RE
   if (reasoningEffort) requestOptions.reasoning_effort = reasoningEffort;
   if (serviceTier) requestOptions.service_tier = serviceTier;
 
+  // One attempt, bounded by what is left of the scan's budget: the two reads
+  // are the redundancy, so a stalled call must not also be retried.
+  const perRequest = { maxRetries: 0 };
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    perRequest.timeout = Math.max(5_000, Math.round(timeoutMs));
+  }
+
   const started = Date.now();
   let response;
   try {
-    response = await openai.chat.completions.create(requestOptions);
+    response = await openai.chat.completions.create(requestOptions, perRequest);
   } catch (requestError) {
+    if (!isOptionalParamRejection(requestError)) throw requestError;
     console.error('[OPENAI_REQUEST_FALLBACK]', {
       label,
       error: requestError?.message || String(requestError),
       status: requestError?.status || null,
-      hadServiceTier: Boolean(requestOptions.service_tier),
-      hadPromptCacheKey: Boolean(requestOptions.prompt_cache_key),
-      hadReasoningEffort: Boolean(requestOptions.reasoning_effort),
     });
-    response = await openai.chat.completions.create({
-      model,
-      messages,
-      response_format: { type: 'json_object' },
-      max_completion_tokens: maxCompletionTokens,
-    });
+    response = await openai.chat.completions.create(
+      {
+        model,
+        messages,
+        response_format: { type: 'json_object' },
+        max_completion_tokens: maxCompletionTokens,
+      },
+      perRequest,
+    );
   }
   const ms = Date.now() - started;
   const usage = response.usage || {};
@@ -529,11 +680,22 @@ const callModel = async (messages, { label, businessId, maxCompletionTokens = RE
     finishReason: choice?.finish_reason,
     ms,
   });
+  const failed = (message) => {
+    const error = new Error(message);
+    error.usage = usage;
+    return error;
+  };
   const text = choice?.message?.content;
   if (!text) {
-    throw new Error(`Empty model answer (${label}, finish_reason=${choice?.finish_reason || 'unknown'})`);
+    throw failed(`Empty model answer (${label}, finish_reason=${choice?.finish_reason || 'unknown'})`);
   }
-  return { parsedData: JSON.parse(text), usage, ms, model };
+  try {
+    return { parsedData: JSON.parse(text), usage, ms, model };
+  } catch (parseError) {
+    throw failed(
+      `Unparseable model answer (${label}, finish_reason=${choice?.finish_reason || 'unknown'}): ${parseError.message}`,
+    );
+  }
 };
 
 const imagePart = (base64) => ({
@@ -636,6 +798,11 @@ const analyzeImages = async (
   const sides = [];
   if (frontViews) sides.push({ label: 'Front', views: frontViews });
   if (backViews) sides.push({ label: 'Back', views: backViews });
+  // Without an image the model answers the schema from the prompt alone, and
+  // those invented weights would be written to the scan as a normal result.
+  if (sides.length === 0) {
+    throw new Error('No readable image for this scan');
+  }
 
   const userPromptText = getUserPrompt(jewelleryType, scanType, scannerSettings);
   const mergedDiamondCustoms = mergeCustomizations(
@@ -655,19 +822,22 @@ const analyzeImages = async (
 
   const { model, serviceTier, reasoningEffort } = resolveModelSettings();
   const promptCharacters = systemPromptText.length + userPromptText.length;
-  const imageCount = sides.reduce((count, side) => count + 1 + (side.views.quarters?.length || 0), 0);
+  const countImages = (messages) =>
+    messages[1].content.filter((part) => part.type === 'image_url').length;
   const doubleRead = config.ocr?.doubleRead !== false && !isOff('OCR_DOUBLE_READ');
   const adjudicate = config.ocr?.adjudicate !== false && !isOff('OCR_ADJUDICATE');
+  const imageCount = countImages(messagesA) + (doubleRead ? countImages(messagesB) : 0);
   console.log(
     `[OPENAI_REQUEST] model=${model} images=${imageCount} promptChars=${promptCharacters} tier=${serviceTier || 'default'} effort=${reasoningEffort || 'default'} doubleRead=${doubleRead} at=${new Date().toISOString()}`,
   );
 
   try {
     const tAiStart = Date.now();
+    const remainingMs = () => PIPELINE_DEADLINE_MS - (Date.now() - tPipelineStart);
     const [primary, secondary] = await Promise.allSettled([
-      callModel(messagesA, { label: 'read-a', businessId }),
+      callModel(messagesA, { label: 'read-a', businessId, timeoutMs: remainingMs() }),
       doubleRead
-        ? callModel(messagesB, { label: 'read-b', businessId })
+        ? callModel(messagesB, { label: 'read-b', businessId, timeoutMs: remainingMs() })
         : Promise.reject(new Error('second read disabled')),
     ]);
     const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -676,15 +846,36 @@ const analyzeImages = async (
       usage.completion_tokens += Number(u?.completion_tokens || 0);
       usage.total_tokens += Number(u?.total_tokens || 0);
     };
+    // Tokens the API charged for count even when the answer was unusable.
     if (primary.status === 'fulfilled') addUsage(primary.value.usage);
+    else addUsage(primary.reason?.usage);
     if (secondary.status === 'fulfilled') addUsage(secondary.value.usage);
+    else addUsage(secondary.reason?.usage);
 
     let parsedData;
     let consensus = { mode: 'single', agreements: 0, disagreements: 0, adjudicated: 0 };
-    if (primary.status === 'rejected' && secondary.status === 'rejected') {
-      throw primary.reason;
+    if (primary.status === 'rejected' && (secondary.status === 'rejected' || !doubleRead)) {
+      // Both reads carry the same large payload to the same endpoint, so
+      // whatever stopped one usually stopped the other: a size limit, a rate
+      // limit, an unreadable part. One last attempt with the whole images
+      // alone is the request the old single-call reader used to send.
+      const plain = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'none') }];
+      console.warn('[OCR_READS_FAILED_RETRY_PLAIN]', {
+        error: primary.reason?.message || String(primary.reason),
+        images: countImages(plain),
+      });
+      const fallback = await callModel(plain, {
+        label: 'read-plain',
+        businessId,
+        timeoutMs: remainingMs(),
+      });
+      addUsage(fallback.usage);
+      parsedData = prepareRead(fallback.parsedData);
+      consensus = { mode: 'plain', agreements: 0, disagreements: 0, adjudicated: 0 };
     }
-    if (primary.status === 'rejected' || secondary.status === 'rejected') {
+    if (parsedData) {
+      // The plain retry above already produced the reading.
+    } else if (primary.status === 'rejected' || secondary.status === 'rejected') {
       // One read is a complete answer on its own; the other's failure is logged.
       if (doubleRead) {
         const failed = primary.status === 'rejected' ? primary : secondary;
@@ -694,28 +885,47 @@ const analyzeImages = async (
         });
       }
       const survivor = primary.status === 'fulfilled' ? primary : secondary;
-      parsedData = normalizeFieldShapes(survivor.value.parsedData);
+      parsedData = prepareRead(survivor.value.parsedData);
     } else {
-      const readA = normalizeFieldShapes(primary.value.parsedData);
-      const readB = normalizeFieldShapes(secondary.value.parsedData);
+      const readA = prepareRead(primary.value.parsedData);
+      const readB = prepareRead(secondary.value.parsedData);
       const { merged, disagreements, agreements } = compareReads(readA, readB);
       parsedData = merged;
       consensus = { mode: 'double', agreements, disagreements: disagreements.length, adjudicated: 0 };
-      if (disagreements.length && adjudicate) {
+      if (disagreements.length && adjudicate && remainingMs() > ADJUDICATION_MIN_BUDGET_MS) {
         try {
           const verdict = await callModel(
-            [systemMessage, { role: 'user', content: buildAdjudicationContent(sides, disagreements) }],
-            { label: 'adjudicate', businessId, maxCompletionTokens: ADJUDICATION_MAX_COMPLETION_TOKENS },
+            [
+              { role: 'system', content: ADJUDICATION_SYSTEM_PROMPT },
+              { role: 'user', content: buildAdjudicationContent(sides, disagreements) },
+            ],
+            {
+              label: 'adjudicate',
+              businessId,
+              maxCompletionTokens: ADJUDICATION_MAX_COMPLETION_TOKENS,
+              timeoutMs: remainingMs(),
+            },
           );
           addUsage(verdict.usage);
           const answers = verdict.parsedData?.answers || verdict.parsedData;
           consensus.adjudicated = applyAdjudication(parsedData, disagreements, answers).applied;
+          if (consensus.adjudicated === 0) {
+            // Nothing matched the paths that were asked about: the answer came
+            // back in a shape this code cannot read, which would otherwise be
+            // indistinguishable from "the third look confirmed nothing".
+            console.warn('[OCR_ADJUDICATION_UNUSED]', {
+              asked: disagreements.map((d) => d.path),
+              answered: Object.keys(answers || {}).slice(0, 10),
+            });
+          }
         } catch (adjudicationError) {
           // The contested fields stay at low confidence and get reviewed.
           console.warn('[OCR_ADJUDICATION_FAILED]', {
             error: adjudicationError?.message || String(adjudicationError),
           });
         }
+      } else if (disagreements.length && adjudicate) {
+        console.warn('[OCR_ADJUDICATION_SKIPPED_NO_TIME]', { remainingMs: remainingMs() });
       }
       console.info('[OCR_CONSENSUS]', {
         ...consensus,
@@ -724,13 +934,11 @@ const analyzeImages = async (
     }
     console.log(`[TIMING] openai_call_ms=${Date.now() - tAiStart} analyze_total_ms=${Date.now() - tPipelineStart}`);
 
+    // The separator repair already ran per reading, against the transcript
+    // that reading produced; these work on the agreed record.
     repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
     reconcileStoneWeightsWithGrossNet(parsedData);
     syncStoneQuality(parsedData);
-
-    // Deterministic guard against separator glyphs read as digits — runs
-    // before the flattening below so corrected stone weights propagate.
-    correctSeparatorMisreads(parsedData);
 
     if (process.env.DEBUG_AI_LOGS === 'true') {
       console.log("=== AI RAW RESPONSE ===");
@@ -740,7 +948,7 @@ const analyzeImages = async (
 
     // Add backward compatibility for frontend by flattening the first stone
     if (parsedData.structuredData) {
-      if (parsedData.packetCode && !parsedData.structuredData.packetCode) {
+      if (hasFieldValue(parsedData.packetCode) && !hasFieldValue(parsedData.structuredData.packetCode)) {
         parsedData.structuredData.packetCode = parsedData.packetCode;
       }
 
@@ -748,8 +956,11 @@ const analyzeImages = async (
       if (Array.isArray(parsedData.structuredData.diamonds)) {
         parsedData.structuredData.diamonds = parsedData.structuredData.diamonds.map((diamond) => {
           if (!diamond || typeof diamond !== 'object') return diamond;
-          if (diamond.packetCode) return diamond;
-          if (!packetCodeField) return diamond;
+          // The schema asks for a packetCode on every stone, so an empty one
+          // is an object, not undefined: testing the object left every row
+          // without the tag-wide code it was supposed to inherit.
+          if (hasFieldValue(diamond.packetCode)) return diamond;
+          if (!hasFieldValue(packetCodeField)) return diamond;
           return { ...diamond, packetCode: packetCodeField };
         });
       }
@@ -776,46 +987,9 @@ const analyzeImages = async (
         parsedData.structuredData.coloredStoneClarity = firstCs.clarity || { value: '', confidence: 0 };
       }
 
-      // Reverse synthesis: the model sometimes answers with ONLY the flat
-      // diamond*/coloredStone* fields and no stones array (typical on
-      // GOLD-type scans). The app's review screen is driven by the arrays,
-      // so guarantee BOTH representations are always populated.
-      const sd = parsedData.structuredData;
-      const fieldHasValue = (field) =>
-        field && typeof field === 'object' && String(field.value ?? '').trim() !== '';
-      const emptyField = () => ({ value: '', confidence: 0 });
-
-      if (
-        (!Array.isArray(sd.diamonds) || sd.diamonds.length === 0) &&
-        (fieldHasValue(sd.diamondWeight) || fieldHasValue(sd.diamondPieces) || fieldHasValue(sd.diamondRate))
-      ) {
-        console.info('[STONE_ARRAY_SYNTHESIZED]', { kind: 'diamond' });
-        sd.diamonds = [{
-          weight: sd.diamondWeight || emptyField(),
-          pieces: sd.diamondPieces || emptyField(),
-          rate: sd.diamondRate || emptyField(),
-          quality: sd.diamondQuality || emptyField(),
-          color: sd.diamondColor || emptyField(),
-          clarity: sd.diamondClarity || emptyField(),
-          shape: sd.diamondShape || emptyField(),
-          ...(sd.packetCode ? { packetCode: sd.packetCode } : {}),
-        }];
-      }
-
-      if (
-        (!Array.isArray(sd.colorstones) || sd.colorstones.length === 0) &&
-        (fieldHasValue(sd.coloredStoneWeight) || fieldHasValue(sd.coloredStonePieces) || fieldHasValue(sd.coloredStoneRate))
-      ) {
-        console.info('[STONE_ARRAY_SYNTHESIZED]', { kind: 'colorstone' });
-        sd.colorstones = [{
-          weight: sd.coloredStoneWeight || emptyField(),
-          pieces: sd.coloredStonePieces || emptyField(),
-          rate: sd.coloredStoneRate || emptyField(),
-          quality: sd.coloredStoneQuality || emptyField(),
-          color: sd.coloredStoneColor || emptyField(),
-          clarity: sd.coloredStoneClarity || emptyField(),
-        }];
-      }
+      // Each reading was given both representations before they were
+      // compared; this is the safety net for a shape neither produced.
+      synthesizeStoneArrays(parsedData);
     }
 
     parsedData.billingMeta = {

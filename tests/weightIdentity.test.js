@@ -5,11 +5,16 @@ const { _internal } = require('../src/services/openai.service');
 
 const { reconcileStoneWeightsWithGrossNet, normalizeFieldShapes, buildReadContent, syncStoneQuality } = _internal;
 
-test('quality is rebuilt from colour and clarity after they change', () => {
+test('quality is rebuilt from colour and clarity, and never truncated to one of them', () => {
   const data = {
     structuredData: {
       diamonds: [
+        // Both parts read: the combined string follows them.
         { color: { value: 'FG', confidence: 85 }, clarity: { value: 'SI', confidence: 92 }, quality: { value: 'EG SI', confidence: 90 } },
+        // Only the clarity landed in its own field: the model's quality string
+        // is the only place the colour survives, so it is kept and flagged.
+        { color: { value: '', confidence: 0 }, clarity: { value: 'VS1', confidence: 88 }, quality: { value: 'EF VS1', confidence: 90 } },
+        // Nothing to combine and nothing written before.
         { color: { value: '', confidence: 0 }, clarity: { value: 'VS1', confidence: 88 }, quality: { value: '', confidence: 0 } },
         { weight: { value: '0.10', confidence: 90 } },
       ],
@@ -17,10 +22,13 @@ test('quality is rebuilt from colour and clarity after they change', () => {
     },
   };
   syncStoneQuality(data);
-  assert.deepEqual(data.structuredData.diamonds[0].quality, { value: 'FG SI', confidence: 85 });
-  assert.deepEqual(data.structuredData.diamonds[1].quality, { value: 'VS1', confidence: 88 });
-  assert.equal(data.structuredData.diamonds[2].quality, undefined);
-  assert.deepEqual(data.structuredData.colorstones[0].quality, { value: 'Red', confidence: 80 });
+  const diamonds = data.structuredData.diamonds;
+  assert.deepEqual(diamonds[0].quality, { value: 'FG SI', confidence: 85 });
+  assert.equal(diamonds[1].quality.value, 'EF VS1');
+  assert.ok(diamonds[1].quality.confidence < 80);
+  assert.equal(diamonds[2].quality.value, '');
+  assert.equal(diamonds[3].quality, undefined);
+  assert.equal(data.structuredData.colorstones[0].quality, undefined);
 });
 
 const field = (value, confidence = 95) => ({ value, confidence });

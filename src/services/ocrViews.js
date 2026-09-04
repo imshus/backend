@@ -18,9 +18,17 @@ const config = require('../config/env');
  * two reads see different pixels and their errors decorrelate.
  */
 
+// The vision API scales each image it receives down to roughly this many
+// pixels. A part only magnifies anything when it still carries at least that
+// many of its own, so a part below the budget is the same characters
+// re-encoded — a second lossy generation, and a slower scan, for nothing.
+const MODEL_IMAGE_BUDGET_PX = 1_100_000;
 // Below this size a magnified part carries no pixels the whole image does
 // not already deliver at full budget.
 const MIN_SOURCE_EDGE_PX = 1000;
+// A decode ceiling: MAX_UPLOAD_MB lets a small PNG expand to hundreds of
+// megabytes of raw pixels, and several at once take the process down.
+const MAX_INPUT_PIXELS = 60_000_000;
 // Bytes of a JPEG that goes to the model unchanged when it needs no rotation
 // and no downscale; re-encoding an already compact file only loses detail.
 const PASSTHROUGH_MAX_BYTES = 2.5 * 1024 * 1024;
@@ -69,7 +77,7 @@ const prepareImageViews = async (filePath) => {
   const jpegQuality = config.ocr?.jpegQuality || 82;
   const multiView = config.ocr?.multiView !== false;
 
-  const source = sharp(filePath, { failOn: 'none' });
+  const source = sharp(filePath, { failOn: 'none', limitInputPixels: MAX_INPUT_PIXELS });
   const metadata = await source.metadata();
   const rotated = ROTATED_ORIENTATIONS.has(metadata.orientation);
   const uprightWidth = rotated ? metadata.height || 0 : metadata.width || 0;
@@ -123,14 +131,31 @@ const prepareImageViews = async (filePath) => {
     return { name: region.name, base64: buffer.toString('base64'), width: box.width, height: box.height };
   };
 
+  // A layout is worth cutting only while its parts still carry more pixels
+  // than the model keeps; below that they are the same print re-encoded.
+  const partPixels = (region) => {
+    const box = regionPixels(region, info.width, info.height);
+    return box.width * box.height;
+  };
+  const worthCutting = (layout) =>
+    layout.every((region) => partPixels(region) >= MODEL_IMAGE_BUDGET_PX);
+
   let quarters = [];
   let thirds = [];
+  const thirdLayout = info.width >= info.height ? THIRDS_ALONG_WIDTH : THIRDS_ALONG_HEIGHT;
   if (multiView && Math.max(info.width, info.height) >= MIN_SOURCE_EDGE_PX) {
-    const thirdLayout = info.width >= info.height ? THIRDS_ALONG_WIDTH : THIRDS_ALONG_HEIGHT;
     [quarters, thirds] = await Promise.all([
-      Promise.all(QUARTERS.map(encodePart)),
-      Promise.all(thirdLayout.map(encodePart)),
+      worthCutting(QUARTERS) ? Promise.all(QUARTERS.map(encodePart)) : [],
+      worthCutting(thirdLayout) ? Promise.all(thirdLayout.map(encodePart)) : [],
     ]);
+    if (quarters.length === 0 && thirds.length === 0) {
+      console.warn('[OCR_PARTS_TOO_SMALL]', {
+        width: info.width,
+        height: info.height,
+        maxEdgePx,
+        note: 'magnified parts would carry fewer pixels than the model keeps; raise OCR_MAX_EDGE_PX',
+      });
+    }
   }
 
   console.info('[OCR_IMAGE_VIEWS]', {

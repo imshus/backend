@@ -210,6 +210,15 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
     throw new Error('No images uploaded for this scan');
   }
 
+  // A finished scan answers with what it already found. Its temp images were
+  // deleted on completion, so running the model again would read nothing and
+  // overwrite a real result with values invented from the prompt — and bill a
+  // second time for it.
+  if (scan.status === 'ANALYSIS_COMPLETED' && scan.analysisResult) {
+    console.info('[ANALYZE_ALREADY_COMPLETED]', { scanId });
+    return scan;
+  }
+
   const startedAt = Date.now();
   console.info('[OPENAI_REQUEST_START]', {
     scanId,
@@ -289,6 +298,7 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
   // analysis (failures above keep them for retry) — fire-and-forget so the
   // response is not blocked on disk I/O.
   setImmediate(() => {
+    ocrPreprocessCache.releaseScan(scanId);
     cleanupTempImage(frontImagePath);
     cleanupTempImage(backImagePath);
     finalizeBillingInBackground({ scan, analysisResult: result, session, licenseContext });

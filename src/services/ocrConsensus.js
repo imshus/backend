@@ -57,6 +57,29 @@ const withConfidence = (field, ceiling) => {
 };
 
 /**
+ * A stone list as stones. The model is asked for an array and usually sends
+ * one, but a single stone sometimes arrives as a bare object; reading that as
+ * "no stones" would drop every diamond on the tag.
+ */
+const asStones = (value) => {
+  if (Array.isArray(value)) {
+    return value.filter((stone) => stone && typeof stone === 'object' && !Array.isArray(stone));
+  }
+  if (value && typeof value === 'object') return [value];
+  return [];
+};
+
+/** A stone the reader actually put something in, as opposed to an empty template. */
+const carriesData = (stone) => STONE_FIELDS.some((field) => fieldText(stone[field]));
+
+const capEveryField = (stone, ceiling) => {
+  for (const field of Object.keys(stone)) {
+    if (fieldText(stone[field])) stone[field] = withConfidence(stone[field], ceiling);
+  }
+  return stone;
+};
+
+/**
  * Compares the primary reading with the secondary one.
  * Returns { merged, disagreements, agreements } where `merged` is a copy of
  * the primary reading with confidences adjusted, and each disagreement is
@@ -99,25 +122,28 @@ const compareReads = (primary, secondary) => {
   }
 
   for (const group of STONE_GROUPS) {
-    const stonesA = Array.isArray(sdA[group]) ? sdA[group].filter((s) => s && typeof s === 'object') : [];
-    const stonesB = Array.isArray(sdB[group]) ? sdB[group].filter((s) => s && typeof s === 'object') : [];
-    sdA[group] = stonesA;
-    const filledA = stonesA.filter((stone) => STONE_FIELDS.some((f) => fieldText(stone[f])));
-    const filledB = stonesB.filter((stone) => STONE_FIELDS.some((f) => fieldText(stone[f])));
+    const filledA = asStones(sdA[group]).filter(carriesData);
+    const filledB = asStones(sdB[group]).filter(carriesData);
+    // Empty template stones are dropped here, so a stone's position in this
+    // list is the position everything else addresses: the paths below, the
+    // adjudicator's answers, the app's rows and its confidence marks.
+    sdA[group] = filledA;
     if (filledA.length === 0 && filledB.length === 0) continue;
     if (filledA.length !== filledB.length) {
       // The reads split the stone lines differently; every stone field is in
-      // doubt until the count is settled.
-      for (const stone of stonesA) {
-        for (const fieldName of STONE_FIELDS) {
-          if (fieldText(stone[fieldName])) stone[fieldName] = withConfidence(stone[fieldName], CONTESTED_CONFIDENCE);
-        }
-      }
+      // doubt until the count is settled. When one read found no stones at
+      // all, the other read's stones are the only evidence there is — keeping
+      // them flagged beats answering "this tag has no stones".
+      // Recorded before the values are doubted, so settling the count later
+      // restores each field's own confidence rather than the contested one.
+      const options = { a: clone(filledA), b: clone(filledB) };
+      const kept = filledA.length > 0 ? filledA : clone(filledB);
+      sdA[group] = kept.map((stone) => capEveryField(stone, CONTESTED_CONFIDENCE));
       disagreements.push({
         path: `${group}.count`,
         a: String(filledA.length),
         b: String(filledB.length),
-        alternative: clone(filledB),
+        options,
       });
       continue;
     }
@@ -186,37 +212,34 @@ const applyAdjudication = (merged, disagreements, answers) => {
     if (!answer) continue;
     const parsed = parsePath(d.path);
     if (parsed.count) {
-      const chosen = Number(answer.value.replace(/[^0-9]/g, ''));
-      if (!Number.isFinite(chosen)) continue;
-      if (String(chosen) === d.b && Array.isArray(d.alternative)) {
-        sd[parsed.group] = d.alternative.map((stone) => {
-          const out = {};
-          for (const key of Object.keys(stone)) {
-            out[key] = withConfidence(stone[key], ADJUDICATED_CONFIDENCE);
-          }
-          return out;
-        });
-        applied += 1;
-      } else if (String(chosen) === d.a) {
-        for (const stone of sd[parsed.group] || []) {
-          for (const key of Object.keys(stone)) {
-            if (fieldText(stone[key])) stone[key] = { value: fieldText(stone[key]), confidence: ADJUDICATED_CONFIDENCE };
-          }
-        }
-        applied += 1;
-      }
+      const chosen = answer.value.replace(/[^0-9]/g, '');
+      const source = chosen === d.a ? d.options?.a : chosen === d.b ? d.options?.b : null;
+      if (!source) continue;
+      // The answer settles how many stone lines the tag prints and nothing
+      // about what they say, and these stones come from one read only, so
+      // every field keeps its own confidence under the single-source cap and
+      // the review screen still asks for a look.
+      sd[parsed.group] = clone(source).map((stone) => capEveryField(stone, SINGLE_SOURCE_CONFIDENCE));
+      applied += 1;
       continue;
     }
     const holder = parsed.group ? (sd[parsed.group] || [])[parsed.index] : sd;
     if (!holder) continue;
     const fieldName = parsed.field;
-    const confirmed =
-      answer.value !== '' &&
-      (canonical(fieldName, answer.value) === canonical(fieldName, d.a) ||
-        canonical(fieldName, answer.value) === canonical(fieldName, d.b));
+    if (answer.value === '' && (d.a !== '' || d.b !== '')) {
+      // The third look could not see it either. That is not evidence that
+      // nothing is printed, so what a read did see stays, still contested.
+      continue;
+    }
+    const matchesA = canonical(fieldName, answer.value) === canonical(fieldName, d.a);
+    const matchesB = canonical(fieldName, answer.value) === canonical(fieldName, d.b);
+    const confirmed = answer.value !== '' && (matchesA || matchesB);
+    // A confirmed value is written the way the read printed it: an answer that
+    // arrived as a number would otherwise lose a leading dot or a trailing zero.
+    const value = matchesA ? d.a : matchesB ? d.b : answer.value;
     const ceiling = confirmed ? ADJUDICATED_CONFIDENCE : ADJUDICATED_NEW_VALUE_CONFIDENCE;
     holder[fieldName] = {
-      value: answer.value,
+      value,
       confidence: Math.min(answer.confidence || ceiling, ceiling),
     };
     applied += 1;
@@ -229,6 +252,7 @@ module.exports = {
   applyAdjudication,
   describeDisagreements,
   canonical,
+  asStones,
   CONTESTED_CONFIDENCE,
   SINGLE_SOURCE_CONFIDENCE,
   ADJUDICATED_CONFIDENCE,
