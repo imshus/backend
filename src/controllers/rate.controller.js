@@ -5,6 +5,7 @@ const ColorstoneRate = require('../models/colorstoneRate.model');
 const LabourRate = require('../models/labourRate.model');
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const { getLiveGoldRates } = require('../services/rateCalculation.service');
+const { findDiamondRateMatch } = require('../services/diamondRateLookup.service');
 const redisService = require('../services/redis.service');
 const {
   addPromptCustomization,
@@ -442,50 +443,13 @@ const lookupDiamondRate = async (req, res) => {
         .json({ success: false, message: 'At least one of packet code, shape, color or clarity is required' });
     }
 
-    if (!normalizedPacketCode && !(trimmedColor && trimmedClarity)) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'Color and clarity are required when packet code is missing' });
-    }
-
-    // Format-tolerant matching: scanner output ("IJ", "VSSI", "RD") must match
-    // configured rows regardless of case, spaces, or hyphens ("ij", "VS-SI").
-    const normKey = (value) => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const normShapeKey = (value) => {
-      const key = normKey(value);
-      return key === '0' || key === 'NONE' ? '' : key;
-    };
-
     const rows = await DiamondRate.find({ businessId }).lean();
-
-    let match = null;
-    if (normalizedPacketCode) {
-      const packetKey = normKey(normalizedPacketCode);
-      match = rows.find((row) => normKey(row.packetCode) === packetKey);
-    }
-    // A packet code the table does not know cannot pin a row. Fall back to
-    // colour + clarity when the tag printed them: a labour code such as
-    // LBR-850 landing in the packet-code field used to block the lookup and
-    // answer 404 although a colour/clarity row existed.
-    if (!match && trimmedColor && trimmedClarity) {
-      const colorKey = normKey(trimmedColor);
-      const clarityKey = normKey(trimmedClarity);
-      const candidates = rows.filter(
-        (row) => normKey(row.color) === colorKey && normKey(row.clarity) === clarityKey,
-      );
-      const requestedShapeKey = normShapeKey(normalizedShape);
-      if (requestedShapeKey) {
-        // Prefer the exact shape; fall back to a shape-agnostic row.
-        match =
-          candidates.find((row) => normShapeKey(row.shape) === requestedShapeKey) ||
-          candidates.find((row) => !normShapeKey(row.shape));
-      } else {
-        // No shape requested: shape-agnostic row, or the single candidate.
-        match =
-          candidates.find((row) => !normShapeKey(row.shape)) ||
-          (candidates.length === 1 ? candidates[0] : null);
-      }
-    }
+    const match = findDiamondRateMatch(rows, {
+      color: trimmedColor,
+      clarity: trimmedClarity,
+      shape: normalizedShape,
+      packetCode: normalizedPacketCode,
+    });
 
     if (!match) {
       console.warn('[DIAMOND_RATE_LOOKUP_MISS]', {
