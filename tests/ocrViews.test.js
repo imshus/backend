@@ -11,7 +11,21 @@ const sharp = require('sharp');
 // override values already present).
 process.env.OCR_MAX_EDGE_PX = '2400';
 const config = require('../src/config/env');
-const { prepareImageViews, MIN_SOURCE_EDGE_PX } = require('../src/services/ocrViews');
+const {
+  prepareImageViews,
+  MIN_SOURCE_EDGE_PX,
+  MODEL_IMAGE_BUDGET_PX,
+  PART_SOURCE_MAX_EDGE_PX,
+} = require('../src/services/ocrViews');
+
+/** Parts are sent at the model's own budget: more pixels would be discarded. */
+const assertAtBudget = (part) => {
+  const pixels = part.width * part.height;
+  assert.ok(
+    pixels <= MODEL_IMAGE_BUDGET_PX * 1.02 && pixels >= MODEL_IMAGE_BUDGET_PX * 0.9,
+    `${part.name} carries ${(pixels / 1e6).toFixed(2)}MP, expected about ${(MODEL_IMAGE_BUDGET_PX / 1e6).toFixed(2)}MP`,
+  );
+};
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrpscan-views-'));
 test.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
@@ -54,17 +68,19 @@ test('a landscape tag yields the whole image, four overlapping quarters and thre
     const meta = await decode(part.base64);
     assert.equal(meta.width, part.width);
     assert.equal(meta.height, part.height);
-    // 60% of each edge, so neighbouring quarters overlap by 20%.
-    assert.ok(Math.abs(part.width - views.width * 0.6) <= 1, `${part.name} width ${part.width}`);
-    assert.ok(Math.abs(part.height - views.height * 0.6) <= 1, `${part.name} height ${part.height}`);
+    assertAtBudget(part);
+    // 60% of each edge, so neighbouring quarters overlap by 20%: the shape is
+    // preserved when the part is scaled to the budget.
+    assert.ok(Math.abs(part.width / part.height - views.width / views.height) < 0.05);
   }
   assert.deepEqual(
     views.thirds.map((p) => p.name),
     ['left third', 'middle third', 'right third'],
   );
   for (const part of views.thirds) {
-    assert.ok(Math.abs(part.width - views.width * 0.4) <= 1);
-    assert.equal(part.height, views.height);
+    assertAtBudget(part);
+    // 40% of the width, the full height.
+    assert.ok(Math.abs(part.width / part.height - 0.4 * (views.width / views.height)) < 0.05);
   }
 });
 
@@ -76,19 +92,34 @@ test('a portrait tag takes its thirds along the height', async () => {
     ['top third', 'middle third', 'bottom third'],
   );
   for (const part of views.thirds) {
-    assert.equal(part.width, views.width);
-    assert.ok(Math.abs(part.height - views.height * 0.4) <= 1);
+    assertAtBudget(part);
+    // The full width, 40% of the height.
+    assert.ok(Math.abs(part.height / part.width - 0.4 * (views.height / views.width)) < 0.05);
   }
 });
 
-test('a source larger than the edge cap is downscaled once and the parts follow the capped size', async () => {
+test('the whole image obeys the edge cap while the parts are cut from the photo itself', async () => {
   const file = await writeTag('huge.jpg', 4000, 3000);
   const views = await prepareImageViews(file);
   assert.equal(Math.max(views.width, views.height), config.ocr.maxEdgePx);
   const full = await decode(views.full);
   assert.equal(full.width, views.width);
   assert.equal(views.quarters.length, 4);
-  assert.ok(Math.abs(views.quarters[0].width - views.width * 0.6) <= 1);
+  // This is the point of cutting from the source: a quarter covers 36% of the
+  // tag and still carries as many pixels as the whole image is allowed, so it
+  // reaches the model roughly 1.7x larger however the cap is set.
+  assertAtBudget(views.quarters[0]);
+  assert.ok(views.quarters[0].width > views.width * 0.6 * 0.8);
+});
+
+test('a photo far larger than the part source is decoded once, bounded', async () => {
+  const file = await writeTag('enormous.jpg', 5200, 3900);
+  const views = await prepareImageViews(file);
+  assert.equal(Math.max(views.width, views.height), config.ocr.maxEdgePx);
+  assert.equal(views.quarters.length, 4);
+  for (const part of views.quarters) assertAtBudget(part);
+  // The work buffer is capped, so a quarter of it cannot exceed the ceiling.
+  assert.ok(views.quarters[0].width <= PART_SOURCE_MAX_EDGE_PX);
 });
 
 test('parts that would carry fewer pixels than the model keeps are not cut at all', async () => {
