@@ -5,6 +5,7 @@ const redisService = require('./redis.service');
 const SupremeChange = require('../models/supremeChange.model');
 const DashboardMetrics = require('../models/dashboardMetrics.model');
 const bhawService = require('./bhaw.service');
+const { findScopedSetting } = require('./userScope.service');
 
 const toNumber = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -25,13 +26,19 @@ const normalizeMcxChange = (mcxChange) => {
   return { operation, amount, signed };
 };
 
-const getLiveGoldRates = async (businessId) => {
+const getLiveGoldRates = async (businessId, scope = null) => {
   if (!businessId) throw new Error('Business ID is required');
+
+  // Whose rate settings apply: an employee's own when they have saved any,
+  // otherwise the shop's. An employee gets their own cache entry; the owner
+  // and everyone inheriting the shop's settings share the business one.
+  const settings = { businessId, userId: scope?.userId || null };
+  const cacheId = settings.userId ? `${businessId}:u:${settings.userId}` : businessId.toString();
 
   // 1. Check Redis Cache First. An entry without bhawSource was computed by a
   // pre-vendor-selection build; serving it would pin stale rates for up to the
   // cache TTL after a deploy, so treat it as a miss and recompute.
-  const cachedData = await redisService.getGoldRatesCache(businessId.toString());
+  const cachedData = await redisService.getGoldRatesCache(cacheId);
   if (cachedData && cachedData.bhawSource) {
     return cachedData;
   }
@@ -44,7 +51,7 @@ const getLiveGoldRates = async (businessId) => {
   const bhawWarm = bhawService.prefetch();
   const [mcxLiveRate, taxSettingsDoc, supremeRead, metrics, karatRowsRead] = await Promise.all([
     mcxService.getLiveMcxRate24K(),
-    GoldTaxSetting.findOne({ businessId }),
+    findScopedSetting(GoldTaxSetting, settings),
     (async () => {
       const supremeCache = await redisService.getSupremeCache();
       if (supremeCache) {
@@ -62,7 +69,7 @@ const getLiveGoldRates = async (businessId) => {
     // Never let the bhaw-source lookup break rate delivery: a malformed
     // businessId or a metrics outage falls back to the supreme changes.
     Promise.resolve()
-      .then(() => DashboardMetrics.findOne({ businessId }))
+      .then(() => findScopedSetting(DashboardMetrics, settings))
       .catch((metricsError) => {
         console.warn('[Gold Rates] Could not read bhaw source preference:', metricsError.message);
         return null;
@@ -210,7 +217,7 @@ const getLiveGoldRates = async (businessId) => {
 
   // 9. Cache best-effort. API response must not fail if cache backend is degraded.
   try {
-    await redisService.setGoldRatesCache(businessId.toString(), responseData);
+    await redisService.setGoldRatesCache(cacheId, responseData);
   } catch (cacheError) {
     console.warn('[Gold Rates] Failed to cache computed rates. Serving fresh response:', cacheError.message);
   }

@@ -14,10 +14,18 @@ const invoiceSchema = new mongoose.Schema({
     required: true,
     index: true,
   },
+  // Unique within the business (see the compound index below): every shop
+  // counts its own invoices from 00001 each day.
   invoiceNumber: {
     type: String,
     required: true,
-    unique: true,
+  },
+  // The account that issued it. An employee sees only their own invoices;
+  // the owner sees the shop's.
+  userId: {
+    type: String,
+    default: null,
+    index: true,
   },
 
   // Company (auto-populated from business profile)
@@ -70,5 +78,8 @@ const invoiceSchema = new mongoose.Schema({
   timestamps: true,
   collection: 'invoices',
 });
+
+invoiceSchema.index({ businessId: 1, invoiceNumber: 1 }, { unique: true });
+invoiceSchema.index({ businessId: 1, userId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

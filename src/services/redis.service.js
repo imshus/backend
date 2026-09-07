@@ -290,13 +290,22 @@ const getGoldRatesCache = async (businessId) => {
   });
 };
 
+// A business's rates are cached once for the shop and once more for every
+// employee who keeps their own rate settings; a change to the shop's inputs
+// invalidates all of them.
 const invalidateGoldRatesCache = async (businessId) => {
+  const prefix = goldKey(businessId);
   return runStoreOp(async (backend) => {
     if (backend === 'memory') {
-      memoryStore.delete(goldKey(businessId));
+      for (const key of [...memoryStore.keys()]) {
+        if (key === prefix || key.startsWith(`${prefix}:u:`)) memoryStore.delete(key);
+      }
       return;
     }
-    await redis.del(goldKey(businessId));
+    const keys = await redis.keys(`${prefix}*`);
+    if (keys.length > 0) {
+      await redis.del(...keys);
+    }
   });
 };
 

@@ -5,6 +5,7 @@ const LabourRate = require('../models/labourRate.model');
 const Employee = require('../models/employee.model');
 const { aggregateJewelleryMrp } = require('../services/pricingAggregation.service');
 const { assertScanAccess, toSessionContext } = require('../utils/scanAccess');
+const { settingsScope } = require('../services/userScope.service');
 
 const normalizeBool = (value) => {
   if (typeof value === 'boolean') return value;
@@ -87,7 +88,7 @@ const calculateMRP = async (req, res, next) => {
       ? Employee.findById(req.user.userId).select('permissions')
       : Promise.resolve(null);
     const [liveRatesData, globalLabour, scanResolution, employee] = await Promise.all([
-      rateCalculationService.getLiveGoldRates(businessId),
+      rateCalculationService.getLiveGoldRates(businessId, settingsScope(req.user)),
       LabourRate.findOne({ businessId }),
       resolveScanForCalculation(scanId, sessionContext),
       employeePromise,

@@ -4,6 +4,7 @@ const config = require('./config/env');
 const connectDB = require('./config/db');
 const { initMcxScheduler } = require('./services/mcxScheduler.service');
 const { startKeepWarm: startBhawKeepWarm } = require('./services/bhaw.service');
+const { ensureUserScopedIndexes } = require('./services/userScope.service');
 const DiamondRate = require('./models/diamondRate.model');
 const PaymentTransaction = require('./models/paymentTransaction.model');
 
@@ -79,6 +80,9 @@ connectDB().then(async () => {
     await DiamondRate.syncIndexes();
     console.log('[DB] DiamondRate indexes synced');
     await reconcilePaymentTransactionIndexes();
+    // Settings per user and invoice numbers per business: retire the indexes
+    // that enforced one record per business and one number system-wide.
+    await ensureUserScopedIndexes();
   } catch (error) {
     console.warn('[DB] Failed to sync startup indexes:', error.message);
   }

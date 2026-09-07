@@ -2,6 +2,7 @@ const FormulaConfig = require('../models/formulaConfig.model');
 const DashboardMetrics = require('../models/dashboardMetrics.model');
 const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
+const { settingsScope, findScopedSetting, upsertScopedSetting } = require('../services/userScope.service');
 
 const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   '24k_mcx': true,
@@ -77,8 +78,8 @@ const getBusinessProfile = async (req, res) => {
 
 const getFormulaConfig = async (req, res) => {
   try {
-    const businessId = req.user.businessId;
-    let config = await FormulaConfig.findOne({ businessId });
+    // The employee's own formula when they have saved one, else the shop's.
+    let config = await findScopedSetting(FormulaConfig, settingsScope(req.user));
 
     if (!config) {
       config = {
@@ -97,7 +98,6 @@ const getFormulaConfig = async (req, res) => {
 const updateFormulaConfig = async (req, res) => {
   try {
     const { activeFormula, formula2Rules } = req.body;
-    const businessId = req.user.businessId;
 
     const updateData = {};
     if (activeFormula) {
@@ -111,11 +111,8 @@ const updateFormulaConfig = async (req, res) => {
       updateData.formula2Rules = formula2Rules;
     }
 
-    const config = await FormulaConfig.findOneAndUpdate(
-      { businessId },
-      { $set: updateData },
-      { new: true, upsert: true }
-    );
+    // The owner writes the shop's formula; an employee writes their own.
+    const config = await upsertScopedSetting(FormulaConfig, settingsScope(req.user), updateData);
 
     res.status(200).json({ success: true, data: config });
   } catch (error) {
@@ -127,8 +124,8 @@ const updateFormulaConfig = async (req, res) => {
 
 const getDashboardMatrices = async (req, res) => {
   try {
-    const businessId = req.user.businessId;
-    let metrics = await DashboardMetrics.findOne({ businessId });
+    // The employee's own rows when they have saved them, else the shop's.
+    let metrics = await findScopedSetting(DashboardMetrics, settingsScope(req.user));
 
     if (!metrics) {
       metrics = { metricsData: DEFAULT_DASHBOARD_MATRIX_VALUES };
@@ -147,13 +144,12 @@ const updateDashboardMatrices = async (req, res) => {
     const { values } = req.body;
     const normalizedValues = normalizeDashboardMatrices(values || {});
 
-    const metrics = await DashboardMetrics.findOneAndUpdate(
-      { businessId },
-      { $set: { metricsData: normalizedValues } },
-      { new: true, upsert: true }
-    );
+    const metrics = await upsertScopedSetting(DashboardMetrics, settingsScope(req.user), {
+      metricsData: normalizedValues,
+    });
 
-    // The bhaw source feeds the cached gold-rate computation.
+    // The bhaw source feeds the cached gold-rate computation, for every
+    // account of this business.
     const redisService = require('../services/redis.service');
     await redisService.invalidateGoldRatesCache(businessId.toString());
 

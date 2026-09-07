@@ -8,6 +8,7 @@ const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
 const Employee = require('../models/employee.model');
 const { generateInvoiceNumber, peekNextInvoiceNumber } = require('../models/invoiceCounter.model');
+const { ownWorkFilter } = require('../services/userScope.service');
 const { generateInvoicePdf, getDownloadUrl } = require('../services/pdfmonkey.service');
 const redisService = require('../services/redis.service');
 const config = require('../config/env');
@@ -526,8 +527,8 @@ const generateInvoice = async (req, res, next) => {
       return sendError(res, 'grand_total must be greater than zero', 400);
     }
 
-    // 2. Generate server-side invoice number (atomic, central)
-    const invoiceNumber = await generateInvoiceNumber();
+    // 2. Generate server-side invoice number (atomic, per business per day)
+    const invoiceNumber = await generateInvoiceNumber(businessId);
 
     // 3. Format the invoice date (server time). The printed tax invoice shows
     // the date alone as DD-MM-YYYY — no time component.
@@ -589,6 +590,7 @@ const generateInvoice = async (req, res, next) => {
     const invoice = await Invoice.create({
       businessId,
       invoiceNumber,
+      userId: String(req.user?.userId || '').trim() || null,
       companyName: (business?.tradeName || business?.legalName || ''),
       companyAddress: pdfPayload.company_address,
       gstinNumber: pdfPayload.gstin_number,
@@ -801,14 +803,16 @@ const getInvoices = async (req, res, next) => {
     const limit = Math.min(50, parseInt(req.query.limit) || 20);
     const skip = (page - 1) * limit;
 
+    // An employee's list is their own invoices; the owner's is the shop's.
+    const filter = { businessId, ...ownWorkFilter(req.user) };
     const [invoices, total] = await Promise.all([
-      Invoice.find({ businessId })
+      Invoice.find(filter)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .select('-lineItems')  // exclude heavy array for list view
         .lean(),
-      Invoice.countDocuments({ businessId }),
+      Invoice.countDocuments(filter),
     ]);
 
     return sendSuccess(res, {
@@ -832,7 +836,7 @@ const getInvoice = async (req, res, next) => {
     if (!businessId) {
       return sendError(res, 'Unauthorized', 401);
     }
-    const invoice = await Invoice.findOne({ _id: req.params.id, businessId }).lean();
+    const invoice = await Invoice.findOne({ _id: req.params.id, businessId, ...ownWorkFilter(req.user) }).lean();
     if (!invoice) {
       return sendError(res, 'Invoice not found', 404);
     }
@@ -848,7 +852,11 @@ const getInvoice = async (req, res, next) => {
  */
 const getNextInvoiceNumber = async (req, res, next) => {
   try {
-    const nextNumber = await peekNextInvoiceNumber();
+    const businessId = await resolveBusinessIdFromUser(req.user);
+    if (!businessId) {
+      return sendError(res, 'Unauthorized', 401);
+    }
+    const nextNumber = await peekNextInvoiceNumber(businessId);
     return sendSuccess(res, { nextNumber });
   } catch (err) {
     next(err);

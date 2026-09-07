@@ -7,6 +7,7 @@ const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const { getLiveGoldRates } = require('../services/rateCalculation.service');
 const { findDiamondRateMatch } = require('../services/diamondRateLookup.service');
 const redisService = require('../services/redis.service');
+const { settingsScope, findScopedSetting, upsertScopedSetting } = require('../services/userScope.service');
 const {
   addPromptCustomization,
   getPromptCustomizations,
@@ -120,7 +121,7 @@ const updateGoldRate = async (req, res) => {
     await redisService.invalidateGoldRatesCache(businessId.toString());
 
     // Return computed shape (with finalRate/mcxRate/cashRate/rtgsRate) expected by frontend
-    const live = await getLiveGoldRates(businessId);
+    const live = await getLiveGoldRates(businessId, settingsScope(req.user));
     const updatedComputed = Array.isArray(live?.karatRates)
       ? live.karatRates.find((row) => row.carat === normalizedCarat)
       : null;
@@ -166,7 +167,7 @@ const updateGoldRateVisibility = async (req, res) => {
 
     await redisService.invalidateGoldRatesCache(businessId.toString());
 
-    const live = await getLiveGoldRates(businessId);
+    const live = await getLiveGoldRates(businessId, settingsScope(req.user));
     const updatedComputed = Array.isArray(live?.karatRates)
       ? live.karatRates.find((row) => row.carat === updated.carat)
       : null;
@@ -181,8 +182,9 @@ const updateGoldRateVisibility = async (req, res) => {
 const getGoldRates = async (req, res) => {
   try {
     const businessId = req.user.businessId;
-    // Uses the "Supreme Truth Engine" which orchestrates MongoDB + Redis + Live Math
-    const data = await getLiveGoldRates(businessId);
+    // Uses the "Supreme Truth Engine" which orchestrates MongoDB + Redis + Live Math,
+    // against this account's own rate settings when it has saved any.
+    const data = await getLiveGoldRates(businessId, settingsScope(req.user));
     
     // Keep all fields inside a single data envelope so frontend unwrapApiData preserves them.
     res.status(200).json({
@@ -204,8 +206,8 @@ const getGoldRates = async (req, res) => {
 
 const getGoldTaxSettings = async (req, res) => {
   try {
-    const businessId = req.user.businessId;
-    let taxSettings = await GoldTaxSetting.findOne({ businessId });
+    // The employee's own adjustments when they have saved any, else the shop's.
+    let taxSettings = await findScopedSetting(GoldTaxSetting, settingsScope(req.user));
     if (!taxSettings) {
       taxSettings = {
         mcxChange: { operation: '+', amount: 0 },
@@ -239,13 +241,10 @@ const updateGoldTaxSettings = async (req, res) => {
     if (cashChangeBy !== undefined) updateData.cashChangeBy = cashChangeBy;
     if (scannerCalculationUse) updateData.scannerCalculationUse = scannerCalculationUse === 'cash' ? 'cash' : 'rtgs';
 
-    const taxSettings = await GoldTaxSetting.findOneAndUpdate(
-      { businessId },
-      { $set: updateData },
-      { new: true, upsert: true }
-    );
+    // The owner writes the shop's adjustments; an employee writes their own.
+    const taxSettings = await upsertScopedSetting(GoldTaxSetting, settingsScope(req.user), updateData);
 
-    // Invalidate Cache since base rate logic changed
+    // Invalidate Cache since base rate logic changed, for every account of the business
     await redisService.invalidateGoldRatesCache(businessId.toString());
 
     res.status(200).json({ success: true, data: taxSettings });
