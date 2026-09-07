@@ -9,6 +9,8 @@ router.use(authenticateJWT);
 router.use(attachLicenseContext);
 
 router.get('/overview', requireRole('OWNER', 'ADMIN'), subscriptionController.getOverview);
+// Every signed-in role: employees can open Earn & Invite and share the code.
+router.get('/referral', subscriptionController.getReferralOverview);
 router.get('/scan-billing', requireRole('OWNER', 'ADMIN'), subscriptionController.getScanBillingHistory);
 router.get('/credit-transactions', requireRole('OWNER', 'ADMIN'), subscriptionController.getCreditTransactionHistory);
 

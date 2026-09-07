@@ -23,6 +23,8 @@ const errorHandler = (err, req, res, next) => {
     'MSG91_TIMEOUT': { status: 504, msg: 'MSG91 request timed out.' },
     'USER_ID_ALREADY_EXISTS': { status: 409, msg: 'This User ID is already taken. Please choose another.' },
     'PHONE_ALREADY_EXISTS': { status: 409, msg: 'This phone number is already associated with an account.' },
+    'REFERRAL_CODE_INVALID': { status: 400, msg: 'That referral code was not recognised. Check it or leave it blank.' },
+    'REFERRAL_CODE_GENERATION_FAILED': { status: 500, msg: 'Could not create a referral code. Please try again.' },
     'ACCOUNT_NOT_FOUND': { status: 404, msg: 'No active account was found for this phone number or User ID.' },
     'INVALID_RESET_TOKEN': { status: 401, msg: 'This password reset session is invalid. Request a new code.' },
     'RESET_TOKEN_EXPIRED': { status: 401, msg: 'This password reset session has expired. Request a new code.' },

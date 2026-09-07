@@ -1,6 +1,24 @@
 const OrganizationLicense = require('../models/organizationLicense.model');
 const billingConfigService = require('./billingConfig.service');
 const walletService = require('./wallet.service');
+const referralService = require('./referral.service');
+
+/**
+ * Pays the referrer when a referred business takes its first licence. A
+ * referral hiccup must never fail the licence action itself, so this only
+ * logs on error.
+ */
+async function payReferralReward({ businessId, trigger, orderId = null, paymentId = null }) {
+  try {
+    await referralService.rewardReferrerIfEligible({ businessId, trigger, orderId, paymentId });
+  } catch (error) {
+    console.error('[REFERRAL_REWARD_FAILED]', {
+      businessId: String(businessId),
+      trigger,
+      error: error?.message || String(error),
+    });
+  }
+}
 
 function addDays(baseDate, days) {
   const cloned = new Date(baseDate);
@@ -161,6 +179,8 @@ async function startTrialLicense(businessId, actorUserId) {
     reason: 'TRIAL_LICENSE_ACTIVE',
   });
 
+  await payReferralReward({ businessId, trigger: 'TRIAL_STARTED' });
+
   return {
     license,
     started: true,
@@ -206,6 +226,8 @@ async function activatePermanentLicense({
     businessId: String(businessId),
     reason: 'PERMANENT_LICENSE_ACTIVE',
   });
+
+  await payReferralReward({ businessId, trigger: 'LICENSE_PURCHASED', orderId, paymentId });
 
   return { license, activated: true };
 }

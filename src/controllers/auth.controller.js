@@ -27,9 +27,9 @@ const confirmGst = async (req, res, next) => {
 
 const submitContactDetails = async (req, res, next) => {
   try {
-    const { businessId, phone } = req.body;
+    const { businessId, phone, referralCode } = req.body;
     console.log(`[auth] contact-details request: businessId=${businessId}, phone=${phone}`);
-    const data = await registrationService.submitContactDetails(businessId, phone);
+    const data = await registrationService.submitContactDetails(businessId, phone, referralCode);
     sendSuccess(res, data);
   } catch (err) {
     next(err);

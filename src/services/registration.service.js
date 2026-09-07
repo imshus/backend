@@ -9,6 +9,7 @@ const otpRepository = require('../repositories/otp.repository');
 const authService = require('./auth.service');
 const licenseService = require('./license.service');
 const walletService = require('./wallet.service');
+const referralService = require('./referral.service');
 
 function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '').slice(-10);
@@ -138,7 +139,7 @@ const confirmGst = async (gstData) => {
   };
 };
 
-const submitContactDetails = async (businessId, phone) => {
+const submitContactDetails = async (businessId, phone, referralCode) => {
   const business = await Business.findById(businessId);
   if (!business) throw new Error('REGISTRATION_SESSION_EXPIRED');
 
@@ -151,6 +152,13 @@ const submitContactDetails = async (businessId, phone) => {
   const existingUser = await BusinessUser.findOne({ phone: normalizedPhone });
   if (existingUser) {
     if (existingUser.phone === normalizedPhone) throw new Error('PHONE_ALREADY_EXISTS');
+  }
+
+  // Link the referrer before any OTP goes out, so a mistyped code fails while
+  // the person is still on the form. Absent code on a resubmit leaves an
+  // earlier link in place.
+  if (referralCode) {
+    await referralService.applyReferralCode({ businessId, code: referralCode });
   }
 
   // Save temp state in Redis

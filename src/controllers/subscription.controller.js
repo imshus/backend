@@ -6,6 +6,17 @@ const ScanBilling = require('../models/scanBilling.model');
 const CreditTransaction = require('../models/creditTransaction.model');
 const billingConfigService = require('../services/billingConfig.service');
 const paymentService = require('../services/payment.service');
+const referralService = require('../services/referral.service');
+
+/** Earn & Invite: the business's code and how its referrals are doing. */
+async function getReferralOverview(req, res, next) {
+  try {
+    const overview = await referralService.getReferralOverview(req.user.businessId);
+    sendSuccess(res, overview);
+  } catch (error) {
+    next(error);
+  }
+}
 
 async function getOverview(req, res, next) {
   try {
@@ -259,6 +270,7 @@ async function getCreditTransactionHistory(req, res, next) {
 
 module.exports = {
   getOverview,
+  getReferralOverview,
   startTrial,
   purchaseApplication,
   addCredits,

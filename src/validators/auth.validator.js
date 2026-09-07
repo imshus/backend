@@ -28,6 +28,8 @@ const gstConfirmSchema = Joi.object({
 const contactDetailsSchema = Joi.object({
   businessId: Joi.string().required(),
   phone: Joi.string().pattern(/^[0-9]{10}$/).required(),
+  // Optional Earn & Invite code from another business; separators tolerated.
+  referralCode: Joi.string().trim().uppercase().pattern(/^[A-Z0-9 -]{4,16}$/).allow('', null).optional(),
 });
 
 const sendOtpSchema = Joi.object({
