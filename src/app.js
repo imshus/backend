@@ -33,6 +33,14 @@ app.use('/api/v1/subscription', require('./routes/subscription.routes'));
 app.use('/api/v1/payments', require('./routes/payment.routes'));
 app.use('/api/v1/wishlist', require('./routes/wishlist.routes'));
 app.use('/api/v1/invoices', require('./routes/invoice.routes'));
+app.use('/api/v1/details', require('./routes/details.routes'));
+
+app.get('/explorer', (req, res) => {
+  res.sendFile(require('path').join(__dirname, '..', 'templates', 'explorer.html'));
+});
+app.get('/explorer.js', (req, res) => {
+  res.sendFile(require('path').join(__dirname, '..', 'templates', 'explorer.js'));
+});
 
 app.get('/api/v1/health', (req, res) => {
   res.status(200).json({ status: 'healthy' });
