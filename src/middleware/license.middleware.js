@@ -10,8 +10,12 @@ async function attachLicenseContext(req, res, next) {
       throw err;
     }
 
-    const overview = await licenseService.getLicenseOverview(businessId);
-    const wallet = await walletService.ensureWallet(businessId);
+    // Independent reads; running them together shaves a round trip off every
+    // scanner call — including the MRP calculation the review card waits on.
+    const [overview, wallet] = await Promise.all([
+      licenseService.getLicenseOverview(businessId),
+      walletService.ensureWallet(businessId),
+    ]);
 
     req.licenseContext = {
       businessId,
