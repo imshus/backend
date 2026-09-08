@@ -33,6 +33,7 @@ app.use('/api/v1/subscription', require('./routes/subscription.routes'));
 app.use('/api/v1/payments', require('./routes/payment.routes'));
 app.use('/api/v1/wishlist', require('./routes/wishlist.routes'));
 app.use('/api/v1/invoices', require('./routes/invoice.routes'));
+app.use('/api/v1/item-codes', require('./routes/itemCode.routes'));
 app.use('/api/v1/details', require('./routes/details.routes'));
 
 app.get('/explorer', (req, res) => {
