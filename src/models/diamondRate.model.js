@@ -1,6 +1,13 @@
 const mongoose = require('mongoose');
 
 const diamondRateSchema = new mongoose.Schema({
+  // The shop's rows have no userId; an employee who edits diamond rates gets
+  // their own private copy of the table under their userId.
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    default: null,
+    index: true
+  },
   businessId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Business',
@@ -38,7 +45,7 @@ const diamondRateSchema = new mongoose.Schema({
 // Ensure uniqueness for a business based on color, clarity, and shape
 // Only enforce this when packetCode is not set (packet-code-only entries are handled by a separate index).
 diamondRateSchema.index(
-  { businessId: 1, color: 1, clarity: 1, shape: 1 },
+  { businessId: 1, userId: 1, color: 1, clarity: 1, shape: 1 },
   {
     unique: true,
     partialFilterExpression: {
@@ -48,7 +55,7 @@ diamondRateSchema.index(
 );
 // Ensure uniqueness for packet codes within a business (non-empty only)
 diamondRateSchema.index(
-  { businessId: 1, packetCode: 1 },
+  { businessId: 1, userId: 1, packetCode: 1 },
   { unique: true, partialFilterExpression: { packetCode: { $gt: '' } } }
 );
 

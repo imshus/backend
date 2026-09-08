@@ -3,6 +3,10 @@ const DashboardMetrics = require('../models/dashboardMetrics.model');
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const Invoice = require('../models/invoice.model');
 const { InvoiceCounter } = require('../models/invoiceCounter.model');
+const GoldRate = require('../models/goldRate.model');
+const DiamondRate = require('../models/diamondRate.model');
+const ColorstoneRate = require('../models/colorstoneRate.model');
+const LabourRate = require('../models/labourRate.model');
 
 /**
  * Whose data a request touches.
@@ -55,6 +59,56 @@ const upsertScopedSetting = (Model, scope, set) =>
     { new: true, upsert: true, setDefaultsOnInsert: true },
   );
 
+/**
+ * Rate tables (gold, diamond, colorstone) live per user the same way settings
+ * do, but as whole tables rather than single documents: an employee starts on
+ * the shop's rows and, the first time they change anything in a table, gets a
+ * private copy of that whole table (copy-on-write) — so one edit never
+ * strands them with a single-row table. The owner's rows are the shop's and
+ * carry no userId.
+ */
+
+/** The rows a user reads from one rate table: their own set when it has any, else the shop's. */
+const findScopedRows = async (Model, scope, extra = {}) => {
+  if (scope.userId) {
+    const own = await Model.find({ businessId: scope.businessId, userId: scope.userId, ...extra });
+    if (own.length > 0) return own;
+  }
+  return Model.find({ businessId: scope.businessId, userId: null, ...extra });
+};
+
+/**
+ * Gives an employee their own copy of a rate table before their first write
+ * to it. Returns true when a copy was made. The owner never copies.
+ */
+const materializeOwnRows = async (Model, scope) => {
+  if (!scope.userId) return false;
+  const ownCount = await Model.countDocuments({ businessId: scope.businessId, userId: scope.userId });
+  if (ownCount > 0) return false;
+  const shopRows = await Model.find({ businessId: scope.businessId, userId: null }).lean();
+  if (shopRows.length === 0) return false;
+  await Model.insertMany(
+    shopRows.map(({ _id, createdAt, updatedAt, __v, ...rest }) => ({ ...rest, userId: scope.userId })),
+  );
+  return true;
+};
+
+/**
+ * Resolves an _id the client sent into the row the writer may touch. The id
+ * may point at a shop row the employee was still inheriting; after their
+ * table is materialized the matching row in their own set is found through
+ * `keyFields`. Returns null when the id matches nothing of this business.
+ */
+const resolveScopedRowById = async (Model, scope, id, keyFields) => {
+  const anyRow = await Model.findOne({ _id: id, businessId: scope.businessId });
+  if (!anyRow) return null;
+  const targetUserId = scope.userId ?? null;
+  if (String(anyRow.userId ?? '') === String(targetUserId ?? '')) return anyRow;
+  const keyFilter = {};
+  for (const field of keyFields) keyFilter[field] = anyRow[field] ?? null;
+  return Model.findOne({ businessId: scope.businessId, userId: targetUserId, ...keyFilter });
+};
+
 const isIndexMissing = (error) =>
   error?.codeName === 'IndexNotFound' || error?.code === 27 || /index not found/i.test(String(error?.message || ''));
 
@@ -82,7 +136,19 @@ const ensureUserScopedIndexes = async () => {
   await Invoice.syncIndexes();
   await dropIndexIfPresent(InvoiceCounter, 'dateKey_1');
   await InvoiceCounter.syncIndexes();
-  console.log('[DB] Per-user settings and per-business invoice indexes in place');
+
+  // Rate tables: the per-business unique indexes give way to per-user ones.
+  await dropIndexIfPresent(GoldRate, 'businessId_1_carat_1');
+  await GoldRate.syncIndexes();
+  await dropIndexIfPresent(DiamondRate, 'businessId_1_color_1_clarity_1_shape_1');
+  await dropIndexIfPresent(DiamondRate, 'businessId_1_packetCode_1');
+  await DiamondRate.syncIndexes();
+  await dropIndexIfPresent(ColorstoneRate, 'businessId_1_color_1_clarity_1');
+  await ColorstoneRate.syncIndexes();
+  await dropIndexIfPresent(LabourRate, 'businessId_1');
+  await LabourRate.syncIndexes();
+
+  console.log('[DB] Per-user settings, rates and per-business invoice indexes in place');
 };
 
 module.exports = {
@@ -91,5 +157,8 @@ module.exports = {
   ownWorkFilter,
   findScopedSetting,
   upsertScopedSetting,
+  findScopedRows,
+  materializeOwnRows,
+  resolveScopedRowById,
   ensureUserScopedIndexes,
 };

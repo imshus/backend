@@ -8,10 +8,13 @@ const billingConfigService = require('../services/billingConfig.service');
 const paymentService = require('../services/payment.service');
 const referralService = require('../services/referral.service');
 
-/** Earn & Invite: the business's code and how its referrals are doing. */
+/** Earn & Invite: this person's own code and how their referrals are doing. */
 async function getReferralOverview(req, res, next) {
   try {
-    const overview = await referralService.getReferralOverview(req.user.businessId);
+    const overview = await referralService.getReferralOverview({
+      businessId: req.user.businessId,
+      userId: req.user.userId,
+    });
     sendSuccess(res, overview);
   } catch (error) {
     next(error);

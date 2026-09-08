@@ -59,19 +59,17 @@ const businessSchema = new mongoose.Schema({
   bankIfsc: { type: String, default: '' },
   invoiceTerms: { type: [String], default: [] },
   // ── Referral programme ──────────────────────────────────────────────
-  // Short shareable code owned by this business; generated on first visit
-  // to Earn & Invite. Sparse: businesses that never open it have none.
-  referralCode: {
-    type: String,
-    unique: true,
-    sparse: true,
-    trim: true,
-    uppercase: true
-  },
-  // Business whose code was entered when this one registered.
+  // Codes are personal and live in the referral_codes collection; the
+  // referred side is recorded here. Business whose member's code was entered
+  // when this one registered, and which member's.
   referredByBusinessId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Business',
+    default: null,
+    index: true
+  },
+  referredByUserId: {
+    type: mongoose.Schema.Types.ObjectId,
     default: null,
     index: true
   },

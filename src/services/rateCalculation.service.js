@@ -74,7 +74,12 @@ const getLiveGoldRates = async (businessId, scope = null) => {
         console.warn('[Gold Rates] Could not read bhaw source preference:', metricsError.message);
         return null;
       }),
-    GoldRate.find({ businessId }),
+    // Both the shop's rows and (for an employee) their own copy, one query;
+    // whichever set applies is picked below.
+    GoldRate.find({
+      businessId,
+      $or: [{ userId: null }, ...(settings.userId ? [{ userId: settings.userId }] : [])],
+    }),
   ]);
   await bhawWarm;
 
@@ -125,10 +130,16 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // 5. Determine Base Rate for Karat Calculations
   const baseRate = taxSettings.scannerCalculationUse === 'cash' ? cashFinalRate : rtgsFinalRate;
 
-  // 6. Fetch Gold Rate Rows from DB
-  let karatRows = karatRowsRead;
-  
-  // Initialize missing default rows if they don't exist
+  // 6. Pick this account's gold rows: an employee's own copy when they have
+  // one, else the shop's (userId null, which legacy rows also match).
+  const ownRows = settings.userId
+    ? karatRowsRead.filter((row) => String(row.userId || '') === String(settings.userId))
+    : [];
+  const activeUserId = ownRows.length > 0 ? settings.userId : null;
+  let karatRows = ownRows.length > 0 ? ownRows : karatRowsRead.filter((row) => !row.userId);
+
+  // Initialize missing default rows if they don't exist — in the same set
+  // that is being read.
   const requiredCarats = [
     { carat: '22Kt', purity: 91.6 },
     { carat: '20Kt', purity: 85 },
@@ -140,10 +151,11 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   if (karatRows.length < 5) {
     const existingCarats = karatRows.map(r => r.carat);
     const toCreate = requiredCarats.filter(rc => !existingCarats.includes(rc.carat));
-    
+
     for (const rc of toCreate) {
       const newRate = new GoldRate({
         businessId,
+        userId: activeUserId,
         carat: rc.carat,
         purity: rc.purity,
         increaseByAmount: 0,

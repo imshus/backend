@@ -5,6 +5,7 @@ const {
   REFERRAL_BONUS_CREDITS,
   generateCode,
   normalizeCode,
+  ensureReferralCode,
   applyReferralCode,
   rewardReferrerIfEligible,
   getReferralOverview,
@@ -22,39 +23,59 @@ test('codes use only unambiguous characters and survive hand-copying', () => {
   assert.equal(normalizeCode(null), '');
 });
 
-test('an unknown or self-owned code is refused at registration', async () => {
-  const deps = { Business: { findOne: async () => null } };
+test('each person keeps one personal code; a second ask returns it', async () => {
+  const created = [];
+  const deps = {
+    ReferralCode: {
+      findOne: async ({ businessId, userId }) =>
+        created.find((c) => c.businessId === businessId && c.userId === userId) || null,
+      create: async (doc) => { created.push(doc); return doc; },
+    },
+  };
+  const first = await ensureReferralCode({ businessId: 'b1', userId: 'u1' }, deps);
+  const again = await ensureReferralCode({ businessId: 'b1', userId: 'u1' }, deps);
+  const other = await ensureReferralCode({ businessId: 'b1', userId: 'u2' }, deps);
+  assert.equal(again, first);
+  assert.notEqual(other, first);
+  assert.equal(created.length, 2);
+  await assert.rejects(ensureReferralCode({ businessId: 'b1' }, deps), /REFERRAL_SCOPE_MISSING/);
+});
+
+test('an unknown or own-business code is refused at registration', async () => {
+  const deps = { ReferralCode: { findOne: async () => null } };
   await assert.rejects(
     applyReferralCode({ businessId: 'b1', code: 'NOPE99' }, deps),
     /REFERRAL_CODE_INVALID/,
   );
 
-  const self = { Business: { findOne: async () => ({ _id: 'b1' }) } };
+  const self = { ReferralCode: { findOne: async () => ({ businessId: 'b1', userId: 'u1' }) } };
   await assert.rejects(
     applyReferralCode({ businessId: 'b1', code: 'MINE22' }, self),
     /REFERRAL_CODE_INVALID/,
   );
 });
 
-test('a valid code links the registering business to its referrer', async () => {
+test('a valid code links the registering business to the member who shared it', async () => {
   const registering = fakeBusiness({ _id: 'b2', referralRewardedAt: null });
   const deps = {
-    Business: {
-      findOne: async (filter) => (filter.referralCode === 'GOOD22' ? { _id: 'b1' } : null),
-      findById: async () => registering,
+    ReferralCode: {
+      findOne: async ({ code }) => (code === 'GOOD22' ? { businessId: 'b1', userId: 'emp7' } : null),
     },
+    Business: { findById: async () => registering },
   };
   const result = await applyReferralCode({ businessId: 'b2', code: 'good-22' }, deps);
-  assert.deepEqual(result, { applied: true, referrerBusinessId: 'b1' });
+  assert.deepEqual(result, { applied: true, referrerBusinessId: 'b1', referrerUserId: 'emp7' });
   assert.equal(registering.referredByBusinessId, 'b1');
+  assert.equal(registering.referredByUserId, 'emp7');
   assert.ok(registering.saved);
 });
 
-test('the reward pays the referrer 100 once, then never again', async () => {
+test('the reward pays the shop wallet 100 once, attributed to the sharer', async () => {
   const referred = fakeBusiness({
     _id: 'b2',
     tradeName: 'Referred Jewels',
     referredByBusinessId: 'b1',
+    referredByUserId: 'emp7',
     referralRewardedAt: null,
   });
   const credited = [];
@@ -68,9 +89,11 @@ test('the reward pays the referrer 100 once, then never again', async () => {
   assert.equal(first.rewarded, true);
   assert.equal(credited.length, 1);
   assert.equal(credited[0].businessId, 'b1');
+  assert.equal(credited[0].userId, 'emp7');
   assert.equal(credited[0].amount, REFERRAL_BONUS_CREDITS);
   assert.equal(credited[0].type, 'REFERRAL_BONUS');
   assert.equal(credited[0].metadata.referredBusinessId, 'b2');
+  assert.equal(credited[0].metadata.earnedByUserId, 'emp7');
   assert.ok(referred.referralRewardedAt instanceof Date);
 
   const second = await rewardReferrerIfEligible({ businessId: 'b2', trigger: 'LICENSE_PURCHASED' }, deps);
@@ -101,18 +124,18 @@ test('an existing payout transaction blocks a second payment but still stamps', 
   assert.ok(referred.referralRewardedAt instanceof Date);
 });
 
-test('the overview keeps its code and counts registered referrals', async () => {
+test('the overview is personal: it counts only referrals of my own code', async () => {
   const counts = [];
   const deps = {
+    ReferralCode: { findOne: async () => ({ businessId: 'b1', userId: 'u1', code: 'KEPT77' }) },
     Business: {
-      findById: async () => fakeBusiness({ _id: 'b1', referralCode: 'KEPT77' }),
       countDocuments: async (filter) => {
         counts.push(filter);
         return filter.referralRewardedAt ? 2 : 5;
       },
     },
   };
-  const overview = await getReferralOverview('b1', deps);
+  const overview = await getReferralOverview({ businessId: 'b1', userId: 'u1' }, deps);
   assert.deepEqual(overview, {
     referralCode: 'KEPT77',
     creditsPerReferral: 100,
@@ -121,5 +144,6 @@ test('the overview keeps its code and counts registered referrals', async () => 
     pendingCount: 3,
     creditsEarned: 200,
   });
+  assert.equal(counts[0].referredByUserId, 'u1');
   assert.equal(counts[0].isRegistered, true);
 });

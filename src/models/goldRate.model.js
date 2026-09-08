@@ -1,6 +1,13 @@
 const mongoose = require('mongoose');
 
 const goldRateSchema = new mongoose.Schema({
+  // The shop's rows have no userId; an employee who edits gold rates gets
+  // their own private copy of the table under their userId.
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    default: null,
+    index: true
+  },
   businessId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Business',
@@ -36,6 +43,6 @@ const goldRateSchema = new mongoose.Schema({
 });
 
 
-goldRateSchema.index({ businessId: 1, carat: 1 }, { unique: true });
+goldRateSchema.index({ businessId: 1, userId: 1, carat: 1 }, { unique: true });
 
 module.exports = mongoose.model('GoldRate', goldRateSchema);
