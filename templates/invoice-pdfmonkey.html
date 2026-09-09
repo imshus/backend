@@ -308,49 +308,34 @@
     <td class="bb pad" style="padding-top: 8px; padding-bottom: 8px;">{{ amount_in_words | escape }}</td>
   </tr>
 
-  <!-- ── Bank details ─────────────────────────────────────────────────── -->
+  <!-- ── Bank details (design PDF) ────────────────────────────────────── -->
   {% if bank_name != blank %}
     <tr>
       <td class="bb pad">
-        <div>Bank Details: {{ bank_name | escape }}{% if bank_branch != blank %}, {{ bank_branch | escape }}{% endif %}</div>
-        <div style="padding-left: 76px;">
-          ACCOUNT NO. {{ bank_account_number | escape }}&nbsp;&nbsp;&nbsp;RTGS/NEFT/IFS CODE : {{ bank_ifsc | escape }}
-        </div>
+        <div class="xs b">BANK DETAILS</div>
+        <div style="margin-top: 4px;">{{ bank_name | escape }}{% if bank_branch != blank %}, {{ bank_branch | escape }}{% endif %}</div>
+        <div>A/C No. {{ bank_account_number | escape }} &middot; IFSC: {{ bank_ifsc | escape }}</div>
       </td>
     </tr>
   {% endif %}
 
-  <!-- ── Terms | QR (e-invoice only) | Signatures ─────────────────────── -->
-  <!-- The plain tax invoice prints no QR here — the terms take the whole
-       left side. The e-invoice keeps the download QR beside them, on top of
-       the signed QR in its IRN band above. -->
+  <!-- ── Terms & conditions (design PDF: full width, numbered) ────────── -->
+  <tr>
+    <td class="bb pad terms">
+      <div class="xs b">TERMS &amp; CONDITIONS</div>
+      <ol>
+        {% for term in terms_list %}<li>{{ term | escape }}</li>{% endfor %}
+      </ol>
+    </td>
+  </tr>
+
+  <!-- ── Signature (design PDF: right-aligned; no receiver line, no QR here —
+       the e-invoice variant carries its signed QR in the IRN band above) ── -->
   <tr class="no-split">
-    <td>
-      <table>
-        <tr>
-          <td class="pad brr terms" style="width: {% if irn != blank and qr_code_image != blank %}31%{% else %}53%{% endif %};">
-            <div class="xs">Terms &amp; Conditions</div>
-            <div style="margin-top: 6px;">E. &amp; O.E.</div>
-            <ol>
-              {% for term in terms_list %}<li>{{ term | escape }}</li>{% endfor %}
-            </ol>
-          </td>
-
-          {% if irn != blank and qr_code_image != blank %}
-            <td class="pad c brr qr" style="width: 22%;">
-              <div class="xs" style="margin-bottom: 4px;">Scan to download invoice</div>
-              <img src="{{ qr_code_image }}" alt="Invoice QR code" />
-            </td>
-          {% endif %}
-
-          <td style="width: 47%;">
-            <div class="pad bb">Receiver&#39;s Signature&nbsp;&nbsp;&nbsp;:</div>
-            <div class="pad c b" style="padding-top: 14px;">for {{ company_name | escape }}</div>
-            <div class="sign-pad"></div>
-            <div class="pad c">Authorised Signatory</div>
-          </td>
-        </tr>
-      </table>
+    <td class="pad" style="text-align: right;">
+      <div class="b">for {{ company_name | escape }}</div>
+      <div class="sign-pad"></div>
+      <div class="b">Authorised Signatory</div>
     </td>
   </tr>
 </table>
