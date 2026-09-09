@@ -79,6 +79,23 @@ const businessSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // ── Government e-invoicing (IRP) ────────────────────────────────────
+  // Per business: the owner saves the API user they created for their own
+  // GSTIN on einvoice1.gst.gov.in. The password is AES-encrypted with the
+  // server's EINVOICE_CRED_KEY and is never returned by any API.
+  eInvoiceEnabled: {
+    type: Boolean,
+    default: false
+  },
+  eInvoiceUsername: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  eInvoicePasswordEnc: {
+    type: String,
+    default: ''
+  },
   isRegistered: {
     type: Boolean,
     default: false

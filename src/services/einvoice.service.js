@@ -1,33 +1,66 @@
 const axios = require('axios');
+const crypto = require('crypto');
 const config = require('../config/env');
 const gstService = require('./gst.service');
 
 /**
  * Government e-invoicing (IRN + signed QR) through Sandbox (sandbox.co.in),
- * the same provider that does GST verification. Flow: the shared Sandbox API
- * session authenticates the taxpayer's own IRP credentials (the username and
- * password of the business's account on einvoice1.gst.gov.in, from env), the
- * invoice is registered in the NIC INV-01 shape, and the IRP answers with the
- * IRN, acknowledgement and the government-signed QR payload the printed
- * invoice must carry.
+ * the same provider that does GST verification.
+ *
+ * MRPscan is multi-tenant: every registered jeweller has their own GSTIN, so
+ * IRP credentials are PER BUSINESS — the owner creates an API user for their
+ * GSTIN on einvoice1.gst.gov.in (Registration → API Registration → Through
+ * GSP, selecting Sandbox's GSP) and saves the username and password in the
+ * app. The password is encrypted at rest with EINVOICE_CRED_KEY; without
+ * that key on the server, credentials cannot be saved at all.
+ *
+ * Flow per invoice: the shared Sandbox API session authenticates the
+ * business's IRP credentials, the invoice is registered in the NIC INV-01
+ * shape, and the IRP answers with the IRN, acknowledgement and the
+ * government-signed QR the printed invoice must carry.
  *
  * E-invoicing applies to B2B documents only: an invoice with no buyer GSTIN
  * is not eligible and is skipped silently.
  *
- * The endpoint paths below follow Sandbox's e-invoice API convention. The
- * account's subscription was expired when this was written, so the first
- * live run should be watched: a 404 here means the path needs aligning with
- * the current Sandbox dashboard docs, not that the integration is wrong.
+ * The endpoint paths follow Sandbox's e-invoice API convention; watch the
+ * first live run — a 404 means the path needs aligning with the current
+ * Sandbox dashboard docs, not that the integration is wrong.
  */
 const SANDBOX_BASE_URL = 'https://api.sandbox.co.in';
 const EINVOICE_AUTH_PATH = '/gst/compliance/e-invoice/authenticate';
 const EINVOICE_GENERATE_PATH = '/gst/compliance/e-invoice/generate';
 
-/** NIC tokens last an hour; refresh a little early. */
-let taxpayerToken = null;
-let taxpayerTokenExpiry = 0;
-
 const toTwo = (value) => Number(Number(value || 0).toFixed(2));
+
+// ── Credential encryption ─────────────────────────────────────────────
+// AES-256-GCM under a key derived from EINVOICE_CRED_KEY. The stored shape
+// is iv:tag:ciphertext, hex. The password never leaves the server and no
+// API returns it.
+
+const credKey = () => {
+  const secret = String(config.einvoice.credKey || '');
+  if (!secret) return null;
+  return crypto.createHash('sha256').update(secret).digest();
+};
+
+function encryptCredential(plain) {
+  const key = credKey();
+  if (!key) throw new Error('EINVOICE_CRED_KEY_MISSING');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
+  return `${iv.toString('hex')}:${cipher.getAuthTag().toString('hex')}:${enc.toString('hex')}`;
+}
+
+function decryptCredential(stored) {
+  const key = credKey();
+  if (!key || !stored) return '';
+  const [ivHex, tagHex, dataHex] = String(stored).split(':');
+  if (!ivHex || !tagHex || !dataHex) return '';
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
+}
 
 /** The last 6-digit run in a free-text address; Indian PIN codes never start with 0. */
 function extractPincode(address) {
@@ -42,14 +75,16 @@ function toNicDate(invoiceDate) {
 }
 
 /**
- * Whether this document can be registered at all: the switch is on, the
- * taxpayer credentials exist, and the buyer has a GSTIN (B2B).
+ * Whether this document can be registered at all: the business switched
+ * e-invoicing on and saved its IRP credentials, the server holds the
+ * encryption key, and the buyer has a GSTIN (B2B).
  */
-function isEligible(payload) {
+function isEligible(business, payload) {
   return Boolean(
-    config.einvoice.enabled &&
-      config.einvoice.username &&
-      config.einvoice.password &&
+    business?.eInvoiceEnabled &&
+      business?.eInvoiceUsername &&
+      business?.eInvoicePasswordEnc &&
+      credKey() &&
       String(payload?.gstin_number || '').trim() &&
       String(payload?.customer_gstin || '').trim(),
   );
@@ -128,13 +163,22 @@ function buildInv01(payload, business) {
   };
 }
 
-async function getTaxpayerToken(deps) {
-  if (taxpayerToken && Date.now() < taxpayerTokenExpiry) return taxpayerToken;
+/** One taxpayer session per GSTIN; NIC tokens last an hour, refreshed early. */
+const taxpayerTokens = new Map();
+
+async function getTaxpayerToken(business, deps) {
+  const gstin = String(business.gstNumber || '').trim().toUpperCase();
+  const cached = taxpayerTokens.get(gstin);
+  if (cached && Date.now() < cached.expiry) return cached.token;
 
   const apiToken = await deps.getAccessToken();
   const response = await deps.axios.post(
     `${SANDBOX_BASE_URL}${EINVOICE_AUTH_PATH}`,
-    { username: config.einvoice.username, password: config.einvoice.password, gstin: config.einvoice.gstin },
+    {
+      username: business.eInvoiceUsername,
+      password: decryptCredential(business.eInvoicePasswordEnc),
+      gstin,
+    },
     {
       headers: {
         authorization: apiToken,
@@ -149,19 +193,20 @@ async function getTaxpayerToken(deps) {
   const token = data.AuthToken || data.auth_token || data.access_token;
   if (!token) throw new Error('EINVOICE_AUTH_NO_TOKEN');
 
-  taxpayerToken = token;
-  taxpayerTokenExpiry = Date.now() + 50 * 60 * 1000;
-  return taxpayerToken;
+  taxpayerTokens.set(gstin, { token, expiry: Date.now() + 50 * 60 * 1000 });
+  return token;
 }
 
 /**
- * Registers the invoice at the IRP and returns { irn, ackNo, ackDt, signedQr }.
- * Throws on any failure; the caller decides that a failed registration must
- * never cost the customer their invoice.
+ * Registers the invoice at the IRP with the business's own credentials and
+ * returns { irn, ackNo, ackDt, signedQr }. Throws on any failure; the caller
+ * decides that a failed registration must never cost the customer their
+ * invoice.
  */
 async function generateEInvoice({ payload, business }, deps = { axios, getAccessToken: gstService.getAccessToken }) {
   const inv01 = buildInv01(payload, business);
-  const [apiToken, authToken] = [await deps.getAccessToken(), await getTaxpayerToken(deps)];
+  const apiToken = await deps.getAccessToken();
+  const authToken = await getTaxpayerToken(business, deps);
 
   const response = await deps.axios.post(`${SANDBOX_BASE_URL}${EINVOICE_GENERATE_PATH}`, inv01, {
     headers: {
@@ -169,7 +214,7 @@ async function generateEInvoice({ payload, business }, deps = { axios, getAccess
       'x-api-key': config.sandbox.apiKey,
       'x-api-version': config.sandbox.apiVersion,
       'auth-token': authToken,
-      gstin: config.einvoice.gstin || inv01.SellerDtls.Gstin,
+      gstin: inv01.SellerDtls.Gstin,
       'Content-Type': 'application/json',
     },
   });
@@ -183,6 +228,7 @@ async function generateEInvoice({ payload, business }, deps = { axios, getAccess
 
   console.info('[EINVOICE_GENERATED]', {
     invoiceNumber: inv01.DocDtls.No,
+    gstin: inv01.SellerDtls.Gstin,
     irn: String(irn).slice(0, 16) + '…',
     ackNo: data.AckNo || data.ack_no || null,
   });
@@ -199,5 +245,7 @@ module.exports = {
   isEligible,
   buildInv01,
   extractPincode,
+  encryptCredential,
+  decryptCredential,
   generateEInvoice,
 };

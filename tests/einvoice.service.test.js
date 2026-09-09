@@ -2,7 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const config = require('../src/config/env');
-const { isEligible, buildInv01, extractPincode } = require('../src/services/einvoice.service');
+const {
+  isEligible,
+  buildInv01,
+  extractPincode,
+  encryptCredential,
+  decryptCredential,
+} = require('../src/services/einvoice.service');
 
 const payload = {
   invoice_number: 'INV-20260909-00001',
@@ -35,18 +41,34 @@ test('pin codes come out of free-text addresses; the last run wins', () => {
   assert.equal(extractPincode('no pin here'), '');
 });
 
-test('eligibility needs the switch, credentials, and a B2B buyer', () => {
+test('eligibility needs the business switch, its credentials, the server key, and a B2B buyer', () => {
+  const saved = { ...config.einvoice };
+  const ready = { eInvoiceEnabled: true, eInvoiceUsername: 'u', eInvoicePasswordEnc: 'iv:tag:data' };
+  try {
+    config.einvoice.credKey = 'test-key';
+    assert.equal(isEligible(ready, payload), true);
+    assert.equal(isEligible({ ...ready, eInvoiceEnabled: false }, payload), false);
+    assert.equal(isEligible({ ...ready, eInvoicePasswordEnc: '' }, payload), false);
+    assert.equal(isEligible(ready, { ...payload, customer_gstin: '' }), false);
+
+    config.einvoice.credKey = '';
+    assert.equal(isEligible(ready, payload), false);
+  } finally {
+    Object.assign(config.einvoice, saved);
+  }
+});
+
+test('credentials survive an encrypt-decrypt round trip and need the key', () => {
   const saved = { ...config.einvoice };
   try {
-    Object.assign(config.einvoice, { enabled: false, username: 'u', password: 'p' });
-    assert.equal(isEligible(payload), false);
+    config.einvoice.credKey = 'test-key';
+    const stored = encryptCredential('irp-secret-99');
+    assert.ok(!stored.includes('irp-secret-99'));
+    assert.equal(decryptCredential(stored), 'irp-secret-99');
 
-    Object.assign(config.einvoice, { enabled: true, username: '', password: '' });
-    assert.equal(isEligible(payload), false);
-
-    Object.assign(config.einvoice, { enabled: true, username: 'u', password: 'p' });
-    assert.equal(isEligible(payload), true);
-    assert.equal(isEligible({ ...payload, customer_gstin: '' }), false);
+    config.einvoice.credKey = '';
+    assert.throws(() => encryptCredential('x'), /EINVOICE_CRED_KEY_MISSING/);
+    assert.equal(decryptCredential(stored), '');
   } finally {
     Object.assign(config.einvoice, saved);
   }

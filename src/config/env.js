@@ -27,14 +27,8 @@ const envVarsSchema = joi.object({
   SANDBOX_API_VERSION: joi.string().default('1.0.0').description('Sandbox API version header'),
   GST_VERIFY_MODE: joi.string().valid('live', 'mock').default('live')
     .description('mock = accept any structurally valid GSTIN with stub data (dev only); live = real Sandbox lookup'),
-  EINVOICE_ENABLED: joi.boolean().default(false)
-    .description('Register B2B invoices at the IRP via Sandbox and print the signed QR'),
-  EINVOICE_GSTIN: joi.string().allow('').default('')
-    .description('GSTIN the IRP credentials belong to (the seller business)'),
-  EINVOICE_USERNAME: joi.string().allow('').default('')
-    .description('Taxpayer API username from einvoice1.gst.gov.in'),
-  EINVOICE_PASSWORD: joi.string().allow('').default('')
-    .description('Taxpayer API password from einvoice1.gst.gov.in'),
+  EINVOICE_CRED_KEY: joi.string().allow('').default('')
+    .description('Server-side key that encrypts each business\'s IRP password at rest; without it e-invoice credentials cannot be saved'),
   BILLING_TIMEZONE: joi.string().default('Asia/Kolkata'),
   MCX_SCHEDULER_TIMEZONE: joi.string().default('Asia/Kolkata'),
   MCX_TRADING_DAYS: joi.string().default('1,2,3,4,5').description('ISO weekdays for MCX trading scheduler (1=Mon..7=Sun)'),
@@ -117,10 +111,7 @@ module.exports = {
   },
   gstVerifyMode: envVars.GST_VERIFY_MODE,
   einvoice: {
-    enabled: envVars.EINVOICE_ENABLED,
-    gstin: envVars.EINVOICE_GSTIN,
-    username: envVars.EINVOICE_USERNAME,
-    password: envVars.EINVOICE_PASSWORD,
+    credKey: envVars.EINVOICE_CRED_KEY,
   },
   billing: {
     timezone: envVars.BILLING_TIMEZONE,

@@ -630,7 +630,7 @@ const generateInvoice = async (req, res, next) => {
       // only, behind EINVOICE_ENABLED; any failure is recorded on the invoice
       // and the PDF still renders — a registration problem must never cost
       // the customer their invoice.
-      if (einvoiceService.isEligible(pdfPayload)) {
+      if (einvoiceService.isEligible(business, pdfPayload)) {
         try {
           const registered = await einvoiceService.generateEInvoice({ payload: pdfPayload, business });
           pdfPayload.irn = registered.irn;

@@ -11,6 +11,10 @@ router.use(authenticateJWT);
 // Business identity straight from the database, for the Profile screen.
 router.get('/business-profile', settingsController.getBusinessProfile);
 
+// Per-business e-invoicing (IRP) credentials; the owner's to manage.
+router.get('/einvoice', requireRole('OWNER', 'ADMIN'), settingsController.getEInvoiceSettings);
+router.post('/einvoice', requireRole('OWNER', 'ADMIN'), settingsController.updateEInvoiceSettings);
+
 router.get('/formula', settingsController.getFormulaConfig);
 router.post('/formula', requirePermission('manageFormulae'), settingsController.updateFormulaConfig);
 
