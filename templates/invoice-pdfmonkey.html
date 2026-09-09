@@ -168,9 +168,20 @@
       <td class="bb pad sm">
         <table>
           <tr>
-            <td style="width: 56%;">IRN : {{ irn | escape }}</td>
-            <td style="width: 26%;">Ack.No. : {{ ack_number | escape }}</td>
-            <td style="width: 18%;">Ack.Date : {{ ack_date | escape }}</td>
+            <td>
+              <div>IRN : {{ irn | escape }}</div>
+              <div style="margin-top: 2px;">
+                Ack.No. : {{ ack_number | escape }}
+                &nbsp;&nbsp;|&nbsp;&nbsp;
+                Ack.Date : {{ ack_date | escape }}
+              </div>
+            </td>
+            {% if e_invoice_qr_image != blank %}
+              <td style="width: 96px; text-align: right; vertical-align: top;">
+                <!-- The government-signed e-invoice QR from the IRP. -->
+                <img src="{{ e_invoice_qr_image }}" alt="e-Invoice QR code" style="width: 88px; height: 88px;" />
+              </td>
+            {% endif %}
           </tr>
         </table>
       </td>

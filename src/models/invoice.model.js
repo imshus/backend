@@ -64,6 +64,19 @@ const invoiceSchema = new mongoose.Schema({
     default: 'pending',
   },
 
+  // Government e-invoice (IRP) registration, attempted for B2B invoices when
+  // e-invoicing is switched on. A failure never blocks the invoice itself.
+  eInvoiceStatus: {
+    type: String,
+    enum: ['NOT_ATTEMPTED', 'GENERATED', 'FAILED'],
+    default: 'NOT_ATTEMPTED',
+  },
+  irn: { type: String, default: '' },
+  eInvoiceAckNo: { type: String, default: '' },
+  eInvoiceAckDt: { type: String, default: '' },
+  eInvoiceError: { type: String, default: '' },
+  eInvoiceAt: { type: Date, default: null },
+
   // Unguessable id encoded into the invoice QR code. Anyone holding the
   // printed invoice can fetch the PDF with it, so it is random rather than
   // derived from the invoice number, and it is never reused.

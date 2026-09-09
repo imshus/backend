@@ -157,5 +157,7 @@ const verifyGST = async (gstNumber) => {
 };
 
 module.exports = {
-  verifyGST
+  verifyGST,
+  // The e-invoice service reuses the same Sandbox API session.
+  getAccessToken
 };

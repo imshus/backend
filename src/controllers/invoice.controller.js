@@ -10,6 +10,7 @@ const Employee = require('../models/employee.model');
 const { generateInvoiceNumber, peekNextInvoiceNumber } = require('../models/invoiceCounter.model');
 const { ownWorkFilter } = require('../services/userScope.service');
 const { generateInvoicePdf, getDownloadUrl } = require('../services/pdfmonkey.service');
+const einvoiceService = require('../services/einvoice.service');
 const redisService = require('../services/redis.service');
 const config = require('../config/env');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
@@ -385,6 +386,8 @@ const buildInvoicePayload = (body, context) => {
       qr_code_data: invoiceDownloadUrl,
       qr_code_image: qrCodeImage,
       e_invoice_qr_code_data: String(qr_code_data || '').trim(),
+      // Government-signed QR, drawn as an image once the IRP answers.
+      e_invoice_qr_image: '',
 
       amount_in_words,
       signature_image: '',
@@ -623,6 +626,49 @@ const generateInvoice = async (req, res, next) => {
     // The record already holds the number, so nothing can drift.
     const pdfFilename = `${invoiceNumber}-${(customer_name || 'customer').replace(/\s+/g, '-')}.pdf`;
     setImmediate(async () => {
+      // Government e-invoice first, so the PDF can carry the signed QR. B2B
+      // only, behind EINVOICE_ENABLED; any failure is recorded on the invoice
+      // and the PDF still renders — a registration problem must never cost
+      // the customer their invoice.
+      if (einvoiceService.isEligible(pdfPayload)) {
+        try {
+          const registered = await einvoiceService.generateEInvoice({ payload: pdfPayload, business });
+          pdfPayload.irn = registered.irn;
+          pdfPayload.ack_number = registered.ackNo;
+          pdfPayload.ack_date = registered.ackDt;
+          pdfPayload.e_invoice_qr_code_data = registered.signedQr;
+          try {
+            // The signed payload is a long JWT; low error correction keeps it
+            // within QR capacity while staying scannable at print size.
+            pdfPayload.e_invoice_qr_image = await QRCode.toDataURL(registered.signedQr, {
+              margin: 0,
+              width: 260,
+              errorCorrectionLevel: 'L',
+            });
+          } catch (qrErr) {
+            console.error('[EINVOICE_QR_RENDER_FAILED]', qrErr.message);
+          }
+          await Invoice.findByIdAndUpdate(invoice._id, {
+            eInvoiceStatus: 'GENERATED',
+            irn: registered.irn,
+            eInvoiceAckNo: registered.ackNo,
+            eInvoiceAckDt: registered.ackDt,
+            eInvoiceAt: new Date(),
+          });
+        } catch (eErr) {
+          const detail = eErr.response?.data ? JSON.stringify(eErr.response.data) : eErr.message;
+          console.error('[EINVOICE_FAILED]', { invoiceNumber, detail: String(detail).slice(0, 400) });
+          try {
+            await Invoice.findByIdAndUpdate(invoice._id, {
+              eInvoiceStatus: 'FAILED',
+              eInvoiceError: String(detail).slice(0, 300),
+            });
+          } catch (markErr) {
+            console.error('[EINVOICE_MARK_FAILED]', markErr.message);
+          }
+        }
+      }
+
       let pdfResult;
       try {
         pdfResult = await generateInvoicePdf(pdfPayload, pdfFilename);
