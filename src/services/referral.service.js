@@ -5,8 +5,13 @@ const ReferralCode = require('../models/referralCode.model');
 const CreditTransaction = require('../models/creditTransaction.model');
 const walletService = require('./wallet.service');
 
-/** Credits the referrer's business earns when a referred business takes a licence. */
-const REFERRAL_BONUS_CREDITS = 100;
+/**
+ * Two rewards, both to the referrer's shop wallet: one when the referred
+ * business joins (its first licence, trial included), a larger one when it
+ * purchases the application.
+ */
+const INVITE_REWARD_CREDITS = 50;
+const PURCHASE_REWARD_CREDITS = 500;
 
 /** No 0/O, 1/I/L: every code survives being read out loud or hand-copied. */
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -87,77 +92,104 @@ async function applyReferralCode({ businessId, code }, deps = defaultDeps) {
   return { applied: true, referrerBusinessId: referrer.businessId, referrerUserId: referrer.userId };
 }
 
+/** One reward payment, guarded by its per-tier transaction lookup. */
+async function payTier(business, businessId, tier, credits, extraMeta, deps) {
+  const alreadyPaid = await deps.CreditTransaction.findOne({
+    type: 'REFERRAL_BONUS',
+    'metadata.referredBusinessId': String(businessId),
+    'metadata.tier': tier,
+  });
+  if (alreadyPaid) return false;
+
+  await deps.walletService.addCredits({
+    businessId: business.referredByBusinessId,
+    userId: business.referredByUserId || null,
+    amount: credits,
+    type: 'REFERRAL_BONUS',
+    note:
+      tier === 'PURCHASE'
+        ? `Referral reward: ${business.tradeName || 'a referred business'} purchased the application`
+        : `Referral reward: ${business.tradeName || 'a referred business'} joined MRPscan`,
+    metadata: {
+      referredBusinessId: String(businessId),
+      earnedByUserId: business.referredByUserId ? String(business.referredByUserId) : null,
+      tier,
+      ...extraMeta,
+    },
+  });
+
+  console.info('[REFERRAL_REWARDED]', {
+    referrerBusinessId: String(business.referredByBusinessId),
+    referredBusinessId: String(businessId),
+    tier,
+    credits,
+  });
+  return true;
+}
+
 /**
- * Pays the referrer's business once, the first time the referred business
- * takes a licence (free trial or purchase). The credit lands in the shop
- * wallet, attributed to the member whose code was used. Idempotent: the
- * referralRewardedAt stamp and a transaction lookup both guard against
- * double payment.
+ * Pays the referrer's shop wallet in two tiers, each at most once per
+ * referred business: the invite reward the first time it takes any licence
+ * (trial included), and the purchase reward when it buys the application —
+ * which also settles an unpaid invite reward, for a shop that bought without
+ * ever starting the trial. Stamps on the business and per-tier transaction
+ * lookups both guard against double payment.
  */
 async function rewardReferrerIfEligible(
   { businessId, trigger, orderId = null, paymentId = null, source = 'license.service' },
   deps = defaultDeps,
 ) {
   const business = await deps.Business.findById(businessId);
-  if (!business || !business.referredByBusinessId || business.referralRewardedAt) {
+  if (!business || !business.referredByBusinessId) {
     return { rewarded: false };
   }
 
-  const alreadyPaid = await deps.CreditTransaction.findOne({
-    type: 'REFERRAL_BONUS',
-    'metadata.referredBusinessId': String(businessId),
-  });
-  if (!alreadyPaid) {
-    await deps.walletService.addCredits({
-      businessId: business.referredByBusinessId,
-      userId: business.referredByUserId || null,
-      amount: REFERRAL_BONUS_CREDITS,
-      type: 'REFERRAL_BONUS',
-      note: `Referral reward: ${business.tradeName || 'a referred business'} activated a licence`,
-      metadata: {
-        referredBusinessId: String(businessId),
-        earnedByUserId: business.referredByUserId ? String(business.referredByUserId) : null,
-        trigger,
-        orderId,
-        paymentId,
-        source,
-      },
-    });
+  const extraMeta = { trigger, orderId, paymentId, source };
+  let credits = 0;
+
+  if (!business.referralRewardedAt) {
+    if (await payTier(business, businessId, 'INVITE', INVITE_REWARD_CREDITS, extraMeta, deps)) {
+      credits += INVITE_REWARD_CREDITS;
+    }
+    business.referralRewardedAt = new Date();
   }
 
-  business.referralRewardedAt = new Date();
+  if (trigger === 'LICENSE_PURCHASED' && !business.referralPurchaseRewardedAt) {
+    if (await payTier(business, businessId, 'PURCHASE', PURCHASE_REWARD_CREDITS, extraMeta, deps)) {
+      credits += PURCHASE_REWARD_CREDITS;
+    }
+    business.referralPurchaseRewardedAt = new Date();
+  }
+
   await business.save();
-
-  console.info('[REFERRAL_REWARDED]', {
-    referrerBusinessId: String(business.referredByBusinessId),
-    earnedByUserId: business.referredByUserId ? String(business.referredByUserId) : null,
-    referredBusinessId: String(businessId),
-    credits: REFERRAL_BONUS_CREDITS,
-    trigger,
-  });
-
-  return { rewarded: !alreadyPaid, credits: REFERRAL_BONUS_CREDITS };
+  return { rewarded: credits > 0, credits };
 }
 
 /** Everything the Earn & Invite screen shows, personal to the signed-in account. */
 async function getReferralOverview({ businessId, userId }, deps = defaultDeps) {
   const referralCode = await ensureReferralCode({ businessId, userId }, deps);
   const mine = { referredByBusinessId: businessId, referredByUserId: userId };
-  const invitedCount = await deps.Business.countDocuments({ ...mine, isRegistered: true });
-  const rewardedCount = await deps.Business.countDocuments({ ...mine, referralRewardedAt: { $ne: null } });
+  const invitedCount = await deps.Business.countDocuments({ ...mine, referralRewardedAt: { $ne: null } });
+  const purchasedCount = await deps.Business.countDocuments({ ...mine, referralPurchaseRewardedAt: { $ne: null } });
+
+  const inviteCredits = invitedCount * INVITE_REWARD_CREDITS;
+  const purchaseCredits = purchasedCount * PURCHASE_REWARD_CREDITS;
 
   return {
     referralCode,
-    creditsPerReferral: REFERRAL_BONUS_CREDITS,
+    inviteReward: INVITE_REWARD_CREDITS,
+    purchaseReward: PURCHASE_REWARD_CREDITS,
     invitedCount,
-    rewardedCount,
-    pendingCount: Math.max(0, invitedCount - rewardedCount),
-    creditsEarned: rewardedCount * REFERRAL_BONUS_CREDITS,
+    purchasedCount,
+    inviteCredits,
+    purchaseCredits,
+    totalCredits: inviteCredits + purchaseCredits,
   };
 }
 
 module.exports = {
-  REFERRAL_BONUS_CREDITS,
+  INVITE_REWARD_CREDITS,
+  PURCHASE_REWARD_CREDITS,
   generateCode,
   normalizeCode,
   ensureReferralCode,

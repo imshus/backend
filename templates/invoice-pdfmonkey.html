@@ -162,28 +162,30 @@
     </td>
   </tr>
 
-  <!-- ── e-Invoice reference band ─────────────────────────────────────── -->
+  <!-- ── e-Invoice reference band (design-mockup: einvoice variant) ───── -->
   {% if irn != blank %}
     <tr>
       <td class="bb pad sm">
-        <table>
-          <tr>
-            <td>
-              <div>IRN : {{ irn | escape }}</div>
-              <div style="margin-top: 2px;">
-                Ack.No. : {{ ack_number | escape }}
-                &nbsp;&nbsp;|&nbsp;&nbsp;
-                Ack.Date : {{ ack_date | escape }}
-              </div>
-            </td>
-            {% if e_invoice_qr_image != blank %}
-              <td style="width: 96px; text-align: right; vertical-align: top;">
-                <!-- The government-signed e-invoice QR from the IRP. -->
+        <div style="font-size: 8px; letter-spacing: 0.06em; color: #6b6b6b;">IRN</div>
+        <div style="font-weight: 700; word-break: break-all; margin-top: 1px;">{{ irn | escape }}</div>
+        <div style="margin-top: 4px;">
+          Ack. No. <span style="font-weight: 700;">{{ ack_number | escape }}</span>
+          &nbsp;&nbsp;&nbsp;&nbsp;
+          Ack. Date <span style="font-weight: 700;">{{ ack_date | escape }}</span>
+        </div>
+        {% if e_invoice_qr_image != blank %}
+          <table style="margin-top: 8px;">
+            <tr>
+              <!-- The government-signed e-invoice QR from the IRP. -->
+              <td style="width: 96px;">
                 <img src="{{ e_invoice_qr_image }}" alt="e-Invoice QR code" style="width: 88px; height: 88px;" />
               </td>
-            {% endif %}
-          </tr>
-        </table>
+              <td style="vertical-align: middle; font-size: 8px; letter-spacing: 0.08em; color: #6b6b6b;">
+                E-INVOICE QR CODE
+              </td>
+            </tr>
+          </table>
+        {% endif %}
       </td>
     </tr>
   {% endif %}

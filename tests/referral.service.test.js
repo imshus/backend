@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  REFERRAL_BONUS_CREDITS,
+  INVITE_REWARD_CREDITS,
+  PURCHASE_REWARD_CREDITS,
   generateCode,
   normalizeCode,
   ensureReferralCode,
@@ -70,13 +71,14 @@ test('a valid code links the registering business to the member who shared it', 
   assert.ok(registering.saved);
 });
 
-test('the reward pays the shop wallet 100 once, attributed to the sharer', async () => {
+test('joining pays 50 once; the purchase later pays 500 more, never again', async () => {
   const referred = fakeBusiness({
     _id: 'b2',
     tradeName: 'Referred Jewels',
     referredByBusinessId: 'b1',
     referredByUserId: 'emp7',
     referralRewardedAt: null,
+    referralPurchaseRewardedAt: null,
   });
   const credited = [];
   const deps = {
@@ -85,20 +87,44 @@ test('the reward pays the shop wallet 100 once, attributed to the sharer', async
     walletService: { addCredits: async (args) => credited.push(args) },
   };
 
-  const first = await rewardReferrerIfEligible({ businessId: 'b2', trigger: 'TRIAL_STARTED' }, deps);
-  assert.equal(first.rewarded, true);
+  const joined = await rewardReferrerIfEligible({ businessId: 'b2', trigger: 'TRIAL_STARTED' }, deps);
+  assert.equal(joined.credits, INVITE_REWARD_CREDITS);
   assert.equal(credited.length, 1);
   assert.equal(credited[0].businessId, 'b1');
   assert.equal(credited[0].userId, 'emp7');
-  assert.equal(credited[0].amount, REFERRAL_BONUS_CREDITS);
-  assert.equal(credited[0].type, 'REFERRAL_BONUS');
-  assert.equal(credited[0].metadata.referredBusinessId, 'b2');
-  assert.equal(credited[0].metadata.earnedByUserId, 'emp7');
+  assert.equal(credited[0].metadata.tier, 'INVITE');
   assert.ok(referred.referralRewardedAt instanceof Date);
 
-  const second = await rewardReferrerIfEligible({ businessId: 'b2', trigger: 'LICENSE_PURCHASED' }, deps);
-  assert.equal(second.rewarded, false);
-  assert.equal(credited.length, 1);
+  const bought = await rewardReferrerIfEligible({ businessId: 'b2', trigger: 'LICENSE_PURCHASED' }, deps);
+  assert.equal(bought.credits, PURCHASE_REWARD_CREDITS);
+  assert.equal(credited.length, 2);
+  assert.equal(credited[1].amount, PURCHASE_REWARD_CREDITS);
+  assert.equal(credited[1].metadata.tier, 'PURCHASE');
+  assert.ok(referred.referralPurchaseRewardedAt instanceof Date);
+
+  const again = await rewardReferrerIfEligible({ businessId: 'b2', trigger: 'LICENSE_PURCHASED' }, deps);
+  assert.equal(again.rewarded, false);
+  assert.equal(credited.length, 2);
+});
+
+test('a direct purchase with no trial settles both tiers together', async () => {
+  const referred = fakeBusiness({
+    _id: 'b3',
+    referredByBusinessId: 'b1',
+    referredByUserId: 'u1',
+    referralRewardedAt: null,
+    referralPurchaseRewardedAt: null,
+  });
+  const credited = [];
+  const deps = {
+    Business: { findById: async () => referred },
+    CreditTransaction: { findOne: async () => null },
+    walletService: { addCredits: async (args) => credited.push(args) },
+  };
+
+  const result = await rewardReferrerIfEligible({ businessId: 'b3', trigger: 'LICENSE_PURCHASED' }, deps);
+  assert.equal(result.credits, INVITE_REWARD_CREDITS + PURCHASE_REWARD_CREDITS);
+  assert.deepEqual(credited.map((c) => c.metadata.tier), ['INVITE', 'PURCHASE']);
 });
 
 test('a business that was never referred pays nothing', async () => {
@@ -113,7 +139,12 @@ test('a business that was never referred pays nothing', async () => {
 });
 
 test('an existing payout transaction blocks a second payment but still stamps', async () => {
-  const referred = fakeBusiness({ _id: 'b2', referredByBusinessId: 'b1', referralRewardedAt: null });
+  const referred = fakeBusiness({
+    _id: 'b2',
+    referredByBusinessId: 'b1',
+    referralRewardedAt: null,
+    referralPurchaseRewardedAt: null,
+  });
   const deps = {
     Business: { findById: async () => referred },
     CreditTransaction: { findOne: async () => ({ _id: 'tx1' }) },
@@ -122,28 +153,30 @@ test('an existing payout transaction blocks a second payment but still stamps', 
   const result = await rewardReferrerIfEligible({ businessId: 'b2', trigger: 'LICENSE_PURCHASED' }, deps);
   assert.equal(result.rewarded, false);
   assert.ok(referred.referralRewardedAt instanceof Date);
+  assert.ok(referred.referralPurchaseRewardedAt instanceof Date);
 });
 
-test('the overview is personal: it counts only referrals of my own code', async () => {
+test('the overview is personal and splits invite from purchase credits', async () => {
   const counts = [];
   const deps = {
     ReferralCode: { findOne: async () => ({ businessId: 'b1', userId: 'u1', code: 'KEPT77' }) },
     Business: {
       countDocuments: async (filter) => {
         counts.push(filter);
-        return filter.referralRewardedAt ? 2 : 5;
+        return filter.referralPurchaseRewardedAt ? 2 : 4;
       },
     },
   };
   const overview = await getReferralOverview({ businessId: 'b1', userId: 'u1' }, deps);
   assert.deepEqual(overview, {
     referralCode: 'KEPT77',
-    creditsPerReferral: 100,
-    invitedCount: 5,
-    rewardedCount: 2,
-    pendingCount: 3,
-    creditsEarned: 200,
+    inviteReward: 50,
+    purchaseReward: 500,
+    invitedCount: 4,
+    purchasedCount: 2,
+    inviteCredits: 200,
+    purchaseCredits: 1000,
+    totalCredits: 1200,
   });
   assert.equal(counts[0].referredByUserId, 'u1');
-  assert.equal(counts[0].isRegistered, true);
 });

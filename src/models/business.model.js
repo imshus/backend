@@ -73,9 +73,15 @@ const businessSchema = new mongoose.Schema({
     default: null,
     index: true
   },
-  // Stamped when the referrer has been paid for this business — at most once,
-  // on the first licence (trial start or purchase).
+  // Stamped when the referrer's invite reward was paid for this business —
+  // at most once, on its first licence (trial start or purchase).
   referralRewardedAt: {
+    type: Date,
+    default: null
+  },
+  // Stamped when the referrer's larger purchase reward was paid — at most
+  // once, when this business bought the application.
+  referralPurchaseRewardedAt: {
     type: Date,
     default: null
   },
