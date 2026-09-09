@@ -27,10 +27,12 @@ const getNotifications = async (req, res) => {
     const owner = isOwnerRole(req.user.role);
 
     const [rewards, payments, wallet, cfg, overview] = await Promise.all([
+      // Referral rewards are personal: every account — the owner included —
+      // sees only what its own code earned.
       CreditTransaction.find({
         businessId,
         type: 'REFERRAL_BONUS',
-        ...(owner ? {} : { userId: req.user.userId }),
+        userId: req.user.userId,
       })
         .sort({ createdAt: -1 })
         .limit(10)

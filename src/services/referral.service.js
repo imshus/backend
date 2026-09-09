@@ -80,6 +80,7 @@ async function applyReferralCode({ businessId, code }, deps = defaultDeps) {
 
   business.referredByBusinessId = referrer.businessId;
   business.referredByUserId = referrer.userId;
+  business.referredByCode = normalized;
   await business.save();
 
   console.info('[REFERRAL_LINKED]', {

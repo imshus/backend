@@ -73,6 +73,13 @@ const businessSchema = new mongoose.Schema({
     default: null,
     index: true
   },
+  // The code string itself as entered at registration, kept for the record.
+  referredByCode: {
+    type: String,
+    default: '',
+    trim: true,
+    uppercase: true
+  },
   // Stamped when the referrer's invite reward was paid for this business —
   // at most once, on its first licence (trial start or purchase).
   referralRewardedAt: {
