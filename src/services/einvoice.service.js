@@ -22,13 +22,28 @@ const gstService = require('./gst.service');
  * E-invoicing applies to B2B documents only: an invoice with no buyer GSTIN
  * is not eligible and is skipped silently.
  *
- * The endpoint paths follow Sandbox's e-invoice API convention; watch the
- * first live run — a 404 means the path needs aligning with the current
- * Sandbox dashboard docs, not that the integration is wrong.
+ * The endpoint paths were verified against the live Sandbox API on
+ * 2026-09-09: tax-payer/authenticate (with the mandatory `force` query
+ * parameter) reached the real IRP — it answered NIC error 1017 for dummy
+ * credentials — and tax-payer/invoice exists and demands a taxpayer token.
+ * Responses arrive in the NIC envelope { Status, Data, ErrorDetails } inside
+ * Sandbox's own { code, data } wrapper, and both layers are handled below.
  */
 const SANDBOX_BASE_URL = 'https://api.sandbox.co.in';
-const EINVOICE_AUTH_PATH = '/gst/compliance/e-invoice/authenticate';
-const EINVOICE_GENERATE_PATH = '/gst/compliance/e-invoice/generate';
+const EINVOICE_AUTH_PATH = '/gst/compliance/e-invoice/tax-payer/authenticate';
+const EINVOICE_GENERATE_PATH = '/gst/compliance/e-invoice/tax-payer/invoice';
+
+/** Unwraps Sandbox's envelope and throws the NIC ErrorDetails when Status is 0. */
+function unwrapNicResponse(response, context) {
+  const outer = response.data?.data ?? response.data ?? {};
+  if (String(outer.Status) === '0' || (Array.isArray(outer.ErrorDetails) && outer.ErrorDetails.length)) {
+    const details = (outer.ErrorDetails || [])
+      .map((e) => `${e.ErrorCode || ''} ${e.ErrorMessage || ''}`.trim())
+      .join('; ');
+    throw new Error(`EINVOICE_${context}_REJECTED:${details || 'Status 0'}`);
+  }
+  return outer.Data ?? outer;
+}
 
 const toTwo = (value) => Number(Number(value || 0).toFixed(2));
 
@@ -180,6 +195,8 @@ async function getTaxpayerToken(business, deps) {
       gstin,
     },
     {
+      // `force` is mandatory; false reuses NIC's active session when one exists.
+      params: { force: false },
       headers: {
         authorization: apiToken,
         'x-api-key': config.sandbox.apiKey,
@@ -189,7 +206,7 @@ async function getTaxpayerToken(business, deps) {
     },
   );
 
-  const data = response.data?.data || response.data || {};
+  const data = unwrapNicResponse(response, 'AUTH');
   const token = data.AuthToken || data.auth_token || data.access_token;
   if (!token) throw new Error('EINVOICE_AUTH_NO_TOKEN');
 
@@ -219,7 +236,7 @@ async function generateEInvoice({ payload, business }, deps = { axios, getAccess
     },
   });
 
-  const data = response.data?.data || response.data || {};
+  const data = unwrapNicResponse(response, 'GENERATE');
   const irn = data.Irn || data.irn;
   const signedQr = data.SignedQRCode || data.signed_qr_code || '';
   if (!irn || !signedQr) {
