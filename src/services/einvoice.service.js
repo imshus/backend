@@ -110,7 +110,9 @@ function isEligible(business, payload) {
  * renders so the registered figures and the printed figures cannot drift.
  */
 function buildInv01(payload, business) {
-  const sellerGstin = String(payload.gstin_number || '').trim().toUpperCase();
+  // The registered GSTIN from the business record is the e-invoice identity;
+  // the payload copy (also profile-sourced) only fills in if it is missing.
+  const sellerGstin = String(business?.gstNumber || payload.gstin_number || '').trim().toUpperCase();
   const buyerGstin = String(payload.customer_gstin || '').trim().toUpperCase();
   const sellerPin = String(business?.pincode || '').trim() || extractPincode(payload.company_address);
   const buyerPin = extractPincode(payload.customer_address);

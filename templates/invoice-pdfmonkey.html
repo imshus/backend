@@ -320,12 +320,15 @@
     </tr>
   {% endif %}
 
-  <!-- ── Terms | QR | Signatures ──────────────────────────────────────── -->
+  <!-- ── Terms | QR (e-invoice only) | Signatures ─────────────────────── -->
+  <!-- The plain tax invoice prints no QR here — the terms take the whole
+       left side. The e-invoice keeps the download QR beside them, on top of
+       the signed QR in its IRN band above. -->
   <tr class="no-split">
     <td>
       <table>
         <tr>
-          <td class="pad brr terms" style="width: 31%;">
+          <td class="pad brr terms" style="width: {% if irn != blank and qr_code_image != blank %}31%{% else %}53%{% endif %};">
             <div class="xs">Terms &amp; Conditions</div>
             <div style="margin-top: 6px;">E. &amp; O.E.</div>
             <ol>
@@ -333,12 +336,12 @@
             </ol>
           </td>
 
-          <td class="pad c brr qr" style="width: 22%;">
-            {% if qr_code_image != blank %}
+          {% if irn != blank and qr_code_image != blank %}
+            <td class="pad c brr qr" style="width: 22%;">
               <div class="xs" style="margin-bottom: 4px;">Scan to download invoice</div>
               <img src="{{ qr_code_image }}" alt="Invoice QR code" />
-            {% endif %}
-          </td>
+            </td>
+          {% endif %}
 
           <td style="width: 47%;">
             <div class="pad bb">Receiver&#39;s Signature&nbsp;&nbsp;&nbsp;:</div>
