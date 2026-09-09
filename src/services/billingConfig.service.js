@@ -8,7 +8,7 @@ const DEFAULT_BILLING_CONFIG = {
   kComp: 0.27,
   aComp: 0,
   applicationPrice: 12000,
-  freeTrialCredits: 100,
+  freeTrialCredits: 10,
   purchasedBonusCredits: 1000,
   trialDays: 10,
   lowCreditThreshold: 20,

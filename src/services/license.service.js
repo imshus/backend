@@ -62,7 +62,7 @@ async function ensureLicense(businessId) {
       businessId,
       licenseStatus: 'NO_LICENSE',
       trialDays: Number(cfg.trialDays || 10),
-      trialCredits: Number(cfg.freeTrialCredits || 100),
+      trialCredits: Number(cfg.freeTrialCredits || 10),
     });
     console.info('[LICENSE_CREATED]', {
       businessId: String(businessId),
@@ -156,7 +156,7 @@ async function startTrialLicense(businessId, actorUserId) {
 
   const now = new Date();
   const trialDays = Number(cfg.trialDays || 10);
-  const trialCredits = Number(cfg.freeTrialCredits || 100);
+  const trialCredits = Number(cfg.freeTrialCredits || 10);
 
   license.licenseStatus = 'FREE_TRIAL_LICENSE';
   license.trialDays = trialDays;

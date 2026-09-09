@@ -23,7 +23,7 @@ const organizationLicenseSchema = new mongoose.Schema(
     },
     trialCredits: {
       type: Number,
-      default: 100,
+      default: 10,
       min: 0,
     },
     trialStartDate: {
