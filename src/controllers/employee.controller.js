@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const redisClient = require('../redis/redisClient');
 const Employee = require('../models/employee.model');
 const licenseService = require('../services/license.service');
+const { isOwnerRole } = require('../services/userScope.service');
 
 const createEmployee = async (req, res) => {
   try {
@@ -106,7 +107,11 @@ const createEmployee = async (req, res) => {
 const getEmployees = async (req, res) => {
   try {
     const businessId = req.user.businessId;
-    const employees = await Employee.find({ businessId }).select('-passwordHash');
+    // The owner sees the whole roster; an employee sees only themselves.
+    const filter = isOwnerRole(req.user.role)
+      ? { businessId }
+      : { businessId, _id: req.user.userId };
+    const employees = await Employee.find(filter).select('-passwordHash');
 
     res.status(200).json({
       success: true,
