@@ -48,6 +48,12 @@ const envVarsSchema = joi.object({
   // request time, so it is declared here to be visible at startup.
   PDFMONKEY_API_SECRET: joi.string().allow('').default(''),
   PDFMONKEY_TEMPLATE_ID: joi.string().allow('').default(''),
+  // One PDFMonkey template per document; the ids are account identifiers,
+  // not secrets, so the current ones double as defaults.
+  PDFMONKEY_TEMPLATE_ID_FOR_PREVIEW_INVOICE: joi.string().allow('')
+    .default('EAB5F3BB-F10F-4282-9EF3-3FBB51B88D3D'),
+  PDFMONKEY_TEMPLATE_ID_FOR_E_INVOICE: joi.string().allow('')
+    .default('D1795ED5-9A5D-4BBF-B3AF-EB59DD949E0A'),
   // Origin this API is reachable at from outside. The invoice QR code encodes
   // a URL under it, so it must be the public address, not localhost.
   PUBLIC_BASE_URL: joi.string().uri().default('https://amitaash.com'),
@@ -112,6 +118,12 @@ module.exports = {
   gstVerifyMode: envVars.GST_VERIFY_MODE,
   einvoice: {
     credKey: envVars.EINVOICE_CRED_KEY,
+  },
+  pdfmonkey: {
+    apiSecret: envVars.PDFMONKEY_API_SECRET,
+    templateId: envVars.PDFMONKEY_TEMPLATE_ID,
+    previewTemplateId: envVars.PDFMONKEY_TEMPLATE_ID_FOR_PREVIEW_INVOICE,
+    eInvoiceTemplateId: envVars.PDFMONKEY_TEMPLATE_ID_FOR_E_INVOICE,
   },
   billing: {
     timezone: envVars.BILLING_TIMEZONE,

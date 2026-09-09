@@ -5,12 +5,28 @@
  * returns the final download_url in a single HTTP call (~2-10 seconds).
  */
 
-const PDFMONKEY_BASE_URL = 'https://api.pdfmonkey.io/api/v1';
-const TEMPLATE_ID = process.env.PDFMONKEY_TEMPLATE_ID;
-const API_SECRET = process.env.PDFMONKEY_API_SECRET;
+const config = require('../config/env');
 
-if (!TEMPLATE_ID || !API_SECRET) {
-  console.warn('[PDFMonkey] PDFMONKEY_TEMPLATE_ID or PDFMONKEY_API_SECRET not set in .env');
+const PDFMONKEY_BASE_URL = 'https://api.pdfmonkey.io/api/v1';
+const API_SECRET = config.pdfmonkey.apiSecret;
+
+// Two PDFMonkey templates, one per document. The plain tax invoice renders
+// through the preview template; a document carrying an IRN band (live or
+// test e-invoice) renders through the e-invoice template. Read through the
+// validated config so the ids' defaults apply even on a server whose .env
+// never mentions them; the legacy single PDFMONKEY_TEMPLATE_ID is the
+// fallback for either.
+const LEGACY_TEMPLATE_ID = config.pdfmonkey.templateId || '';
+const PREVIEW_TEMPLATE_ID = config.pdfmonkey.previewTemplateId || LEGACY_TEMPLATE_ID;
+const E_INVOICE_TEMPLATE_ID = config.pdfmonkey.eInvoiceTemplateId || PREVIEW_TEMPLATE_ID;
+
+if (!PREVIEW_TEMPLATE_ID || !API_SECRET) {
+  console.warn('[PDFMonkey] template id or PDFMONKEY_API_SECRET not set in .env');
+}
+
+/** The template a payload renders through: e-invoice when it carries an IRN. */
+function templateIdFor(payload) {
+  return String(payload?.irn || '').trim() ? E_INVOICE_TEMPLATE_ID : PREVIEW_TEMPLATE_ID;
 }
 
 /**
@@ -20,6 +36,11 @@ if (!TEMPLATE_ID || !API_SECRET) {
  * @returns {Promise<{ downloadUrl: string, docId: string }>}
  */
 async function generateInvoicePdf(payload, filename) {
+  const templateId = templateIdFor(payload);
+  console.info('[PDFMonkey] rendering', {
+    filename,
+    template: templateId === E_INVOICE_TEMPLATE_ID && templateId !== PREVIEW_TEMPLATE_ID ? 'e-invoice' : 'preview',
+  });
   const response = await fetch(`${PDFMONKEY_BASE_URL}/documents/sync`, {
     method: 'POST',
     headers: {
@@ -28,7 +49,7 @@ async function generateInvoicePdf(payload, filename) {
     },
     body: JSON.stringify({
       document: {
-        document_template_id: TEMPLATE_ID,
+        document_template_id: templateId,
         status: 'pending',
         payload,
         meta: {
