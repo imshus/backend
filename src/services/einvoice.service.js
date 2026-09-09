@@ -89,20 +89,54 @@ function toNicDate(invoiceDate) {
   return parts.length === 3 ? `${parts[0]}/${parts[1]}/${parts[2]}` : String(invoiceDate || '');
 }
 
+/** 'live' registers with the IRP; anything else prints a specimen band. */
+function resolveMode(business) {
+  return business?.eInvoiceMode === 'live' ? 'live' : 'test';
+}
+
 /**
- * Whether this document can be registered at all: the business switched
- * e-invoicing on and saved its IRP credentials, the server holds the
- * encryption key, and the buyer has a GSTIN (B2B).
+ * Whether this document gets an e-invoice band at all. Both modes need a
+ * B2B buyer (a GSTIN) and the shop's own GSTIN. Live additionally needs the
+ * switch on, the shop's IRP credentials, and the server's encryption key.
  */
 function isEligible(business, payload) {
-  return Boolean(
-    business?.eInvoiceEnabled &&
-      business?.eInvoiceUsername &&
-      business?.eInvoicePasswordEnc &&
-      credKey() &&
-      String(payload?.gstin_number || '').trim() &&
-      String(payload?.customer_gstin || '').trim(),
+  const b2b = Boolean(
+    String(payload?.gstin_number || '').trim() && String(payload?.customer_gstin || '').trim(),
   );
+  if (!b2b) return false;
+  if (resolveMode(business) === 'test') return true;
+  return Boolean(
+    business?.eInvoiceEnabled && business?.eInvoiceUsername && business?.eInvoicePasswordEnc && credKey(),
+  );
+}
+
+/**
+ * The specimen band for test mode: a deterministic dummy IRN in the real
+ * 64-hex shape, a dummy acknowledgement, and a QR whose payload says in
+ * plain words that nothing was registered — so a scan of it can never be
+ * mistaken for a government-signed one.
+ */
+function generateTestEInvoice(payload) {
+  const invoiceNumber = String(payload.invoice_number || '');
+  const gstin = String(payload.gstin_number || '').toUpperCase();
+  const digest = crypto.createHash('sha256').update(`TEST|${gstin}|${invoiceNumber}`).digest('hex');
+  const today = new Date();
+  const dd = String(today.getDate()).padStart(2, '0');
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  return {
+    irn: digest,
+    ackNo: String(parseInt(digest.slice(0, 12), 16)).padStart(15, '0').slice(0, 15),
+    ackDt: `${dd}-${mm}-${today.getFullYear()}`,
+    signedQr: [
+      'MRPSCAN TEST E-INVOICE',
+      'NOT REGISTERED WITH THE GOVERNMENT IRP',
+      `Invoice ${invoiceNumber}`,
+      `Seller ${gstin}`,
+      `Buyer ${String(payload.customer_gstin || '').toUpperCase()}`,
+      `Total ${payload.grand_total}`,
+    ].join(' | '),
+    test: true,
+  };
 }
 
 /**
@@ -262,9 +296,11 @@ async function generateEInvoice({ payload, business }, deps = { axios, getAccess
 
 module.exports = {
   isEligible,
+  resolveMode,
   buildInv01,
   extractPincode,
   encryptCredential,
   decryptCredential,
   generateEInvoice,
+  generateTestEInvoice,
 };

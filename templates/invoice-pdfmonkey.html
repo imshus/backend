@@ -181,7 +181,12 @@
                 <img src="{{ e_invoice_qr_image }}" alt="e-Invoice QR code" style="width: 88px; height: 88px;" />
               </td>
               <td style="vertical-align: middle; font-size: 8px; letter-spacing: 0.08em; color: #6b6b6b;">
-                E-INVOICE QR CODE
+                {% if e_invoice_test %}
+                  <div style="font-weight: 700; color: #a81f17;">TEST E-INVOICE — SPECIMEN</div>
+                  <div style="margin-top: 2px;">NOT REGISTERED WITH THE GOVERNMENT IRP</div>
+                {% else %}
+                  E-INVOICE QR CODE
+                {% endif %}
               </td>
             </tr>
           </table>

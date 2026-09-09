@@ -100,6 +100,14 @@ const businessSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // 'live' registers B2B invoices with the government IRP through Sandbox;
+  // 'test' prints a clearly labelled specimen band with a dummy IRN and QR
+  // instead, for demos and for shops whose IRP access is not ready yet.
+  eInvoiceMode: {
+    type: String,
+    enum: ['live', 'test'],
+    default: 'test'
+  },
   eInvoiceUsername: {
     type: String,
     default: '',

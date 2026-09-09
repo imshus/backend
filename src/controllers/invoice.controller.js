@@ -388,6 +388,8 @@ const buildInvoicePayload = (body, context) => {
       e_invoice_qr_code_data: String(qr_code_data || '').trim(),
       // Government-signed QR, drawn as an image once the IRP answers.
       e_invoice_qr_image: '',
+      // True when the band is a test-mode specimen rather than an IRP record.
+      e_invoice_test: false,
 
       amount_in_words,
       signature_image: '',
@@ -632,11 +634,17 @@ const generateInvoice = async (req, res, next) => {
       // the customer their invoice.
       if (einvoiceService.isEligible(business, pdfPayload)) {
         try {
-          const registered = await einvoiceService.generateEInvoice({ payload: pdfPayload, business });
+          // Live registers with the IRP; test prints a specimen band whose
+          // QR payload states in words that nothing was registered.
+          const testMode = einvoiceService.resolveMode(business) === 'test';
+          const registered = testMode
+            ? einvoiceService.generateTestEInvoice(pdfPayload)
+            : await einvoiceService.generateEInvoice({ payload: pdfPayload, business });
           pdfPayload.irn = registered.irn;
           pdfPayload.ack_number = registered.ackNo;
           pdfPayload.ack_date = registered.ackDt;
           pdfPayload.e_invoice_qr_code_data = registered.signedQr;
+          pdfPayload.e_invoice_test = testMode;
           try {
             // The signed payload is a long JWT; low error correction keeps it
             // within QR capacity while staying scannable at print size.
@@ -649,7 +657,7 @@ const generateInvoice = async (req, res, next) => {
             console.error('[EINVOICE_QR_RENDER_FAILED]', qrErr.message);
           }
           await Invoice.findByIdAndUpdate(invoice._id, {
-            eInvoiceStatus: 'GENERATED',
+            eInvoiceStatus: testMode ? 'TEST' : 'GENERATED',
             irn: registered.irn,
             eInvoiceAckNo: registered.ackNo,
             eInvoiceAckDt: registered.ackDt,

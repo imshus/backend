@@ -68,7 +68,8 @@ const invoiceSchema = new mongoose.Schema({
   // e-invoicing is switched on. A failure never blocks the invoice itself.
   eInvoiceStatus: {
     type: String,
-    enum: ['NOT_ATTEMPTED', 'GENERATED', 'FAILED'],
+    // TEST: a specimen band was printed; nothing was registered with the IRP.
+    enum: ['NOT_ATTEMPTED', 'GENERATED', 'TEST', 'FAILED'],
     default: 'NOT_ATTEMPTED',
   },
   irn: { type: String, default: '' },

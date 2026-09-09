@@ -46,7 +46,7 @@ const normalizeDashboardMatrices = (values = {}) => ({
 const getEInvoiceSettings = async (req, res) => {
   try {
     const business = await Business.findById(req.user.businessId)
-      .select('eInvoiceEnabled eInvoiceUsername eInvoicePasswordEnc')
+      .select('eInvoiceEnabled eInvoiceMode eInvoiceUsername eInvoicePasswordEnc')
       .lean();
     if (!business) {
       return res.status(404).json({ success: false, message: 'Business not found' });
@@ -55,6 +55,7 @@ const getEInvoiceSettings = async (req, res) => {
       success: true,
       data: {
         enabled: Boolean(business.eInvoiceEnabled),
+        mode: business.eInvoiceMode === 'live' ? 'live' : 'test',
         username: business.eInvoiceUsername || '',
         hasPassword: Boolean(business.eInvoicePasswordEnc),
       },
@@ -74,9 +75,9 @@ const getEInvoiceSettings = async (req, res) => {
  */
 const updateEInvoiceSettings = async (req, res) => {
   try {
-    const { enabled, username, password } = req.body || {};
+    const { enabled, username, password, mode } = req.body || {};
     const business = await Business.findById(req.user.businessId).select(
-      'eInvoiceEnabled eInvoiceUsername eInvoicePasswordEnc',
+      'eInvoiceEnabled eInvoiceMode eInvoiceUsername eInvoicePasswordEnc',
     );
     if (!business) {
       return res.status(404).json({ success: false, message: 'Business not found' });
@@ -106,12 +107,28 @@ const updateEInvoiceSettings = async (req, res) => {
       }
       business.eInvoiceEnabled = wantsOn;
     }
+    if (mode !== undefined) {
+      if (mode !== 'live' && mode !== 'test') {
+        return res.status(400).json({ success: false, message: 'Mode must be live or test.' });
+      }
+      // Live mode without credentials would register nothing and print
+      // nothing — refuse it so the switch always means what it says.
+      if (mode === 'live' && (!business.eInvoiceUsername || !business.eInvoicePasswordEnc)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Live mode needs the IRP username and password saved first.',
+        });
+      }
+      business.eInvoiceMode = mode;
+      if (mode === 'live') business.eInvoiceEnabled = true;
+    }
 
     await business.save();
     return res.status(200).json({
       success: true,
       data: {
         enabled: Boolean(business.eInvoiceEnabled),
+        mode: business.eInvoiceMode === 'live' ? 'live' : 'test',
         username: business.eInvoiceUsername || '',
         hasPassword: Boolean(business.eInvoicePasswordEnc),
       },

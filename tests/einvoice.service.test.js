@@ -8,6 +8,8 @@ const {
   extractPincode,
   encryptCredential,
   decryptCredential,
+  generateTestEInvoice,
+  resolveMode,
 } = require('../src/services/einvoice.service');
 
 const payload = {
@@ -41,9 +43,14 @@ test('pin codes come out of free-text addresses; the last run wins', () => {
   assert.equal(extractPincode('no pin here'), '');
 });
 
-test('eligibility needs the business switch, its credentials, the server key, and a B2B buyer', () => {
+test('live eligibility needs the switch, credentials, the server key, and a B2B buyer', () => {
   const saved = { ...config.einvoice };
-  const ready = { eInvoiceEnabled: true, eInvoiceUsername: 'u', eInvoicePasswordEnc: 'iv:tag:data' };
+  const ready = {
+    eInvoiceMode: 'live',
+    eInvoiceEnabled: true,
+    eInvoiceUsername: 'u',
+    eInvoicePasswordEnc: 'iv:tag:data',
+  };
   try {
     config.einvoice.credKey = 'test-key';
     assert.equal(isEligible(ready, payload), true);
@@ -56,6 +63,25 @@ test('eligibility needs the business switch, its credentials, the server key, an
   } finally {
     Object.assign(config.einvoice, saved);
   }
+});
+
+test('test mode needs only a B2B buyer, and is the default until a shop goes live', () => {
+  assert.equal(resolveMode({}), 'test');
+  assert.equal(resolveMode({ eInvoiceMode: 'live' }), 'live');
+  assert.equal(isEligible({ eInvoiceMode: 'test' }, payload), true);
+  assert.equal(isEligible({}, { ...payload, customer_gstin: '' }), false);
+});
+
+test('the specimen band has the real IRN shape and says it is not registered', () => {
+  const first = generateTestEInvoice(payload);
+  const again = generateTestEInvoice(payload);
+  assert.match(first.irn, /^[0-9a-f]{64}$/);
+  assert.equal(first.irn, again.irn);
+  assert.match(first.ackNo, /^\d{15}$/);
+  assert.match(first.ackDt, /^\d{2}-\d{2}-\d{4}$/);
+  assert.ok(first.signedQr.includes('NOT REGISTERED WITH THE GOVERNMENT IRP'));
+  assert.ok(first.signedQr.includes('INV-20260909-00001'));
+  assert.equal(first.test, true);
 });
 
 test('credentials survive an encrypt-decrypt round trip and need the key', () => {
