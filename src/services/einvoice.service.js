@@ -100,13 +100,14 @@ function resolveMode(business) {
  * switch on, the shop's IRP credentials, and the server's encryption key.
  */
 function isEligible(business, payload) {
-  const b2b = Boolean(
-    String(payload?.gstin_number || '').trim() && String(payload?.customer_gstin || '').trim(),
-  );
-  if (!b2b) return false;
+  const sellerGstin = String(business?.gstNumber || payload?.gstin_number || '').trim();
+  if (!sellerGstin) return false;
+  // Test mode needs only the account: the specimen stands in the account's
+  // own registered details wherever the buyer's are missing.
   if (resolveMode(business) === 'test') return true;
+  const b2b = Boolean(String(payload?.customer_gstin || '').trim());
   return Boolean(
-    business?.eInvoiceEnabled && business?.eInvoiceUsername && business?.eInvoicePasswordEnc && credKey(),
+    b2b && business?.eInvoiceEnabled && business?.eInvoiceUsername && business?.eInvoicePasswordEnc && credKey(),
   );
 }
 
@@ -116,9 +117,12 @@ function isEligible(business, payload) {
  * plain words that nothing was registered — so a scan of it can never be
  * mistaken for a government-signed one.
  */
-function generateTestEInvoice(payload) {
+function generateTestEInvoice(payload, business) {
   const invoiceNumber = String(payload.invoice_number || '');
-  const gstin = String(payload.gstin_number || '').toUpperCase();
+  // The account's registered GSTIN is the seller; without a buyer GSTIN the
+  // specimen carries the account's own again, so the band is never blank.
+  const gstin = String(business?.gstNumber || payload.gstin_number || '').toUpperCase();
+  const buyerGstin = String(payload.customer_gstin || '').trim().toUpperCase() || gstin;
   const digest = crypto.createHash('sha256').update(`TEST|${gstin}|${invoiceNumber}`).digest('hex');
   const today = new Date();
   const dd = String(today.getDate()).padStart(2, '0');
@@ -132,7 +136,7 @@ function generateTestEInvoice(payload) {
       'NOT REGISTERED WITH THE GOVERNMENT IRP',
       `Invoice ${invoiceNumber}`,
       `Seller ${gstin}`,
-      `Buyer ${String(payload.customer_gstin || '').toUpperCase()}`,
+      `Buyer ${buyerGstin}`,
       `Total ${payload.grand_total}`,
     ].join(' | '),
     test: true,

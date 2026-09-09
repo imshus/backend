@@ -638,7 +638,7 @@ const generateInvoice = async (req, res, next) => {
           // QR payload states in words that nothing was registered.
           const testMode = einvoiceService.resolveMode(business) === 'test';
           const registered = testMode
-            ? einvoiceService.generateTestEInvoice(pdfPayload)
+            ? einvoiceService.generateTestEInvoice(pdfPayload, business)
             : await einvoiceService.generateEInvoice({ payload: pdfPayload, business });
           pdfPayload.irn = registered.irn;
           pdfPayload.ack_number = registered.ackNo;

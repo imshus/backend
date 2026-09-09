@@ -65,23 +65,32 @@ test('live eligibility needs the switch, credentials, the server key, and a B2B 
   }
 });
 
-test('test mode needs only a B2B buyer, and is the default until a shop goes live', () => {
+test('test mode needs only the account, and is the default until a shop goes live', () => {
   assert.equal(resolveMode({}), 'test');
   assert.equal(resolveMode({ eInvoiceMode: 'live' }), 'live');
-  assert.equal(isEligible({ eInvoiceMode: 'test' }, payload), true);
-  assert.equal(isEligible({}, { ...payload, customer_gstin: '' }), false);
+  const account = { eInvoiceMode: 'test', gstNumber: '07AAACR5055K1Z7' };
+  assert.equal(isEligible(account, payload), true);
+  // No buyer GSTIN: the specimen still prints, standing in the account's own.
+  assert.equal(isEligible(account, { ...payload, customer_gstin: '' }), true);
+  assert.equal(isEligible({ eInvoiceMode: 'test' }, { ...payload, gstin_number: '' }), false);
 });
 
 test('the specimen band has the real IRN shape and says it is not registered', () => {
-  const first = generateTestEInvoice(payload);
-  const again = generateTestEInvoice(payload);
+  const account = { gstNumber: '07AAACR5055K1Z7' };
+  const first = generateTestEInvoice(payload, account);
+  const again = generateTestEInvoice(payload, account);
   assert.match(first.irn, /^[0-9a-f]{64}$/);
   assert.equal(first.irn, again.irn);
   assert.match(first.ackNo, /^\d{15}$/);
   assert.match(first.ackDt, /^\d{2}-\d{2}-\d{4}$/);
   assert.ok(first.signedQr.includes('NOT REGISTERED WITH THE GOVERNMENT IRP'));
   assert.ok(first.signedQr.includes('INV-20260909-00001'));
+  assert.ok(first.signedQr.includes('Seller 07AAACR5055K1Z7'));
   assert.equal(first.test, true);
+
+  // Without a buyer GSTIN the account's own registered number stands in.
+  const solo = generateTestEInvoice({ ...payload, customer_gstin: '' }, account);
+  assert.ok(solo.signedQr.includes('Buyer 07AAACR5055K1Z7'));
 });
 
 test('credentials survive an encrypt-decrypt round trip and need the key', () => {
