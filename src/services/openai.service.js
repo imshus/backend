@@ -1039,32 +1039,42 @@ const detectTagBox = async (base64Image, { businessId, timeoutMs = 20_000 } = {}
     },
   ];
 
-  const { parsed } = await callModel(messages, {
+  const { parsedData } = await callModel(messages, {
     label: 'tag-box',
     businessId,
     maxCompletionTokens: TAG_BOX_MAX_COMPLETION_TOKENS,
     timeoutMs,
   });
 
-  if (!parsed || parsed.found === false) return null;
+  if (!parsedData || parsedData.found === false) {
+    console.info('[TAG_BOX]', { found: false });
+    return null;
+  }
   const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null);
-  const x = num(parsed.x);
-  const y = num(parsed.y);
-  const width = num(parsed.width);
-  const height = num(parsed.height);
-  if (x === null || y === null || !width || !height) return null;
+  const x = num(parsedData.x);
+  const y = num(parsedData.y);
+  const width = num(parsedData.width);
+  const height = num(parsedData.height);
+  if (x === null || y === null || !width || !height) {
+    console.info('[TAG_BOX]', { found: false, answer: parsedData });
+    return null;
+  }
 
   // A little air around the printed area reads better than a tight cut.
   const pad = 0.04;
   const clamp01 = (value) => Math.min(Math.max(value, 0), 1);
   const left = clamp01(x - pad);
   const top = clamp01(y - pad);
-  return {
+  const right = clamp01(x + width + pad);
+  const bottom = clamp01(y + height + pad);
+  const box = {
     x: left,
     y: top,
-    width: clamp01(width + pad * 2 + (x - left)) || width,
-    height: clamp01(height + pad * 2 + (y - top)) || height,
+    width: Math.max(right - left, 0.02),
+    height: Math.max(bottom - top, 0.02),
   };
+  console.info('[TAG_BOX]', { found: true, ...box });
+  return box;
 };
 
 module.exports = {
