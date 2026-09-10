@@ -1,4 +1,7 @@
+const fs = require('fs');
+const sharp = require('sharp');
 const scanService = require('../services/scan.service');
+const openaiService = require('../services/openai.service');
 const { computeMrp, deriveInputFromReading } = require('../services/mrpCalculation.service');
 const { sendSuccess } = require('../utils/apiResponse');
 const { toSessionContext } = require('../utils/scanAccess');
@@ -164,6 +167,46 @@ const submitReview = async (req, res, next) => {
     res.status(200).json({ status: "APPROVED" });
   } catch (err) {
     next(err);
+  }
+};
+
+
+/**
+ * POST /scans/detect-tag — where the printed tag sits in an uploaded photo.
+ *
+ * The app frames a gallery photo before it becomes a scan; this saves the
+ * user doing it by hand. One small model call, the file dropped straight
+ * afterwards, and a failure answers "not found" rather than an error: the
+ * framing is then simply left to the user.
+ */
+const detectTagArea = async (req, res, next) => {
+  const filePath = req.file?.path;
+  try {
+    if (!filePath) throw new Error('Image is required');
+
+    // Small: the box is wanted, not the characters.
+    const jpeg = await sharp(filePath, { failOn: 'none' })
+      .rotate()
+      .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+
+    let box = null;
+    try {
+      box = await openaiService.detectTagBox(jpeg.toString('base64'), {
+        businessId: req.user?.businessId,
+      });
+    } catch (error) {
+      console.warn('[TAG_BOX_FAILED]', { message: error?.message });
+    }
+
+    sendSuccess(res, { found: Boolean(box), box });
+  } catch (err) {
+    next(err);
+  } finally {
+    if (filePath) {
+      fs.promises.unlink(filePath).catch(() => {});
+    }
   }
 };
 

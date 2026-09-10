@@ -30,6 +30,8 @@ const clarificationSchema = joi.object({
 });
 
 router.post('/', validate(createScanSchema), scanController.createScan);
+// Framing help for a gallery photo, before it belongs to any scan.
+router.post('/detect-tag', upload.single('image'), scanController.detectTagArea);
 router.post('/:scanId/front-image', upload.single('image'), scanController.uploadFrontImage);
 router.post('/:scanId/back-image', upload.single('image'), scanController.uploadBackImage);
 router.post('/:scanId/analyze', scanController.analyzeScan);

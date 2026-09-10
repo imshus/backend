@@ -1008,9 +1008,69 @@ const analyzeImages = async (
   }
 };
 
+
+// ── Where the tag is in an uploaded photo ────────────────────────────────────
+// A photo from the gallery frames the whole piece, the hand holding it and the
+// table under it; the reading only needs the printed tag. One small call finds
+// it, so the app can put the tag in its frame without the user pinching.
+const TAG_BOX_SYSTEM_PROMPT =
+  'You locate the printed jewellery tag or label in a photograph. The tag is the small printed card or ' +
+  'sticker carrying weights and codes (GR WT, NET WT, DIA WT, SR NO and the like). Answer only with JSON ' +
+  '{"x":0.0,"y":0.0,"width":0.0,"height":0.0,"found":true} where the numbers are fractions of the image ' +
+  'width and height: x and y are the top-left corner of the smallest rectangle containing all of the ' +
+  'printed text, width and height its size. When no printed tag is visible answer {"found":false}.';
+
+const TAG_BOX_MAX_COMPLETION_TOKENS = 600;
+
+/**
+ * The tag's rectangle in an image, as fractions of its width and height, or
+ * null when the model could not see one. Never throws: a failed detection
+ * just means the app leaves the framing to the user.
+ */
+const detectTagBox = async (base64Image, { businessId, timeoutMs = 20_000 } = {}) => {
+  const messages = [
+    { role: 'system', content: TAG_BOX_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Where is the printed tag in this photograph?' },
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Image}` } },
+      ],
+    },
+  ];
+
+  const { parsed } = await callModel(messages, {
+    label: 'tag-box',
+    businessId,
+    maxCompletionTokens: TAG_BOX_MAX_COMPLETION_TOKENS,
+    timeoutMs,
+  });
+
+  if (!parsed || parsed.found === false) return null;
+  const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null);
+  const x = num(parsed.x);
+  const y = num(parsed.y);
+  const width = num(parsed.width);
+  const height = num(parsed.height);
+  if (x === null || y === null || !width || !height) return null;
+
+  // A little air around the printed area reads better than a tight cut.
+  const pad = 0.04;
+  const clamp01 = (value) => Math.min(Math.max(value, 0), 1);
+  const left = clamp01(x - pad);
+  const top = clamp01(y - pad);
+  return {
+    x: left,
+    y: top,
+    width: clamp01(width + pad * 2 + (x - left)) || width,
+    height: clamp01(height + pad * 2 + (y - top)) || height,
+  };
+};
+
 module.exports = {
   analyzeImages,
   prepareImageViews,
+  detectTagBox,
   // Deterministic pieces, exported for the test suite.
   _internal: {
     normalizeFieldShapes,
