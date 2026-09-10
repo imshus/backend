@@ -44,8 +44,27 @@ app.get('/explorer.js', (req, res) => {
   res.sendFile(require('path').join(__dirname, '..', 'templates', 'explorer.js'));
 });
 
+// The running commit, read once at startup, so a deploy can be verified
+// from outside without a login: `curl /api/v1/health` names it.
+const runningCommit = (() => {
+  try {
+    return require('child_process')
+      .execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+  } catch {
+    return 'unknown';
+  }
+})();
+
 app.get('/api/v1/health', (req, res) => {
-  res.status(200).json({ status: 'healthy' });
+  res.status(200).json({
+    status: 'healthy',
+    commit: runningCommit,
+    // Capabilities the app relies on; a missing one here means the server
+    // is behind the app.
+    features: { analyzePricing: true, einvoiceTestMode: true, notifications: true },
+  });
 });
 
 app.get('/', (req, res) => {
