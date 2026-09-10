@@ -212,6 +212,7 @@ const detectTagArea = async (req, res, next) => {
 
 module.exports = {
   createScan,
+  detectTagArea,
   uploadFrontImage,
   uploadBackImage,
   analyzeScan,
