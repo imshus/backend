@@ -57,6 +57,16 @@ const runningCommit = (() => {
   }
 })();
 
+// Public, unauthenticated: the few settings the app reads before or without a
+// login. The Pratham AI address lives here so a move of that server needs a
+// .env change and a restart, not a new APK.
+app.get('/api/v1/app-config', (req, res) => {
+  res.status(200).json({
+    success: true,
+    data: { prathamAiUrl: config.prathamAi?.url || '' },
+  });
+});
+
 app.get('/api/v1/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',

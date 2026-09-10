@@ -29,6 +29,10 @@ const envVarsSchema = joi.object({
     .description('mock = accept any structurally valid GSTIN with stub data (dev only); live = real Sandbox lookup'),
   EINVOICE_CRED_KEY: joi.string().allow('').default('')
     .description('Server-side key that encrypts each business\'s IRP password at rest; without it e-invoice credentials cannot be saved'),
+  // Where the Pratham AI voice agent (Dynamic Voice Agent server) is hosted,
+  // e.g. https://ai.example.com. Served to the app so it can be changed here
+  // without rebuilding the APK; the app falls back to its own build-time value.
+  PRATHAM_AI_URL: joi.string().allow('').default(''),
   BILLING_TIMEZONE: joi.string().default('Asia/Kolkata'),
   MCX_SCHEDULER_TIMEZONE: joi.string().default('Asia/Kolkata'),
   MCX_TRADING_DAYS: joi.string().default('1,2,3,4,5').description('ISO weekdays for MCX trading scheduler (1=Mon..7=Sun)'),
@@ -116,6 +120,9 @@ module.exports = {
     apiVersion: envVars.SANDBOX_API_VERSION
   },
   gstVerifyMode: envVars.GST_VERIFY_MODE,
+  prathamAi: {
+    url: envVars.PRATHAM_AI_URL,
+  },
   einvoice: {
     credKey: envVars.EINVOICE_CRED_KEY,
   },
