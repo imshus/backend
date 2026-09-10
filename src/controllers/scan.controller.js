@@ -1,4 +1,5 @@
 const scanService = require('../services/scan.service');
+const { computeMrp, deriveInputFromReading } = require('../services/mrpCalculation.service');
 const { sendSuccess } = require('../utils/apiResponse');
 const { toSessionContext } = require('../utils/scanAccess');
 
@@ -77,7 +78,30 @@ const analyzeScan = async (req, res, next) => {
       toSessionContext(req.user),
       req.licenseContext || null,
     );
-    
+
+    // Price the reading right here, so the review card opens with the MRP
+    // beside the values instead of paying another round trip for it. Any
+    // failure leaves pricing out; the card then prices itself as before.
+    let pricing = null;
+    let pricingInput = null;
+    try {
+      pricingInput = await deriveInputFromReading({
+        user: req.user,
+        structuredData: updated.analysisResult.structuredData,
+        scan: updated,
+      });
+      const computed = await computeMrp({
+        user: req.user,
+        sessionContext: toSessionContext(req.user),
+        scanId: updated.scanId,
+        input: pricingInput,
+        scan: updated,
+      });
+      pricing = computed.resultData;
+    } catch (pricingError) {
+      console.warn('[ANALYZE_PRICING_SKIPPED]', { scanId, message: pricingError?.message });
+    }
+
     sendSuccess(res, {
         scanId: updated.scanId,
         status: updated.status,
@@ -86,7 +110,9 @@ const analyzeScan = async (req, res, next) => {
         structuredData: updated.analysisResult.structuredData,
         unknownFields: [], // Force empty to bypass frontend clarification screen
         overallConfidence: updated.analysisResult.overallConfidence,
-        billing: updated.billing || { billed: false }
+        billing: updated.billing || { billed: false },
+        pricing,
+        pricingInput,
     });
   } catch (err) {
     next(err);
