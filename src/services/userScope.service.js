@@ -7,6 +7,7 @@ const GoldRate = require('../models/goldRate.model');
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const LabourRate = require('../models/labourRate.model');
+const ItemCode = require('../models/itemCode.model');
 
 /**
  * Whose data a request touches.
@@ -147,6 +148,9 @@ const ensureUserScopedIndexes = async () => {
   await ColorstoneRate.syncIndexes();
   await dropIndexIfPresent(LabourRate, 'businessId_1');
   await LabourRate.syncIndexes();
+  // Item codes: one code per business becomes one code per user's list.
+  await dropIndexIfPresent(ItemCode, 'businessId_1_code_1');
+  await ItemCode.syncIndexes();
 
   console.log('[DB] Per-user settings, rates and per-business invoice indexes in place');
 };
