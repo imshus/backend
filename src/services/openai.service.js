@@ -8,6 +8,7 @@ const { prepareImageViews } = require('./ocrViews');
 const { compareReads, applyAdjudication, describeDisagreements } = require('./ocrConsensus');
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
+const { findScopedRows, scopeCacheId } = require('./userScope.service');
 
 const openai = new OpenAI({
   apiKey: config.openai.apiKey,
@@ -83,12 +84,15 @@ const addUnique = (list, value) => {
   return list;
 };
 
-const buildCustomizationsFromRates = async (businessId) => {
-  if (!businessId) return null;
+const buildCustomizationsFromRates = async (scope) => {
+  if (!scope?.businessId) return null;
 
+  // The caller's own rows when they keep their own tables, else the shop's —
+  // an unscoped read would teach this scan every employee's private grades,
+  // shapes and packet codes.
   const [diamondRates, colorstoneRates] = await Promise.all([
-    DiamondRate.find({ businessId }).lean(),
-    ColorstoneRate.find({ businessId }).lean(),
+    findScopedRows(DiamondRate, scope),
+    findScopedRows(ColorstoneRate, scope),
   ]);
 
   const diamond = { colors: [], clarities: [], shapes: [], packetCodes: [] };
@@ -241,21 +245,22 @@ const correctSeparatorMisreads = (parsedData) => {
   return parsedData;
 };
 
-// Per-business prompt-context cache: customizations change rarely, so a short
-// TTL removes the Redis reads and rate-table queries from the scan hot path.
+// Per-user prompt-context cache: customizations change rarely, so a short TTL
+// removes the Redis reads and rate-table queries from the scan hot path. Keyed
+// per user, not per business — the rows behind it are one user's own.
 const customizationCache = new Map();
 const CUSTOMIZATION_TTL_MS = 60_000;
 
-const getContextCached = (businessId) => {
-  const key = String(businessId || 'global');
+const getContextCached = (scope) => {
+  const key = scopeCacheId(scope);
   const cached = customizationCache.get(key);
   if (cached && Date.now() - cached.at < CUSTOMIZATION_TTL_MS) {
     return cached.promise;
   }
   const promise = Promise.all([
-    getPromptCustomizations('diamond', businessId),
-    getPromptCustomizations('colorstone', businessId),
-    buildCustomizationsFromRates(businessId),
+    getPromptCustomizations('diamond', key),
+    getPromptCustomizations('colorstone', key),
+    buildCustomizationsFromRates(scope),
   ]);
   // Never keep a failed fetch cached.
   promise.catch(() => {
@@ -776,6 +781,13 @@ const analyzeImages = async (
   businessId,
   preprocessed = {},
 ) => {
+  // Callers pass a scope ({ businessId, userId }); an older caller passing a
+  // bare id is read as the shop itself.
+  const scope =
+    businessId && typeof businessId === 'object'
+      ? businessId
+      : { businessId, userId: null };
+  const bizId = scope.businessId;
   const tPipelineStart = Date.now();
   // Image views and prompt customizations in parallel. Views prepared at
   // upload time (by prepareImageViews on the SAME file) skip the decode here.
@@ -790,7 +802,7 @@ const analyzeImages = async (
     preprocessed?.backViews || preprocessed?.backBase64
       ? asViews(preprocessed.backViews || preprocessed.backBase64)
       : (backImagePath && fs.existsSync(backImagePath) ? prepareImageViews(backImagePath) : null),
-    getContextCached(businessId),
+    getContextCached(scope),
   ]);
   const preprocessMs = Date.now() - tPipelineStart;
   console.log(`[TIMING] preprocess_and_context_ms=${preprocessMs}`);

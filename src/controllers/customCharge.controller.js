@@ -1,4 +1,10 @@
 const CustomCharge = require('../models/customCharge.model');
+const {
+  settingsScope,
+  findScopedRows,
+  materializeOwnRows,
+  resolveScopedRowById,
+} = require('../services/userScope.service');
 
 // Default charge names that are always available
 const DEFAULT_CHARGES = [
@@ -15,15 +21,17 @@ const DEFAULT_CHARGES = [
  */
 const getChargeNames = async (req, res) => {
   try {
-    const businessId = req.user.businessId;
-
-    // Fetch custom charges for this business
-    const customCharges = await CustomCharge.find({
-      businessId,
-      isActive: true,
-    }).sort({ name: 1 });
-
-    const customNames = customCharges.map((charge) => charge.name);
+    // The names this user reads: their own list once they have one, else the
+    // shop's. isActive is applied afterwards on purpose — findScopedRows
+    // decides "has this user a list of their own?" from what the query
+    // returns, so filtering deleted names out of that question would let
+    // someone who deleted all of theirs fall back to the shop's and watch
+    // every name they removed return.
+    const rows = await findScopedRows(CustomCharge, settingsScope(req.user));
+    const customNames = rows
+      .filter((charge) => charge.isActive)
+      .map((charge) => charge.name)
+      .sort((a, b) => a.localeCompare(b));
 
     // Combine default charges with custom charges
     const allCharges = [
@@ -53,7 +61,7 @@ const getChargeNames = async (req, res) => {
  */
 const createCustomCharge = async (req, res) => {
   try {
-    const businessId = req.user.businessId;
+    const scope = settingsScope(req.user);
     const { name } = req.body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -73,9 +81,15 @@ const createCustomCharge = async (req, res) => {
       });
     }
 
-    // Check if custom charge already exists
+    // An employee adding their first name gets their own copy of the list, so
+    // this write cannot land on anyone else's.
+    await materializeOwnRows(CustomCharge, scope);
+
+    // Scoped: an unscoped lookup here would answer "already exists" because
+    // somebody else holds the name, and would reactivate their row.
     const existing = await CustomCharge.findOne({
-      businessId,
+      businessId: scope.businessId,
+      userId: scope.userId,
       name: trimmedName,
     });
 
@@ -98,7 +112,8 @@ const createCustomCharge = async (req, res) => {
 
     // Create new custom charge
     const customCharge = await CustomCharge.create({
-      businessId,
+      businessId: scope.businessId,
+      userId: scope.userId,
       name: trimmedName,
       isActive: true,
     });
@@ -131,13 +146,13 @@ const createCustomCharge = async (req, res) => {
  */
 const deleteCustomCharge = async (req, res) => {
   try {
-    const businessId = req.user.businessId;
+    const scope = settingsScope(req.user);
     const { id } = req.params;
 
-    const customCharge = await CustomCharge.findOne({
-      _id: id,
-      businessId,
-    });
+    // The id may still point at the shop row this user was inheriting; after
+    // their own copy exists, the name is removed from that copy alone.
+    await materializeOwnRows(CustomCharge, scope);
+    const customCharge = await resolveScopedRowById(CustomCharge, scope, id, ['name']);
 
     if (!customCharge) {
       return res.status(404).json({

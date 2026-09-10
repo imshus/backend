@@ -414,8 +414,17 @@ async function processPaymentCapturedWebhook({ orderId, paymentId, paymentPayloa
   return applyPaymentEffects({ txn, paymentPayload, source: 'WEBHOOK_CAPTURED' });
 }
 
-async function processPaymentFailedWebhook({ orderId, paymentId, failureReason = '', paymentPayload = {} }) {
-  const txn = await PaymentTransaction.findOne({ orderId });
+async function processPaymentFailedWebhook({
+  orderId,
+  paymentId,
+  failureReason = '',
+  paymentPayload = {},
+  businessId = null,
+}) {
+  // The signature-verified webhook passes no businessId and looks an order up
+  // by id alone, as it must. A client callback passes its own business, so an
+  // order id from one shop cannot mark another shop's payment failed.
+  const txn = await PaymentTransaction.findOne(businessId ? { orderId, businessId } : { orderId });
   if (!txn) {
     return { ignored: true, reason: 'ORDER_NOT_FOUND' };
   }
@@ -425,7 +434,9 @@ async function processPaymentFailedWebhook({ orderId, paymentId, failureReason =
   }
 
   txn.status = 'PAYMENT_FAILED';
-  txn.paymentId = paymentId || txn.paymentId;
+  // Never let a late id replace one already recorded: a client-supplied id
+  // planted here would fail the id check on a later verification.
+  txn.paymentId = txn.paymentId || paymentId || null;
   txn.failureReason = failureReason || 'Gateway payment failure';
   txn.gatewayResponse = { ...(txn.gatewayResponse || {}), paymentPayload };
   await txn.save();

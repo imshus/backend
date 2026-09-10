@@ -9,6 +9,7 @@ const { findDiamondRateMatch } = require('../services/diamondRateLookup.service'
 const redisService = require('../services/redis.service');
 const {
   settingsScope,
+  scopeCacheId,
   findScopedSetting,
   upsertScopedSetting,
   findScopedRows,
@@ -306,22 +307,24 @@ const addOrUpdateDiamondRate = async (req, res) => {
     const colorKey = normalizedColor.toUpperCase();
     const clarityKey = normalizedClarity.toUpperCase();
     const shapeKey = normalizedShape.toUpperCase();
+    // Filed under the caller, the way their rate rows are.
+    const promptId = scopeCacheId(scope);
 
     if (normalizedColor && !DEFAULT_DIAMOND_COLORS.has(colorKey)) {
-      const { added } = await addPromptCustomization('diamond', 'color', normalizedColor, businessId);
+      const { added } = await addPromptCustomization('diamond', 'color', normalizedColor, promptId);
       promptUpdated = promptUpdated || added;
     }
     if (normalizedClarity && !DEFAULT_DIAMOND_CLARITIES.has(clarityKey)) {
-      const { added } = await addPromptCustomization('diamond', 'clarity', normalizedClarity, businessId);
+      const { added } = await addPromptCustomization('diamond', 'clarity', normalizedClarity, promptId);
       promptUpdated = promptUpdated || added;
     }
     if (shapeKey && !DEFAULT_DIAMOND_SHAPES.has(shapeKey)) {
-      const { added } = await addPromptCustomization('diamond', 'shape', normalizedShape, businessId);
+      const { added } = await addPromptCustomization('diamond', 'shape', normalizedShape, promptId);
       promptUpdated = promptUpdated || added;
     }
 
     if (promptUpdated) {
-      const customizations = await getPromptCustomizations('diamond', businessId);
+      const customizations = await getPromptCustomizations('diamond', promptId);
       const snippet = buildCustomPromptSnippet(customizations, 100, 'diamond');
       if (snippet) {
         console.log('[PROMPT] Custom diamond options section (100 words):');
@@ -518,6 +521,8 @@ const addOrUpdateColorstoneRate = async (req, res) => {
     const { color, clarity, rate } = req.body;
     const businessId = req.user.businessId;
     const scope = settingsScope(req.user);
+    // Filed under the caller, the way their rate rows are.
+    const promptId = scopeCacheId(scope);
 
     const trimmedColor = typeof color === 'string' ? color.trim() : '';
     const trimmedClarity = typeof clarity === 'string' ? clarity.trim() : '';
@@ -537,11 +542,11 @@ const addOrUpdateColorstoneRate = async (req, res) => {
     const clarityKey = trimmedClarity.toUpperCase();
 
     if (trimmedColor && !DEFAULT_COLORSTONE_COLORS.has(colorKey)) {
-      const { added } = await addPromptCustomization('colorstone', 'color', trimmedColor, businessId);
+      const { added } = await addPromptCustomization('colorstone', 'color', trimmedColor, promptId);
       promptUpdated = promptUpdated || added;
     }
     if (trimmedClarity && !DEFAULT_COLORSTONE_CLARITIES.has(clarityKey)) {
-      const { added } = await addPromptCustomization('colorstone', 'clarity', trimmedClarity, businessId);
+      const { added } = await addPromptCustomization('colorstone', 'clarity', trimmedClarity, promptId);
       promptUpdated = promptUpdated || added;
     }
 
@@ -554,7 +559,7 @@ const addOrUpdateColorstoneRate = async (req, res) => {
     );
 
     if (promptUpdated) {
-      const customizations = await getPromptCustomizations('colorstone', businessId);
+      const customizations = await getPromptCustomizations('colorstone', promptId);
       const snippet = buildCustomPromptSnippet(customizations, 100, 'colorstone');
       if (snippet) {
         console.log('[PROMPT] Custom colorstone options section (100 words):');

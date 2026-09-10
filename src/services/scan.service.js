@@ -1,5 +1,6 @@
 const { randomUUID: uuidv4 } = require('crypto');
 const redisService = require('./redis.service');
+const { settingsScope } = require('./userScope.service');
 const openaiService = require('./openai.service');
 const ocrPreprocessCache = require('./ocrPreprocess.cache');
 const scanBillingService = require('./scanBilling.service');
@@ -101,7 +102,7 @@ const pruneSpeculative = () => {
   }
 };
 
-const runModelForScan = async (scan, scannerSettings, businessId) => {
+const runModelForScan = async (scan, scannerSettings, scope) => {
   const { frontImagePath, backImagePath, jewelleryType, scanType } = scan;
   const views = await takePreparedViews(scan.scanId, frontImagePath, backImagePath);
   return openaiService.analyzeImages(
@@ -110,7 +111,7 @@ const runModelForScan = async (scan, scannerSettings, businessId) => {
     jewelleryType,
     scanType,
     scannerSettings,
-    businessId,
+    scope,
     views,
   );
 };
@@ -135,7 +136,7 @@ const takePreparedViews = async (scanId, frontImagePath, backImagePath) => {
   return { frontViews, backViews };
 };
 
-const scheduleSpeculativeAnalysis = (scan, businessId) => {
+const scheduleSpeculativeAnalysis = (scan, scope) => {
   if (!SPECULATIVE_ANALYSIS_ENABLED || !scan?.scanId) return;
   if (!scan.frontImagePath && !scan.backImagePath) return;
   pruneSpeculative();
@@ -146,7 +147,7 @@ const scheduleSpeculativeAnalysis = (scan, businessId) => {
     entry.timer = null;
     if (speculativeAnalyses.get(scan.scanId) !== entry) return;
     console.info('[SPECULATIVE_ANALYSIS_START]', { scanId: scan.scanId });
-    entry.promise = runModelForScan(scan, {}, businessId);
+    entry.promise = runModelForScan(scan, {}, scope);
     entry.promise.catch((error) => {
       console.warn('[SPECULATIVE_ANALYSIS_FAILED]', {
         scanId: scan.scanId,
@@ -191,7 +192,10 @@ const saveImage = async (scanId, imagePath, type, session = {}, options = {}) =>
   // new set if the client asked for it.
   dropSpeculative(scanId);
   if (options.speculate) {
-    scheduleSpeculativeAnalysis(updated, options.businessId);
+    scheduleSpeculativeAnalysis(
+      updated,
+      settingsScope({ ...session, businessId: options.businessId || session.businessId }),
+    );
   }
   console.info('[IMAGE_UPLOAD_COMPLETE]', {
     scanId,
@@ -242,7 +246,7 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
       jewelleryType,
       scanType,
       scannerSettings,
-      businessId,
+      settingsScope({ ...session, businessId: session.businessId || businessId }),
       views,
     );
   } catch (error) {

@@ -8,6 +8,7 @@ const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const LabourRate = require('../models/labourRate.model');
 const ItemCode = require('../models/itemCode.model');
+const CustomCharge = require('../models/customCharge.model');
 
 /**
  * Whose data a request touches.
@@ -110,6 +111,14 @@ const resolveScopedRowById = async (Model, scope, id, keyFields) => {
   return Model.findOne({ businessId: scope.businessId, userId: targetUserId, ...keyFilter });
 };
 
+/**
+ * The id a cache entry is filed under for this scope: the employee's own when
+ * they have settings of their own, otherwise the shop's. Shared so a writer
+ * and a reader cannot disagree about the key.
+ */
+const scopeCacheId = (scope) =>
+  scope?.userId ? `${scope.businessId}:u:${scope.userId}` : String(scope?.businessId || 'global');
+
 const isIndexMissing = (error) =>
   error?.codeName === 'IndexNotFound' || error?.code === 27 || /index not found/i.test(String(error?.message || ''));
 
@@ -151,6 +160,9 @@ const ensureUserScopedIndexes = async () => {
   // Item codes: one code per business becomes one code per user's list.
   await dropIndexIfPresent(ItemCode, 'businessId_1_code_1');
   await ItemCode.syncIndexes();
+  // Charge names: the same, or two users could not keep the same name.
+  await dropIndexIfPresent(CustomCharge, 'businessId_1_name_1');
+  await CustomCharge.syncIndexes();
 
   console.log('[DB] Per-user settings, rates and per-business invoice indexes in place');
 };
@@ -164,5 +176,6 @@ module.exports = {
   findScopedRows,
   materializeOwnRows,
   resolveScopedRowById,
+  scopeCacheId,
   ensureUserScopedIndexes,
 };
