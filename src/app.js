@@ -36,6 +36,7 @@ app.use('/api/v1/invoices', require('./routes/invoice.routes'));
 app.use('/api/v1/item-codes', require('./routes/itemCode.routes'));
 app.use('/api/v1/notifications', require('./routes/notification.routes'));
 app.use('/api/v1/details', require('./routes/details.routes'));
+app.use('/api/v1/faqs', require('./routes/faq.routes'));
 
 app.get('/explorer', (req, res) => {
   res.sendFile(require('path').join(__dirname, '..', 'templates', 'explorer.html'));
