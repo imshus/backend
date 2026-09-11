@@ -27,6 +27,19 @@ const state = {
   generatedPdfPayloads: [],
 };
 
+/**
+ * The reply no longer waits for the PDF: the render and the cache write run
+ * after it, inside setImmediate. Tests that look at either must let those
+ * finish rather than reading the moment the handler returns.
+ */
+const waitFor = async (predicate, what) => {
+  for (let i = 0; i < 100; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+};
+
 const stub = (request, exports) => {
   const resolved = Module._resolveFilename(request, {
     id: CONTROLLER,
@@ -322,15 +335,17 @@ test('the QR requests a direct download, and Redis warms without delaying the re
 
   assert.equal(res.statusCode, 201);
   assert.match(state.qrPayloads[0], /^https:\/\/amitaash\.com\/api\/v1\/invoices\/p\/[a-f0-9]{32}\?download=1$/);
-  assert.equal(state.generatedPdfPayloads[0].qr_code_data, state.qrPayloads[0]);
   assert.ok(!res.payload.invoiceUrl.includes('?download=1'), 'app preview URL stays inline');
 
-  // The cache is warmed in the background: awaiting it added a full download
-  // of the PDF to every Share and Download the user waited through.
+  // Read before anything is awaited: the reply must have come back without
+  // waiting for the render or the cache.
+  assert.equal(state.generatedPdfPayloads.length, 0, 'the reply must not wait for the PDF');
   assert.equal(state.cacheSets.length, 0, 'the reply must not wait for the cache');
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(state.cacheSets.length, 1, 'the PDF is still cached, just afterwards');
+
+  await waitFor(() => state.generatedPdfPayloads[0], 'the background PDF render');
+  assert.equal(state.generatedPdfPayloads[0].qr_code_data, state.qrPayloads[0]);
+
+  await waitFor(() => state.cacheSets.length === 1, 'the background cache write');
   assert.equal(state.cacheSets[0].token, res.payload.invoiceUrl.split('/').pop());
 });
 
@@ -353,6 +368,7 @@ test('caller e-invoice data cannot replace the printed PDF download QR', async (
     },
   }, res, (err) => { throw err; });
 
+  await waitFor(() => state.generatedPdfPayloads[0], 'the background PDF render');
   const payload = state.generatedPdfPayloads[0];
   assert.match(state.qrPayloads[0], /\/api\/v1\/invoices\/p\/[a-f0-9]{32}\?download=1$/);
   assert.equal(payload.qr_code_data, state.qrPayloads[0]);
