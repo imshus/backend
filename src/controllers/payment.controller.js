@@ -76,16 +76,18 @@ async function verifyPayment(req, res, next) {
 async function markPaymentFailure(req, res, next) {
   try {
     const businessId = req.user.businessId;
-    const { orderId, paymentId, reason, status } = req.body || {};
+    const { orderId, reason, status } = req.body || {};
 
     if (!orderId) {
       throw new Error('PAYMENT_ORDER_NOT_FOUND');
     }
 
+    // No payment id from the client: one planted here before paying would
+    // make the captured webhook's real id a mismatch. The signed webhook is
+    // the only source of that id.
     await paymentService.processPaymentFailedWebhook({
       orderId,
       businessId,
-      paymentId,
       failureReason: reason || status || 'Payment failed from client callback',
       paymentPayload: {
         source: 'CLIENT_CALLBACK',

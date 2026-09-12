@@ -227,7 +227,7 @@ async function activatePermanentLicense({
     reason: 'PERMANENT_LICENSE_ACTIVE',
   });
 
-  await payReferralReward({ businessId, trigger: 'LICENSE_PURCHASED', orderId, paymentId });
+  await payReferralReward({ businessId, trigger: 'LICENSE_PURCHASED' });
 
   return { license, activated: true };
 }

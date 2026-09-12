@@ -34,6 +34,41 @@ const gstRateLimiter = async (req, res, next) => {
   }
 };
 
+/**
+ * A per-account counter for an endpoint that spends a paid model call without
+ * debiting a credit. Keyed by user and business rather than IP: a shop's
+ * phones sit behind one NAT, and the point is to stop one login looping it.
+ */
+const perUserLimiter = ({ name, limit, windowSeconds, message }) => async (req, res, next) => {
+  try {
+    const who = `${req.user?.businessId || 'anon'}:${req.user?.userId || req.ip}`;
+    const key = `${name}_limit:${who}`;
+    const count = await redisClient.get(key);
+    if (count && parseInt(count, 10) >= limit) {
+      return res.status(429).json({ success: false, error: 'RATE_LIMIT_EXCEEDED', message });
+    }
+    if (count) {
+      await redisClient.incr(key);
+    } else {
+      await redisClient.set(key, '1', 'EX', windowSeconds);
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// One gallery pick is one detection; 120 an hour is far beyond a person
+// and a firm cap on a script. A refused call just means framing by hand.
+const detectTagRateLimiter = perUserLimiter({
+  name: 'detect_tag',
+  limit: 120,
+  windowSeconds: 3600,
+  message: 'Too many photo detections this hour. Frame the tag by hand for now.',
+});
+
 module.exports = {
-  gstRateLimiter
+  gstRateLimiter,
+  perUserLimiter,
+  detectTagRateLimiter,
 };

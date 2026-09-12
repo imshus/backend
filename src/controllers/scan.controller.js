@@ -195,6 +195,7 @@ const detectTagArea = async (req, res, next) => {
     try {
       box = await openaiService.detectTagBox(jpeg.toString('base64'), {
         businessId: req.user?.businessId,
+        userId: req.user?.userId,
       });
     } catch (error) {
       console.warn('[TAG_BOX_FAILED]', { message: error?.message });

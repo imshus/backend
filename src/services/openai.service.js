@@ -253,9 +253,15 @@ const CUSTOMIZATION_TTL_MS = 60_000;
 
 const getContextCached = (scope) => {
   const key = scopeCacheId(scope);
+  const now = Date.now();
   const cached = customizationCache.get(key);
-  if (cached && Date.now() - cached.at < CUSTOMIZATION_TTL_MS) {
+  if (cached && now - cached.at < CUSTOMIZATION_TTL_MS) {
     return cached.promise;
+  }
+  // One entry per user, so the expired ones are dropped on the way past
+  // rather than left to accumulate for the life of the process.
+  for (const [staleKey, entry] of customizationCache) {
+    if (now - entry.at >= CUSTOMIZATION_TTL_MS) customizationCache.delete(staleKey);
   }
   const promise = Promise.all([
     getPromptCustomizations('diamond', key),
@@ -268,7 +274,7 @@ const getContextCached = (scope) => {
       customizationCache.delete(key);
     }
   });
-  customizationCache.set(key, { at: Date.now(), promise });
+  customizationCache.set(key, { at: now, promise });
   return promise;
 };
 
@@ -639,8 +645,9 @@ const callModel = async (
     messages,
     response_format: { type: 'json_object' },
     max_completion_tokens: maxCompletionTokens,
-    // Stable per-business cache routing so repeated scans hit the same
-    // prompt-cache shard (system prompt + customizations are identical).
+    // Stable per-user cache routing so repeated scans hit the same prompt-cache
+    // shard: the system prompt carries that user's own customizations, so two
+    // people in one shop are two shards.
     prompt_cache_key: String(businessId || 'global'),
   };
   if (reasoningEffort) requestOptions.reasoning_effort = reasoningEffort;
@@ -787,7 +794,7 @@ const analyzeImages = async (
     businessId && typeof businessId === 'object'
       ? businessId
       : { businessId, userId: null };
-  const bizId = scope.businessId;
+  const cacheId = scopeCacheId(scope);
   const tPipelineStart = Date.now();
   // Image views and prompt customizations in parallel. Views prepared at
   // upload time (by prepareImageViews on the SAME file) skip the decode here.
@@ -847,9 +854,9 @@ const analyzeImages = async (
     const tAiStart = Date.now();
     const remainingMs = () => PIPELINE_DEADLINE_MS - (Date.now() - tPipelineStart);
     const [primary, secondary] = await Promise.allSettled([
-      callModel(messagesA, { label: 'read-a', businessId, timeoutMs: remainingMs() }),
+      callModel(messagesA, { label: 'read-a', businessId: cacheId, timeoutMs: remainingMs() }),
       doubleRead
-        ? callModel(messagesB, { label: 'read-b', businessId, timeoutMs: remainingMs() })
+        ? callModel(messagesB, { label: 'read-b', businessId: cacheId, timeoutMs: remainingMs() })
         : Promise.reject(new Error('second read disabled')),
     ]);
     const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -878,7 +885,7 @@ const analyzeImages = async (
       });
       const fallback = await callModel(plain, {
         label: 'read-plain',
-        businessId,
+        businessId: cacheId,
         timeoutMs: remainingMs(),
       });
       addUsage(fallback.usage);
@@ -913,7 +920,7 @@ const analyzeImages = async (
             ],
             {
               label: 'adjudicate',
-              businessId,
+              businessId: cacheId,
               maxCompletionTokens: ADJUDICATION_MAX_COMPLETION_TOKENS,
               timeoutMs: remainingMs(),
             },
@@ -1039,7 +1046,9 @@ const TAG_BOX_MAX_COMPLETION_TOKENS = 600;
  * null when the model could not see one. Never throws: a failed detection
  * just means the app leaves the framing to the user.
  */
-const detectTagBox = async (base64Image, { businessId, timeoutMs = 20_000 } = {}) => {
+const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_000 } = {}) => {
+  // No scan bills this call, so the log is the only record of who spent it.
+  const who = { businessId: businessId || null, userId: userId || null };
   const messages = [
     { role: 'system', content: TAG_BOX_SYSTEM_PROMPT },
     {
@@ -1059,7 +1068,7 @@ const detectTagBox = async (base64Image, { businessId, timeoutMs = 20_000 } = {}
   });
 
   if (!parsedData || parsedData.found === false) {
-    console.info('[TAG_BOX]', { found: false });
+    console.info('[TAG_BOX]', { ...who, found: false });
     return null;
   }
   const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null);
@@ -1068,7 +1077,7 @@ const detectTagBox = async (base64Image, { businessId, timeoutMs = 20_000 } = {}
   const width = num(parsedData.width);
   const height = num(parsedData.height);
   if (x === null || y === null || !width || !height) {
-    console.info('[TAG_BOX]', { found: false, answer: parsedData });
+    console.info('[TAG_BOX]', { ...who, found: false, answer: parsedData });
     return null;
   }
 
@@ -1085,7 +1094,7 @@ const detectTagBox = async (base64Image, { businessId, timeoutMs = 20_000 } = {}
     width: Math.max(right - left, 0.02),
     height: Math.max(bottom - top, 0.02),
   };
-  console.info('[TAG_BOX]', { found: true, ...box });
+  console.info('[TAG_BOX]', { ...who, found: true, ...box });
   return box;
 };
 

@@ -5,6 +5,7 @@ const upload = require('../middleware/upload.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const joi = require('joi');
 const { authenticateJWT } = require('../middleware/auth.middleware');
+const { detectTagRateLimiter } = require('../middleware/rateLimiter');
 const {
   attachLicenseContext,
   requireScannerAccess,
@@ -30,8 +31,9 @@ const clarificationSchema = joi.object({
 });
 
 router.post('/', validate(createScanSchema), scanController.createScan);
-// Framing help for a gallery photo, before it belongs to any scan.
-router.post('/detect-tag', upload.single('image'), scanController.detectTagArea);
+// Framing help for a gallery photo, before it belongs to any scan. It is a
+// paid model call that no scan bills, so it is capped per account.
+router.post('/detect-tag', detectTagRateLimiter, upload.single('image'), scanController.detectTagArea);
 router.post('/:scanId/front-image', upload.single('image'), scanController.uploadFrontImage);
 router.post('/:scanId/back-image', upload.single('image'), scanController.uploadBackImage);
 router.post('/:scanId/analyze', scanController.analyzeScan);

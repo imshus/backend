@@ -434,8 +434,8 @@ async function processPaymentFailedWebhook({
   }
 
   txn.status = 'PAYMENT_FAILED';
-  // Never let a late id replace one already recorded: a client-supplied id
-  // planted here would fail the id check on a later verification.
+  // Only the signed webhook carries an id here (the client callback sends
+  // none), and even that never replaces one already recorded.
   txn.paymentId = txn.paymentId || paymentId || null;
   txn.failureReason = failureReason || 'Gateway payment failure';
   txn.gatewayResponse = { ...(txn.gatewayResponse || {}), paymentPayload };

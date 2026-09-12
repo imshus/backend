@@ -257,8 +257,20 @@ async function getCreditTransactionHistory(req, res, next) {
 
     const totalPages = Math.max(1, Math.ceil(totalRecords / limit));
 
+    // The ledger line, not the document: metadata is free-form and has
+    // carried another shop's gateway ids before.
+    const records = rows.map((row) => ({
+      _id: row._id,
+      type: row.type,
+      amount: Number(row.amount || 0),
+      balanceBefore: Number(row.balanceBefore || 0),
+      balanceAfter: Number(row.balanceAfter || 0),
+      note: row.note || '',
+      createdAt: row.createdAt,
+    }));
+
     sendSuccess(res, {
-      records: rows,
+      records,
       page,
       limit,
       totalRecords,

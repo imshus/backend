@@ -137,7 +137,7 @@ async function payTier(business, businessId, tier, credits, extraMeta, deps) {
  * lookups both guard against double payment.
  */
 async function rewardReferrerIfEligible(
-  { businessId, trigger, orderId = null, paymentId = null, source = 'license.service' },
+  { businessId, trigger, source = 'license.service' },
   deps = defaultDeps,
 ) {
   const business = await deps.Business.findById(businessId);
@@ -145,7 +145,9 @@ async function rewardReferrerIfEligible(
     return { rewarded: false };
   }
 
-  const extraMeta = { trigger, orderId, paymentId, source };
+  // What the referrer's ledger may say about the referred shop: which shop
+  // and what it did — never its Razorpay order or payment ids.
+  const extraMeta = { trigger, source };
   let credits = 0;
 
   if (!business.referralRewardedAt) {

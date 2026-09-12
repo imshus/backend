@@ -335,8 +335,11 @@ function mcxKey() {
 }
 
 // === PROMPT CUSTOMIZATIONS (DIAMOND) ===
+// v2: the id became per user (scopeCacheId) on 11 Sep 2026. The v1 blob had
+// every employee's private grades pooled under the shop, and each owner write
+// renewed its TTL; it is left to expire unread rather than inherited.
 function promptCustomKey(category = 'diamond', businessId = 'global') {
-  return `prompt_custom:${category}:${businessId || 'global'}`;
+  return `prompt_custom_v2:${category}:${businessId || 'global'}`;
 }
 
 const DEFAULT_PROMPT_CUSTOMS = { colors: [], clarities: [], shapes: [], packetCodes: [] };
