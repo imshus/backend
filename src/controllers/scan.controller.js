@@ -71,7 +71,7 @@ const analyzeScan = async (req, res, next) => {
       scanId,
       timestamp: Date.now(),
       businessId: String(req.user?.businessId || ''),
-      userId: String(req.user?.id || req.user?._id || ''),
+      userId: String(req.user?.userId || ''),
     });
     const scannerSettings = req.body?.scannerSettings || {};
     const updated = await scanService.analyzeScan(

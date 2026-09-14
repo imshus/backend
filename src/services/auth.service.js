@@ -54,8 +54,27 @@ const verifyRefreshToken = (token) => {
   }
 };
 
-const refreshTokens = (token) => {
+/**
+ * A refresh is where a deactivated or deleted account is caught: the access
+ * token lives fifteen minutes, so refusing here ends the session within that
+ * long, instead of a refresh token re-minting one for a week on its own.
+ */
+const refreshTokens = async (token) => {
   const payload = verifyRefreshToken(token);
+  const role = String(payload.role || '').trim().toUpperCase();
+  if (role === 'EMP') {
+    const Employee = require('../models/employee.model');
+    const employee = await Employee.findById(payload.userId).select('isActive businessId').lean();
+    if (!employee || employee.isActive === false || String(employee.businessId) !== String(payload.businessId)) {
+      throw new Error('UNAUTHORIZED');
+    }
+  } else if (role === 'OWNER') {
+    const BusinessUser = require('../models/businessUser.model');
+    const user = await BusinessUser.findById(payload.userId).select('isActive businessId').lean();
+    if (!user || user.isActive === false || String(user.businessId) !== String(payload.businessId)) {
+      throw new Error('UNAUTHORIZED');
+    }
+  }
   return generateTokens(payload.businessId, payload.userId, payload.role);
 };
 

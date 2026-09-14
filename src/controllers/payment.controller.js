@@ -88,7 +88,7 @@ async function markPaymentFailure(req, res, next) {
     await paymentService.processPaymentFailedWebhook({
       orderId,
       businessId,
-      failureReason: reason || status || 'Payment failed from client callback',
+      failureReason: String(reason || status || 'Payment failed from client callback').slice(0, 300),
       paymentPayload: {
         source: 'CLIENT_CALLBACK',
         businessId,

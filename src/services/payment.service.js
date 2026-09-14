@@ -334,8 +334,10 @@ async function verifyPaymentAndApply({ businessId, userId, orderId, paymentId, s
   if (!signatureOk) {
     txn.status = 'VERIFICATION_FAILED';
     txn.failureReason = 'Invalid Razorpay signature';
-    txn.paymentId = paymentId || null;
+    // The id is unverified, so it is kept for forensics only: recorded as
+    // txn.paymentId it would make the real captured webhook a mismatch.
     txn.razorpaySignature = signature || null;
+    txn.gatewayResponse = { ...(txn.gatewayResponse || {}), rejectedPaymentId: paymentId || null };
     await txn.save();
 
     console.warn('[SIGNATURE_FAILED]', {
@@ -394,7 +396,10 @@ async function processPaymentCapturedWebhook({ orderId, paymentId, paymentPayloa
     return { ignored: true, reason: 'ORDER_NOT_FOUND' };
   }
 
-  if (txn.paymentId && txn.paymentId !== paymentId) {
+  // An id recorded by a verified success is authoritative; one left by an
+  // earlier attempt is not — Razorpay allows several attempts on one order,
+  // and the captured one is the one that counts.
+  if (txn.status === 'PAYMENT_SUCCESS' && txn.paymentId && txn.paymentId !== paymentId) {
     return { ignored: true, reason: 'PAYMENT_ID_MISMATCH' };
   }
 
@@ -434,11 +439,19 @@ async function processPaymentFailedWebhook({
   }
 
   txn.status = 'PAYMENT_FAILED';
-  // Only the signed webhook carries an id here (the client callback sends
-  // none), and even that never replaces one already recorded.
-  txn.paymentId = txn.paymentId || paymentId || null;
+  // A failed attempt's id is kept aside, never as txn.paymentId: the shop can
+  // pay again on the same order, and that captured attempt must not read as
+  // a mismatch. (The client callback carries no id; the signed webhook does.)
+  const failedBefore = Array.isArray(txn.gatewayResponse?.failedPaymentIds)
+    ? txn.gatewayResponse.failedPaymentIds
+    : [];
   txn.failureReason = failureReason || 'Gateway payment failure';
-  txn.gatewayResponse = { ...(txn.gatewayResponse || {}), paymentPayload };
+  txn.gatewayResponse = {
+    ...(txn.gatewayResponse || {}),
+    paymentPayload,
+    failedPaymentIds:
+      paymentId && !failedBefore.includes(paymentId) ? [...failedBefore, paymentId] : failedBefore,
+  };
   await txn.save();
 
   console.warn('[PAYMENT_FAILED]', {
@@ -480,7 +493,7 @@ async function getPaymentHistory({ businessId, page = 1, limit = 20 }) {
   const safeLimit = Math.min(200, Math.max(1, Number(limit || 20)));
   const skip = (safePage - 1) * safeLimit;
 
-  const [records, totalRecords] = await Promise.all([
+  const [rows, totalRecords] = await Promise.all([
     PaymentTransaction.find({ businessId })
       .sort({ createdAt: -1, _id: -1 })
       .skip(skip)
@@ -488,6 +501,23 @@ async function getPaymentHistory({ businessId, page = 1, limit = 20 }) {
       .lean(),
     PaymentTransaction.countDocuments({ businessId }),
   ]);
+
+  // The ledger line the phone reads, not the document: the gateway blob, the
+  // signature and free-form failure text stay on the server.
+  const records = rows.map((row) => ({
+    _id: row._id,
+    orderId: row.orderId,
+    paymentId: row.paymentId || null,
+    invoiceNumber: row.invoiceNumber || null,
+    invoiceDate: row.invoiceDate || null,
+    paymentType: row.paymentType,
+    amount: row.amount,
+    baseAmount: row.baseAmount,
+    gstAmount: row.gstAmount,
+    amountInPaise: row.amountInPaise,
+    status: row.status,
+    createdAt: row.createdAt,
+  }));
 
   const totalPages = Math.max(1, Math.ceil(totalRecords / safeLimit));
 

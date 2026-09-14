@@ -5,7 +5,7 @@ const upload = require('../middleware/upload.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const joi = require('joi');
 const { authenticateJWT } = require('../middleware/auth.middleware');
-const { detectTagRateLimiter } = require('../middleware/rateLimiter');
+const { detectTagRateLimiter, scanUploadRateLimiter } = require('../middleware/rateLimiter');
 const {
   attachLicenseContext,
   requireScannerAccess,
@@ -34,8 +34,10 @@ router.post('/', validate(createScanSchema), scanController.createScan);
 // Framing help for a gallery photo, before it belongs to any scan. It is a
 // paid model call that no scan bills, so it is capped per account.
 router.post('/detect-tag', detectTagRateLimiter, upload.single('image'), scanController.detectTagArea);
-router.post('/:scanId/front-image', upload.single('image'), scanController.uploadFrontImage);
-router.post('/:scanId/back-image', upload.single('image'), scanController.uploadBackImage);
+// An upload can start the speculative analysis — a paid model call that no
+// scan has billed yet — so uploads are capped per account too.
+router.post('/:scanId/front-image', scanUploadRateLimiter, upload.single('image'), scanController.uploadFrontImage);
+router.post('/:scanId/back-image', scanUploadRateLimiter, upload.single('image'), scanController.uploadBackImage);
 router.post('/:scanId/analyze', scanController.analyzeScan);
 
 router.get('/:scanId/clarification', scanController.getClarification);

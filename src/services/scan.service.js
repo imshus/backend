@@ -146,7 +146,11 @@ const scheduleSpeculativeAnalysis = (scan, scope) => {
   entry.timer = setTimeout(() => {
     entry.timer = null;
     if (speculativeAnalyses.get(scan.scanId) !== entry) return;
-    console.info('[SPECULATIVE_ANALYSIS_START]', { scanId: scan.scanId });
+    console.info('[SPECULATIVE_ANALYSIS_START]', {
+      scanId: scan.scanId,
+      businessId: String(scope?.businessId || ''),
+      userId: String(scope?.userId || ''),
+    });
     entry.promise = runModelForScan(scan, {}, scope);
     entry.promise.catch((error) => {
       console.warn('[SPECULATIVE_ANALYSIS_FAILED]', {

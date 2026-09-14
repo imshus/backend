@@ -54,6 +54,13 @@ function createMemoryStoreClient() {
       const existed = store.delete(key);
       return existed ? 1 : 0;
     },
+
+    async expire(key, ttlSeconds) {
+      const entry = getEntry(key);
+      if (!entry) return 0;
+      entry.expiresAt = Date.now() + (Number(ttlSeconds) * 1000);
+      return 1;
+    },
   };
 }
 

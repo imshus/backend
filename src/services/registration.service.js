@@ -156,8 +156,9 @@ const submitContactDetails = async (businessId, phone, referralCode) => {
 
   // Link the referrer before any OTP goes out, so a mistyped code fails while
   // the person is still on the form. Absent code on a resubmit leaves an
-  // earlier link in place.
-  if (referralCode) {
+  // earlier link in place. A shop that is already registered is not re-pointed
+  // by this unauthenticated step: its referral was settled at its own signup.
+  if (referralCode && !business.isRegistered) {
     await referralService.applyReferralCode({ businessId, code: referralCode });
   }
 
@@ -293,6 +294,7 @@ const recoverUserId = async (mobile, otp) => {
     mobile,
     otp,
     route: '/api/v1/auth/forgot-user-id',
+    rejectAlreadyVerified: true,
   });
 
   const normalizedPhone = normalizePhone(mobile);
@@ -309,10 +311,12 @@ const recoverUserId = async (mobile, otp) => {
 };
 
 const loginWithOtp = async (mobile, otp) => {
+  // One OTP, one session: a code that already signed someone in is spent.
   await otpService.verifyOtpByMobile({
     mobile,
     otp,
     route: '/api/v1/auth/login-otp',
+    rejectAlreadyVerified: true,
   });
 
   const normalizedPhone = normalizePhone(mobile);
@@ -444,10 +448,13 @@ const register = async ({ mobile, password, userId, businessDetails }) => {
     throw new Error('INVALID_MOBILE_NUMBER');
   }
 
+  // The first registrant names the shop; a later account joining an already
+  // registered business does not rename it from an unauthenticated form.
   if (businessDetails.businessName) {
-    await Business.findByIdAndUpdate(businessId, {
-      tradeName: businessDetails.businessName,
-    });
+    await Business.updateOne(
+      { _id: businessId, isRegistered: { $ne: true } },
+      { $set: { tradeName: businessDetails.businessName } },
+    );
   }
 
   const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
@@ -469,13 +476,18 @@ const loginEmployee = async ({ phone }, password) => {
     throw new Error('INVALID_EMPLOYEE_CREDENTIALS');
   }
 
-  const user = await Employee.findOne(query);
-  if (!user || !user.isActive) {
-    throw new Error('INVALID_EMPLOYEE_CREDENTIALS');
+  // Employee phones are not unique across shops (the field carries no unique
+  // index), so the password decides which record is meant rather than
+  // whichever the database returns first.
+  const candidates = await Employee.find({ ...query, isActive: true });
+  let user = null;
+  for (const candidate of candidates) {
+    if (await bcrypt.compare(password, candidate.passwordHash)) {
+      user = candidate;
+      break;
+    }
   }
-
-  const isMatch = await bcrypt.compare(password, user.passwordHash);
-  if (!isMatch) {
+  if (!user) {
     throw new Error('INVALID_EMPLOYEE_CREDENTIALS');
   }
 

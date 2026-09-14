@@ -8,6 +8,14 @@ const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
 const Employee = require('../models/employee.model');
 const { generateInvoiceNumber, peekNextInvoiceNumber } = require('../models/invoiceCounter.model');
+
+/**
+ * Who a reserved QR token belongs to: the user, not just the shop, so one
+ * colleague's reservation cannot be claimed onto another's invoice.
+ */
+function reservationOwner(businessId, user) {
+  return `${businessId}:${user?.userId || ''}`;
+}
 const { ownWorkFilter } = require('../services/userScope.service');
 const { generateInvoicePdf, getDownloadUrl } = require('../services/pdfmonkey.service');
 const einvoiceService = require('../services/einvoice.service');
@@ -430,7 +438,7 @@ const previewInvoiceHtml = async (req, res, next) => {
     const business = await Business.findById(businessId).lean();
 
     const invoiceNumber = String(req.body?.invoice_number || '').trim()
-      || (await peekNextInvoiceNumber());
+      || (await peekNextInvoiceNumber(businessId));
     const invoiceDate = new Date()
       .toLocaleDateString('en-GB', {
         day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata',
@@ -556,7 +564,7 @@ const generateInvoice = async (req, res, next) => {
     // unclaimable falls back to a fresh token rather than failing the invoice.
     const requestedToken = String(req.body?.public_token || '').trim();
     const claimed = requestedToken
-      ? await redisService.claimInvoiceToken(requestedToken, businessId)
+      ? await redisService.claimInvoiceToken(requestedToken, reservationOwner(businessId, req.user))
       : false;
     const publicToken = claimed ? requestedToken : crypto.randomBytes(16).toString('hex');
     const invoiceUrl = `${config.publicBaseUrl}/api/v1/invoices/p/${publicToken}`;
@@ -756,7 +764,7 @@ const reserveInvoiceQr = async (req, res, next) => {
       console.error('[Invoice] QR reservation render failed:', qrErr.message);
     }
 
-    await redisService.reserveInvoiceToken(publicToken, businessId);
+    await redisService.reserveInvoiceToken(publicToken, reservationOwner(businessId, req.user));
 
     return sendSuccess(res, { publicToken, invoiceUrl, qrCodeImage });
   } catch (err) {

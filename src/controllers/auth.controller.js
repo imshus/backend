@@ -245,7 +245,7 @@ const refreshToken = async (req, res, next) => {
       throw new Error('UNAUTHORIZED');
     }
     const authService = require('../services/auth.service');
-    const data = authService.refreshTokens(token);
+    const data = await authService.refreshTokens(token);
     sendSuccess(res, data);
   } catch (err) {
     next(err);

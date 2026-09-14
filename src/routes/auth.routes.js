@@ -19,23 +19,28 @@ const {
   employeeLoginSchema,
   changePasswordSchema,
 } = require('../validators/auth.validator');
-const { gstRateLimiter } = require('../middleware/rateLimiter');
+const {
+  gstRateLimiter,
+  otpSendLimiter,
+  otpVerifyLimiter,
+  accountLookupLimiter,
+} = require('../middleware/rateLimiter');
 const { authenticateJWT } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
 router.post('/business/gst/verify', gstRateLimiter, validate(gstVerifySchema), authController.verifyGst);
-router.post('/check-availability', validate(checkAvailabilitySchema), authController.checkAvailability);
+router.post('/check-availability', accountLookupLimiter, validate(checkAvailabilitySchema), authController.checkAvailability);
 router.post('/business/gst/confirm', validate(gstConfirmSchema), authController.confirmGst);
 router.post('/business/contact-details', validate(contactDetailsSchema), authController.submitContactDetails);
 router.post('/register', validate(registerSchema), authController.register);
-router.post('/send-otp', validate(sendOtpSchema), authController.sendOtp);
-router.post('/verify-otp', validate(verifyMobileOtpSchema), authController.verifyOtpByMobile);
-router.post('/login-otp', validate(loginOtpSchema), authController.loginWithOtp);
+router.post('/send-otp', otpSendLimiter, validate(sendOtpSchema), authController.sendOtp);
+router.post('/verify-otp', otpVerifyLimiter, validate(verifyMobileOtpSchema), authController.verifyOtpByMobile);
+router.post('/login-otp', otpVerifyLimiter, validate(loginOtpSchema), authController.loginWithOtp);
 // Recovers the User ID registered against a phone number. Same OTP proof as
 // login-otp, but returns only the User ID — no session is issued.
-router.post('/forgot-user-id', validate(loginOtpSchema), authController.recoverUserId);
-router.post('/forgot-password/request', validate(requestPasswordResetSchema), authController.requestPasswordReset);
+router.post('/forgot-user-id', otpVerifyLimiter, validate(loginOtpSchema), authController.recoverUserId);
+router.post('/forgot-password/request', accountLookupLimiter, validate(requestPasswordResetSchema), authController.requestPasswordReset);
 router.post('/forgot-password/verify-otp', validate(verifyPasswordResetOtpSchema), authController.verifyPasswordResetOtp);
 router.post('/forgot-password/reset', validate(resetPasswordSchema), authController.resetForgottenPassword);
 router.get('/dev/otps/:businessId', authController.getDevOtps);

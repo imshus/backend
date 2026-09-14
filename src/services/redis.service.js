@@ -256,7 +256,7 @@ const reserveInvoiceToken = async (publicToken, businessId) => {
   });
 };
 
-/** Claims a reservation, returning false unless this business made it. */
+/** Claims a reservation, returning false unless this owner (business:user) made it. */
 const claimInvoiceToken = async (publicToken, businessId) => {
   if (!/^[a-f0-9]{32}$/.test(String(publicToken || ''))) return false;
   return runStoreOp(async (backend) => {
