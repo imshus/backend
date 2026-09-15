@@ -177,6 +177,55 @@ const eachWeightField = (sd, visit) => {
  * them, so a serial number that leaked into a weight field is gone before it
  * can poison the gross-minus-net arithmetic.
  */
+/**
+ * A weight line that carries its rate after it: "DIA WT 1.56/550" is 1.56
+ * carats at 550 a carat. The model copies such a line verbatim into the
+ * weight often enough that the pair is split here, where the two numbers can
+ * be told apart with certainty, instead of being left to the prompt alone.
+ *
+ * A weight is a small decimal, a rate a whole number of rupees, so only a
+ * decimal followed by an integer is a pair: "0.50/0.25" is two weights and
+ * is left alone, and so is a weight followed by a letter code, which the
+ * separator repair below handles.
+ */
+const WEIGHT_RATE_PAIR = /^(\d{1,3}(?:\.\d{1,3})?)\s*[/\\|IlL]\s*(\d{2,7})$/;
+
+const splitWeightRateField = (owner, weightKey, rateKey, label) => {
+  const weightField = owner?.[weightKey];
+  if (!weightField || typeof weightField !== 'object') return false;
+  const raw = String(weightField.value ?? '').trim();
+  const match = raw.match(WEIGHT_RATE_PAIR);
+  if (!match) return false;
+
+  const [, weight, rate] = match;
+  weightField.value = weight;
+  // The rate is the same printed characters as the weight, so it is read with
+  // the same certainty — but never in place of a rate printed elsewhere.
+  if (!hasFieldValue(owner[rateKey])) {
+    owner[rateKey] = { value: rate, confidence: Number(weightField.confidence) || 0 };
+  }
+  console.info('[WEIGHT_RATE_SPLIT]', { field: label, read: raw, weight, rate });
+  return true;
+};
+
+/** Splits every "weight/rate" pair in one reading, flat fields and stones alike. */
+const splitWeightRatePairs = (parsedData) => {
+  const sd = parsedData?.structuredData;
+  if (!sd) return parsedData;
+
+  splitWeightRateField(sd, 'diamondWeight', 'diamondRate', 'diamondWeight');
+  splitWeightRateField(sd, 'coloredStoneWeight', 'coloredStoneRate', 'coloredStoneWeight');
+
+  for (const group of ['diamonds', 'colorstones']) {
+    if (!Array.isArray(sd[group])) continue;
+    sd[group].forEach((stone, index) => {
+      if (!stone || typeof stone !== 'object') return;
+      splitWeightRateField(stone, 'weight', 'rate', `${group}[${index}].weight`);
+    });
+  }
+  return parsedData;
+};
+
 const sanitizeWeights = (parsedData) => {
   eachWeightField(parsedData?.structuredData, (field, label) => {
     if (!field || typeof field !== 'object') return;
@@ -577,6 +626,8 @@ const synthesizeStoneArrays = (parsedData) => {
  */
 const prepareRead = (parsedData) => {
   normalizeFieldShapes(parsedData);
+  // Before the plausibility check: "1.56/550" is a valid pair, not a weight.
+  splitWeightRatePairs(parsedData);
   sanitizeWeights(parsedData);
   synthesizeStoneArrays(parsedData);
   correctSeparatorMisreads(parsedData);
@@ -1105,6 +1156,7 @@ module.exports = {
   // Deterministic pieces, exported for the test suite.
   _internal: {
     normalizeFieldShapes,
+    splitWeightRatePairs,
     repairCompactGradeTokens,
     reconcileStoneWeightsWithGrossNet,
     syncStoneQuality,

@@ -582,6 +582,20 @@ Rate = 30000
 
 Do NOT remove a genuine leading digit when an actual delimiter already exists.
 
+A weight line may carry its rate after it, with no shape in front:
+
+DIA WT 1.56/550
+
+↓
+
+Weight = 1.56
+
+Rate = 550
+
+The first number is the weight, the second is the rate — never one number.
+The same holds for D.WT, DW and CS WT lines, and for the | and \ separators.
+Two decimals ("0.50/0.25") are two weights, not a weight and a rate.
+
 --------------------------------------------------
 MULTI-IMAGE RULE
 --------------------------------------------------
