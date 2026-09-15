@@ -5,20 +5,22 @@ const BusinessUser = require('../models/businessUser.model');
 const einvoiceService = require('../services/einvoice.service');
 const { settingsScope, findScopedSetting, upsertScopedSetting } = require('../services/userScope.service');
 
+// A shop that has saved nothing shows the 24K price alone; the lighter
+// karats wait in the Choose Karat menu until they are ticked.
 const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   '24k_mcx': true,
   '24k_rtgs': true,
   '24k_cash': true,
-  '22k_rtgs': true,
-  '22k_cash': true,
-  '20k_rtgs': true,
-  '20k_cash': true,
-  '18k_rtgs': true,
-  '18k_cash': true,
-  '14k_rtgs': true,
-  '14k_cash': true,
-  '9k_rtgs': true,
-  '9k_cash': true,
+  '22k_rtgs': false,
+  '22k_cash': false,
+  '20k_rtgs': false,
+  '20k_cash': false,
+  '18k_rtgs': false,
+  '18k_cash': false,
+  '14k_rtgs': false,
+  '14k_cash': false,
+  '9k_rtgs': false,
+  '9k_cash': false,
   // Bhaw rate source: true = JMD Patil live feed, false = Mega Bullion (supreme changes).
   'bhaw_source_jmd': false,
 };
