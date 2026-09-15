@@ -149,7 +149,7 @@ const getBusinessProfile = async (req, res) => {
 
     // The signed-in user's own contact details, not the business owner's.
     const user = req.user.userId
-      ? await BusinessUser.findById(req.user.userId).select('phone userId').lean()
+      ? await BusinessUser.findById(req.user.userId).select('phone userId fullName').lean()
       : null;
 
     return res.status(200).json({
@@ -165,6 +165,8 @@ const getBusinessProfile = async (req, res) => {
         pincode: business.pincode || '',
         phone: user?.phone || '',
         loginId: user?.userId || '',
+        // The account holder's own name, as given at signup.
+        fullName: user?.fullName || '',
         // Printed on the invoice footer.
         bankName: business.bankName || '',
         bankBranch: business.bankBranch || '',

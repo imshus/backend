@@ -13,6 +13,13 @@ const businessUserSchema = new mongoose.Schema({
     unique: true,
     trim: true
   },
+  // The person who owns the account, as typed on the signup form. Blank on
+  // accounts created before it was stored (it used to live only on the phone).
+  fullName: {
+    type: String,
+    default: '',
+    trim: true
+  },
   // Chosen at signup; unique across all users. Sparse so accounts created
   // before this field existed (phone-only) stay valid.
   userId: {

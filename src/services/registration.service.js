@@ -47,6 +47,7 @@ function buildLoginPayload(user, business, tokens) {
     // different values and the names unfortunately collide.
     userId: user._id.toString(),
     loginId: user.userId || '',
+    fullName: user.fullName || '',
     role: user.role,
     businessName: business ? (business.tradeName || business.legalName) : undefined,
     gstNumber: business ? business.gstNumber : undefined,
@@ -195,7 +196,7 @@ const verifyPhoneOtp = async (businessId, otp) => {
   return { phoneVerified: true };
 };
 
-const createPassword = async (businessId, password, userId) => {
+const createPassword = async (businessId, password, userId, fullName) => {
   const stateStr = await redisClient.get(`registration:${businessId}`);
   if (!stateStr) throw new Error('Session expired or incomplete registration');
   
@@ -216,6 +217,7 @@ const createPassword = async (businessId, password, userId) => {
       businessId: business._id,
       phone: state.phone,
       ...(userId ? { userId } : {}),
+      fullName: String(fullName || '').trim(),
       address: business.address || '',
       gstNumber: business.gstNumber || '',
       businessName: business.tradeName || business.legalName || '',
@@ -410,7 +412,7 @@ const resetForgottenPassword = async (resetToken, newPassword) => {
   return { success: true, message: 'Password reset successfully' };
 };
 
-const register = async ({ mobile, password, userId, businessDetails }) => {
+const register = async ({ mobile, password, userId, fullName, businessDetails }) => {
   const businessId = businessDetails?.businessId;
   if (!businessId) {
     throw new Error('REGISTRATION_SESSION_EXPIRED');
@@ -463,7 +465,7 @@ const register = async ({ mobile, password, userId, businessDetails }) => {
     if (existingUserId) throw new Error('USER_ID_ALREADY_EXISTS');
   }
 
-  return createPassword(businessId, password, normalizedUserId || undefined);
+  return createPassword(businessId, password, normalizedUserId || undefined, fullName);
 };
 
 const loginEmployee = async ({ phone }, password) => {

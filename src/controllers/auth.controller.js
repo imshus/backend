@@ -38,8 +38,14 @@ const submitContactDetails = async (req, res, next) => {
 
 const register = async (req, res, next) => {
   try {
-    const { mobile, password, userId, businessDetails } = req.body;
-    const data = await registrationService.register({ mobile, password, userId, businessDetails });
+    const { mobile, password, userId, fullName, businessDetails } = req.body;
+    const data = await registrationService.register({
+      mobile,
+      password,
+      userId,
+      fullName,
+      businessDetails,
+    });
     sendSuccess(res, data);
   } catch (err) {
     next(err);
@@ -125,8 +131,8 @@ const verifyPhoneOtp = async (req, res, next) => {
 
 const createPassword = async (req, res, next) => {
   try {
-    const { businessId, password } = req.body;
-    const data = await registrationService.createPassword(businessId, password);
+    const { businessId, password, fullName } = req.body;
+    const data = await registrationService.createPassword(businessId, password, undefined, fullName);
     sendSuccess(res, data);
   } catch (err) {
     next(err);
