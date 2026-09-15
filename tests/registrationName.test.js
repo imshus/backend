@@ -69,7 +69,11 @@ stub('./auth.service', {
 });
 stub('./license.service', { ensureLicense: async () => ({}) });
 stub('./wallet.service', { ensureWallet: async () => ({}) });
-stub('./referral.service', { applyReferralCode: async () => ({}) });
+stub('./referral.service', {
+  applyReferralCode: async () => ({}),
+  resolveReferralCode: async () => null,
+  linkReferral: async () => ({ applied: false }),
+});
 
 const registrationService = require(SERVICE);
 

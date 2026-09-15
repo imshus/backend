@@ -16,6 +16,28 @@ function fakeBusiness(fields) {
   return { save: async function () { this.saved = true; return this; }, ...fields };
 }
 
+/**
+ * The Business collection as the reward path uses it: findById, plus the
+ * compare-and-set the tier claim depends on — the stamp moves only while it
+ * is unset, and the call reports whether this caller was the one who set it.
+ */
+function fakeBusinessStore(doc) {
+  return {
+    findById: async () => doc,
+    findOneAndUpdate: async (filter, update) => {
+      const [field] = Object.keys(update.$set);
+      if (doc[field] !== null && doc[field] !== undefined) return null;
+      const before = { ...doc };
+      doc[field] = update.$set[field];
+      return before;
+    },
+    updateOne: async (filter, update) => {
+      Object.assign(doc, update.$set);
+      return { acknowledged: true };
+    },
+  };
+}
+
 test('codes use only unambiguous characters and survive hand-copying', () => {
   for (let i = 0; i < 50; i += 1) {
     assert.match(generateCode(), /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$/);
@@ -82,7 +104,7 @@ test('joining pays 50 once; the purchase later pays 500 more, never again', asyn
   });
   const credited = [];
   const deps = {
-    Business: { findById: async () => referred },
+    Business: fakeBusinessStore(referred),
     CreditTransaction: { findOne: async () => null },
     walletService: { addCredits: async (args) => credited.push(args) },
   };
@@ -117,7 +139,7 @@ test('a direct purchase with no trial settles both tiers together', async () => 
   });
   const credited = [];
   const deps = {
-    Business: { findById: async () => referred },
+    Business: fakeBusinessStore(referred),
     CreditTransaction: { findOne: async () => null },
     walletService: { addCredits: async (args) => credited.push(args) },
   };
@@ -146,7 +168,7 @@ test('an existing payout transaction blocks a second payment but still stamps', 
     referralPurchaseRewardedAt: null,
   });
   const deps = {
-    Business: { findById: async () => referred },
+    Business: fakeBusinessStore(referred),
     CreditTransaction: { findOne: async () => ({ _id: 'tx1' }) },
     walletService: { addCredits: async () => { throw new Error('should not double pay'); } },
   };
@@ -154,6 +176,69 @@ test('an existing payout transaction blocks a second payment but still stamps', 
   assert.equal(result.rewarded, false);
   assert.ok(referred.referralRewardedAt instanceof Date);
   assert.ok(referred.referralPurchaseRewardedAt instanceof Date);
+});
+
+test('two triggers at once pay one reward, not two', async () => {
+  const referred = fakeBusiness({
+    _id: 'b4',
+    referredByBusinessId: 'b1',
+    referredByUserId: 'u1',
+    referralRewardedAt: null,
+    referralPurchaseRewardedAt: null,
+  });
+  const credited = [];
+  const deps = {
+    Business: fakeBusinessStore(referred),
+    // Both callers look before either has paid, which is exactly the race the
+    // ledger lookup alone cannot see.
+    CreditTransaction: { findOne: async () => null },
+    walletService: {
+      addCredits: async (args) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        credited.push(args);
+      },
+    },
+  };
+
+  const [first, second] = await Promise.all([
+    rewardReferrerIfEligible({ businessId: 'b4', trigger: 'TRIAL_STARTED' }, deps),
+    rewardReferrerIfEligible({ businessId: 'b4', trigger: 'TRIAL_STARTED' }, deps),
+  ]);
+
+  assert.equal(credited.length, 1, 'one invite reward only');
+  assert.equal(first.credits + second.credits, INVITE_REWARD_CREDITS);
+});
+
+test('a payment that fails gives the tier back, so it can be retried', async () => {
+  const referred = fakeBusiness({
+    _id: 'b5',
+    referredByBusinessId: 'b1',
+    referralRewardedAt: null,
+    referralPurchaseRewardedAt: null,
+  });
+  let attempts = 0;
+  const credited = [];
+  const deps = {
+    Business: fakeBusinessStore(referred),
+    CreditTransaction: { findOne: async () => null },
+    walletService: {
+      addCredits: async (args) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('WALLET_UNAVAILABLE');
+        credited.push(args);
+      },
+    },
+  };
+
+  await assert.rejects(
+    rewardReferrerIfEligible({ businessId: 'b5', trigger: 'TRIAL_STARTED' }, deps),
+    /WALLET_UNAVAILABLE/,
+  );
+  assert.equal(referred.referralRewardedAt, null, 'the stamp is not left behind');
+
+  const retried = await rewardReferrerIfEligible({ businessId: 'b5', trigger: 'TRIAL_STARTED' }, deps);
+  assert.equal(retried.credits, INVITE_REWARD_CREDITS);
+  assert.equal(credited.length, 1);
 });
 
 test('the overview is personal and splits invite from purchase credits', async () => {

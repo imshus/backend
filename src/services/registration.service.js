@@ -155,12 +155,14 @@ const submitContactDetails = async (businessId, phone, referralCode) => {
     if (existingUser.phone === normalizedPhone) throw new Error('PHONE_ALREADY_EXISTS');
   }
 
-  // Link the referrer before any OTP goes out, so a mistyped code fails while
-  // the person is still on the form. Absent code on a resubmit leaves an
-  // earlier link in place. A shop that is already registered is not re-pointed
-  // by this unauthenticated step: its referral was settled at its own signup.
-  if (referralCode && !business.isRegistered) {
-    await referralService.applyReferralCode({ businessId, code: referralCode });
+  // The referral is NOT recorded here. This endpoint needs no authentication
+  // and takes the businessId from the body, so anyone could name themselves
+  // the referrer of a shop that has not registered yet. The code travels with
+  // the request that completes the registration instead, where the phone has
+  // been proved. A code sent here is only validated, so a typo is still
+  // reported while the form is in front of the person.
+  if (referralCode) {
+    await referralService.resolveReferralCode({ businessId, code: referralCode });
   }
 
   // Save temp state in Redis
@@ -196,7 +198,7 @@ const verifyPhoneOtp = async (businessId, otp) => {
   return { phoneVerified: true };
 };
 
-const createPassword = async (businessId, password, userId, fullName) => {
+const createPassword = async (businessId, password, userId, fullName, referralCode) => {
   const stateStr = await redisClient.get(`registration:${businessId}`);
   if (!stateStr) throw new Error('Session expired or incomplete registration');
   
@@ -207,6 +209,10 @@ const createPassword = async (businessId, password, userId, fullName) => {
 
   const business = await Business.findById(businessId);
   if (!business) throw new Error('Business not found');
+
+  // Checked before the account exists, so a mistyped code fails the call
+  // instead of leaving a registered shop with a referral it cannot add later.
+  const referrer = await referralService.resolveReferralCode({ businessId, code: referralCode });
 
   const passwordHash = await bcrypt.hash(password, 10);
 
@@ -230,6 +236,11 @@ const createPassword = async (businessId, password, userId, fullName) => {
     business.registrationStep = 'PASSWORD_CREATED';
     business.isRegistered = true;
     await business.save();
+
+    // This caller now owns the shop, so their word on who referred it stands.
+    if (referrer) {
+      await referralService.linkReferral({ businessId, referrer });
+    }
 
     await licenseService.ensureLicense(business._id);
     await walletService.ensureWallet(business._id);
@@ -412,7 +423,7 @@ const resetForgottenPassword = async (resetToken, newPassword) => {
   return { success: true, message: 'Password reset successfully' };
 };
 
-const register = async ({ mobile, password, userId, fullName, businessDetails }) => {
+const register = async ({ mobile, password, userId, fullName, referralCode, businessDetails }) => {
   const businessId = businessDetails?.businessId;
   if (!businessId) {
     throw new Error('REGISTRATION_SESSION_EXPIRED');
@@ -465,7 +476,7 @@ const register = async ({ mobile, password, userId, fullName, businessDetails })
     if (existingUserId) throw new Error('USER_ID_ALREADY_EXISTS');
   }
 
-  return createPassword(businessId, password, normalizedUserId || undefined, fullName);
+  return createPassword(businessId, password, normalizedUserId || undefined, fullName, referralCode);
 };
 
 const loginEmployee = async ({ phone }, password) => {

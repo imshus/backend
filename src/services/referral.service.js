@@ -59,38 +59,55 @@ async function ensureReferralCode({ businessId, userId }, deps = defaultDeps) {
 }
 
 /**
- * Records who referred a registering business — which business, and which of
- * its members' codes was used. Called from the registration flow, so an
- * unknown code must fail loudly there; the person typing it can still fix it.
- * Re-submitting the step with a new code re-points the referral; that is fine
- * before any reward has been paid.
+ * Whose code this is, or null when none was typed. Throws on a code nobody
+ * holds and on a shop's own code, so a registrant learns of a typo while the
+ * form is still in front of them — call this BEFORE creating the account.
  */
-async function applyReferralCode({ businessId, code }, deps = defaultDeps) {
+async function resolveReferralCode({ businessId, code }, deps = defaultDeps) {
   const normalized = normalizeCode(code);
-  if (!normalized) return { applied: false };
+  if (!normalized) return null;
 
   const referrer = await deps.ReferralCode.findOne({ code: normalized });
   if (!referrer || String(referrer.businessId) === String(businessId)) {
     throw new Error('REFERRAL_CODE_INVALID');
   }
+  return { businessId: referrer.businessId, userId: referrer.userId, code: normalized };
+}
+
+/**
+ * Writes the referral onto the registering business. Called at the moment a
+ * registration completes — where the caller has proved control of the phone
+ * number — so nobody else can decide who referred this shop.
+ */
+async function linkReferral({ businessId, referrer }, deps = defaultDeps) {
+  if (!referrer) return { applied: false };
 
   const business = await deps.Business.findById(businessId);
   if (!business) throw new Error('REGISTRATION_SESSION_EXPIRED');
+  // A reward has already been paid against this shop: the referral it was
+  // paid for stands.
   if (business.referralRewardedAt) return { applied: false };
 
   business.referredByBusinessId = referrer.businessId;
   business.referredByUserId = referrer.userId;
-  business.referredByCode = normalized;
+  business.referredByCode = referrer.code;
   await business.save();
 
   console.info('[REFERRAL_LINKED]', {
     businessId: String(businessId),
     referrerBusinessId: String(referrer.businessId),
     referrerUserId: String(referrer.userId),
-    code: normalized,
+    code: referrer.code,
   });
 
   return { applied: true, referrerBusinessId: referrer.businessId, referrerUserId: referrer.userId };
+}
+
+/** Validates a code and links it in one step. */
+async function applyReferralCode({ businessId, code }, deps = defaultDeps) {
+  const referrer = await resolveReferralCode({ businessId, code }, deps);
+  if (!referrer) return { applied: false };
+  return linkReferral({ businessId, referrer }, deps);
 }
 
 /** One reward payment, guarded by its per-tier transaction lookup. */
@@ -128,13 +145,43 @@ async function payTier(business, businessId, tier, credits, extraMeta, deps) {
   return true;
 }
 
+/** The stamp that says a tier has been settled for a referred business. */
+const TIER_STAMP = { INVITE: 'referralRewardedAt', PURCHASE: 'referralPurchaseRewardedAt' };
+const TIER_CREDITS = { INVITE: INVITE_REWARD_CREDITS, PURCHASE: PURCHASE_REWARD_CREDITS };
+
+/**
+ * Takes the tier for this business, or reports that something else already
+ * has it.
+ *
+ * The stamp is set only if it was unset, in one atomic update. Reading the
+ * ledger and then paying is not enough on its own: a purchase that also
+ * activates the licence, or a webhook delivered twice, puts two of these in
+ * flight at once and both would find nothing paid — and the wallet balance is
+ * written before the ledger row exists, so a unique index would catch the
+ * second one only after the credits had moved.
+ */
+async function claimTier(businessId, tier, deps) {
+  const field = TIER_STAMP[tier];
+  const claimed = await deps.Business.findOneAndUpdate(
+    { _id: businessId, $or: [{ [field]: null }, { [field]: { $exists: false } }] },
+    { $set: { [field]: new Date() } },
+  );
+  return Boolean(claimed);
+}
+
+/** Gives a tier back, so a payment that failed can be retried later. */
+async function releaseTier(businessId, tier, deps) {
+  await deps.Business.updateOne({ _id: businessId }, { $set: { [TIER_STAMP[tier]]: null } });
+}
+
 /**
  * Pays the referrer's shop wallet in two tiers, each at most once per
  * referred business: the invite reward the first time it takes any licence
  * (trial included), and the purchase reward when it buys the application —
  * which also settles an unpaid invite reward, for a shop that bought without
- * ever starting the trial. Stamps on the business and per-tier transaction
- * lookups both guard against double payment.
+ * ever starting the trial. The tier is claimed before anything is paid, and
+ * given back when the payment fails; the ledger lookup in payTier still
+ * covers rewards paid before this shop's stamps existed.
  */
 async function rewardReferrerIfEligible(
   { businessId, trigger, source = 'license.service' },
@@ -148,23 +195,21 @@ async function rewardReferrerIfEligible(
   // What the referrer's ledger may say about the referred shop: which shop
   // and what it did — never its Razorpay order or payment ids.
   const extraMeta = { trigger, source };
+  const tiers = trigger === 'LICENSE_PURCHASED' ? ['INVITE', 'PURCHASE'] : ['INVITE'];
   let credits = 0;
 
-  if (!business.referralRewardedAt) {
-    if (await payTier(business, businessId, 'INVITE', INVITE_REWARD_CREDITS, extraMeta, deps)) {
-      credits += INVITE_REWARD_CREDITS;
+  for (const tier of tiers) {
+    if (!(await claimTier(businessId, tier, deps))) continue;
+    try {
+      if (await payTier(business, businessId, tier, TIER_CREDITS[tier], extraMeta, deps)) {
+        credits += TIER_CREDITS[tier];
+      }
+    } catch (error) {
+      await releaseTier(businessId, tier, deps);
+      throw error;
     }
-    business.referralRewardedAt = new Date();
   }
 
-  if (trigger === 'LICENSE_PURCHASED' && !business.referralPurchaseRewardedAt) {
-    if (await payTier(business, businessId, 'PURCHASE', PURCHASE_REWARD_CREDITS, extraMeta, deps)) {
-      credits += PURCHASE_REWARD_CREDITS;
-    }
-    business.referralPurchaseRewardedAt = new Date();
-  }
-
-  await business.save();
   return { rewarded: credits > 0, credits };
 }
 
@@ -196,6 +241,8 @@ module.exports = {
   generateCode,
   normalizeCode,
   ensureReferralCode,
+  resolveReferralCode,
+  linkReferral,
   applyReferralCode,
   rewardReferrerIfEligible,
   getReferralOverview,
