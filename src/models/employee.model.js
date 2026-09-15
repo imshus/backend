@@ -21,6 +21,14 @@ const employeeSchema = new mongoose.Schema({
     lowercase: true,
     trim: true
   },
+  // What this person does, as typed on Add New Employee ("Sales", "Karigar").
+  // Blank on employees added before it was stored; the roster then reads
+  // "Employee" for them.
+  designation: {
+    type: String,
+    default: '',
+    trim: true
+  },
   passwordHash: {
     type: String,
     required: true

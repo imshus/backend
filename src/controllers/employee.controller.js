@@ -6,7 +6,7 @@ const { isOwnerRole } = require('../services/userScope.service');
 
 const createEmployee = async (req, res) => {
   try {
-    const { name, phone, email, permissions, password } = req.body;
+    const { name, phone, email, designation, permissions, password } = req.body;
     const businessId = req.user.businessId; 
 
     const { licenseStatus } = await licenseService.getLicenseOverview(businessId);
@@ -44,6 +44,7 @@ const createEmployee = async (req, res) => {
           name,
           phone,
           email,
+          designation: designation || '',
           permissions: permissions || {},
         };
       }
@@ -56,6 +57,7 @@ const createEmployee = async (req, res) => {
         name: draftData.name,
         phone: draftData.phone,
         email: draftData.email,
+        designation: draftData.designation || designation || '',
         passwordHash,
         permissions: draftData.permissions
       });
@@ -85,6 +87,7 @@ const createEmployee = async (req, res) => {
       name,
       phone,
       email,
+      designation: designation || '',
       permissions: permissions || {}
     };
 
@@ -126,10 +129,13 @@ const getEmployees = async (req, res) => {
 const updateEmployee = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, phone, email, permissions, isActive } = req.body;
+    const { name, phone, email, designation, permissions, isActive } = req.body;
     const businessId = req.user.businessId;
 
     const updateData = { name, phone, email, permissions };
+    if (typeof designation === 'string') {
+      updateData.designation = designation.trim();
+    }
     if (typeof isActive === 'boolean') {
       updateData.isActive = isActive;
     }
