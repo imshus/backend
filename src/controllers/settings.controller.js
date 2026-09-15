@@ -23,12 +23,29 @@ const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   'bhaw_source_jmd': false,
 };
 
-const normalizeDashboardMatrices = (values = {}) => ({
-  ...DEFAULT_DASHBOARD_MATRIX_VALUES,
-  ...Object.fromEntries(
-    Object.entries(values).filter(([key]) => Object.prototype.hasOwnProperty.call(DEFAULT_DASHBOARD_MATRIX_VALUES, key))
-  ),
-});
+// The three 24K rates are the shop's headline price and what Home falls back
+// to: a record with no rate selected at all leaves the dashboard blank, which
+// is how an abandoned or half-written record reads rather than a choice, so
+// these come back on. Any record with something selected is left exactly as
+// it is — 24K can be switched off like any other rate.
+const OPENING_MATRIX_KEYS = ['24k_mcx', '24k_rtgs', '24k_cash'];
+
+const isRateKey = (key) => key !== 'bhaw_source_jmd';
+
+const normalizeDashboardMatrices = (values = {}) => {
+  const merged = {
+    ...DEFAULT_DASHBOARD_MATRIX_VALUES,
+    ...Object.fromEntries(
+      Object.entries(values).filter(([key]) => Object.prototype.hasOwnProperty.call(DEFAULT_DASHBOARD_MATRIX_VALUES, key))
+    ),
+  };
+
+  const anyRateOn = Object.keys(merged).some((key) => isRateKey(key) && merged[key]);
+  if (!anyRateOn) {
+    for (const key of OPENING_MATRIX_KEYS) merged[key] = true;
+  }
+  return merged;
+};
 
 /**
  * GET /settings/business-profile
