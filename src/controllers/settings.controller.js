@@ -23,16 +23,11 @@ const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   'bhaw_source_jmd': false,
 };
 
-// The 24K rates are the shop's headline price: Home always shows all three,
-// whatever a stored record from before this rule says.
-const ALWAYS_ON_MATRIX_KEYS = ['24k_mcx', '24k_rtgs', '24k_cash'];
-
 const normalizeDashboardMatrices = (values = {}) => ({
   ...DEFAULT_DASHBOARD_MATRIX_VALUES,
   ...Object.fromEntries(
     Object.entries(values).filter(([key]) => Object.prototype.hasOwnProperty.call(DEFAULT_DASHBOARD_MATRIX_VALUES, key))
   ),
-  ...Object.fromEntries(ALWAYS_ON_MATRIX_KEYS.map((key) => [key, true])),
 });
 
 /**
