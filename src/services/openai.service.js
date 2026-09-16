@@ -171,6 +171,18 @@ const eachWeightField = (sd, visit) => {
   }
 };
 
+/** Every stone rate of one reading, with a label for the logs. */
+const eachRateField = (sd, visit) => {
+  if (!sd) return;
+  for (const name of ['diamondRate', 'coloredStoneRate']) {
+    visit(sd[name], name);
+  }
+  for (const group of ['diamonds', 'colorstones']) {
+    if (!Array.isArray(sd[group])) continue;
+    sd[group].forEach((stone, i) => visit(stone?.rate, `${group}[${i}].rate`));
+  }
+};
+
 /**
  * Weights that cannot be weights, and weights written without their leading
  * zero. This runs on each reading before anything compares or reconciles
@@ -291,6 +303,38 @@ const correctSeparatorMisreads = (parsedData) => {
       }
     }
   });
+
+  // The same misread on the other side of the separator: the delimiter read
+  // as the rate's first digit, so "1.48/550" arrives as a rate of 1550 —
+  // nearly three times the price, and plausible enough to go unnoticed.
+  const precededBySeparator = (text, needle) => {
+    let index = text.indexOf(needle);
+    while (index !== -1) {
+      const before = index === 0 ? '' : text[index - 1];
+      const after = text[index + needle.length] || '';
+      // The digits must end there: '550' inside '5501' is another number.
+      if (SEPARATOR_ADJACENT.test(before) && !/[0-9.]/.test(after)) return true;
+      index = text.indexOf(needle, index + 1);
+    }
+    return false;
+  };
+
+  eachRateField(sd, (field, label) => {
+    if (!field || typeof field !== 'object') return;
+    const val = String(field.value ?? '').trim();
+    // Only a whole rate that starts with the digit the separator is misread
+    // as, and only one long enough to still be a rate without it.
+    if (!/^1\d{2,6}$/.test(val)) return;
+    // The tag really does print this rate somewhere: it is not a misread.
+    if (raw.includes(val)) return;
+    const trimmed = val.slice(1);
+    if (!precededBySeparator(raw, trimmed)) return;
+    console.warn('[RATE_SEPARATOR_CORRECTED]', { field: label, from: val, to: trimmed });
+    // A rewritten value is never a confident one.
+    field.value = trimmed;
+    field.confidence = Math.min(Number(field.confidence) || 0, 60);
+  });
+
   return parsedData;
 };
 

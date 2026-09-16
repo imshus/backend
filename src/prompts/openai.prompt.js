@@ -596,6 +596,10 @@ The first number is the weight, the second is the rate — never one number.
 The same holds for D.WT, DW and CS WT lines, and for the | and \ separators.
 Two decimals ("0.50/0.25") are two weights, not a weight and a rate.
 
+The delimiter belongs to NEITHER number. Never carry it into the rate as a
+leading 1: on DIA WT 1.48/550 the Rate is 550, never 1550. Never carry it
+into the weight as a trailing 1 either: that Weight is 1.48, never 1.481.
+
 --------------------------------------------------
 MULTI-IMAGE RULE
 --------------------------------------------------
