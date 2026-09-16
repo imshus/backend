@@ -285,8 +285,9 @@ const updateDashboardMatrices = async (req, res) => {
   }
 };
 
-// The two houses on the live bhaw feed. A shop may add more; those follow no
-// vendor, so their rate is the shop's own RTGS and Cash changes.
+// The two houses on the live bhaw feed — the only ones a shop can follow.
+// A name a shop adds is kept as a request for that house's rates; it is not
+// a choice, so it never changes what Home costs.
 const BUILT_IN_BULLION = [
   { key: 'jmd_patil', label: 'JMD Patil' },
   { key: 'mega_bullion', label: 'Mega Bullion' },
@@ -312,9 +313,10 @@ const cleanCustomNames = (values) => {
 };
 
 /**
- * GET /settings/bullion — the houses this account can choose from and the one
- * it follows. An account that has never chosen follows the record the older
- * boolean left behind, so nothing changes under anyone.
+ * GET /settings/bullion — the houses this account can follow, the one it
+ * follows, and the names it has asked us to add. An account that has never
+ * chosen follows the record the older boolean left behind, so nothing changes
+ * under anyone.
  */
 const getBullionSources = async (req, res) => {
   try {
@@ -324,15 +326,15 @@ const getBullionSources = async (req, res) => {
       findScopedSetting(DashboardMetrics, scope),
     ]);
 
-    const customNames = cleanCustomNames(setting?.customNames);
+    const requestedNames = cleanCustomNames(setting?.customNames);
     const fallback = metrics?.metricsData?.bhaw_source_jmd ? 'jmd_patil' : 'mega_bullion';
     const stored = cleanBullionName(setting?.selected);
-    const known = [...BUILT_IN_BULLION.map((house) => house.key), ...customNames];
-    const selected = stored && known.includes(stored) ? stored : fallback;
+    const followable = BUILT_IN_BULLION.map((house) => house.key);
+    const selected = followable.includes(stored) ? stored : fallback;
 
     return res.status(200).json({
       success: true,
-      data: { builtIn: BUILT_IN_BULLION, customNames, selected },
+      data: { builtIn: BUILT_IN_BULLION, requestedNames, selected },
     });
   } catch (error) {
     console.error('Get Bullion Sources Error:', error);
@@ -340,22 +342,34 @@ const getBullionSources = async (req, res) => {
   }
 };
 
-/** POST /settings/bullion — the chosen house and the shop's own list. */
+/**
+ * POST /settings/bullion — the house to follow, and any names the shop has
+ * asked us to add. Only a house on the feed can be followed: a requested name
+ * is recorded and answered later, so it cannot move a shop's price today.
+ */
 const updateBullionSources = async (req, res) => {
   try {
     const scope = settingsScope(req.user);
-    const customNames = cleanCustomNames(req.body?.customNames);
+    const customNames = cleanCustomNames(req.body?.requestedNames ?? req.body?.customNames);
     const requested = cleanBullionName(req.body?.selected);
-    const known = [...BUILT_IN_BULLION.map((house) => house.key), ...customNames];
+    const followable = BUILT_IN_BULLION.map((house) => house.key);
 
-    if (requested && !known.includes(requested)) {
+    if (requested && !followable.includes(requested)) {
       return res
         .status(400)
-        .json({ success: false, message: 'That bullion house is not one of yours' });
+        .json({ success: false, message: 'Pick one of the bullion houses on the feed' });
     }
 
     const selected = requested || BUILT_IN_BULLION[1].key;
     const setting = await upsertScopedSetting(BullionSource, scope, { selected, customNames });
+    if (customNames.length) {
+      // What the shop is waiting for, in the log the team reads.
+      console.info('[BULLION_REQUESTED]', {
+        businessId: String(scope.businessId),
+        userId: scope.userId ? String(scope.userId) : null,
+        names: customNames,
+      });
+    }
 
     // The older boolean still drives anything that has not read this setting
     // yet, so it is kept in step: a house the shop added is not JMD Patil.
@@ -375,7 +389,7 @@ const updateBullionSources = async (req, res) => {
       success: true,
       data: {
         builtIn: BUILT_IN_BULLION,
-        customNames: cleanCustomNames(setting.customNames),
+        requestedNames: cleanCustomNames(setting.customNames),
         selected: setting.selected,
       },
     });

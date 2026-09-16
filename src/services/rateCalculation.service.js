@@ -109,20 +109,17 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // is fetched by name. Only if that vendor is unavailable do we keep the
   // stored supreme changes as a fallback.
   //
-  // A house the shop added itself is not on the feed and is not meant to be:
-  // choosing it means following no vendor, so the stored changes stand and the
-  // feed is not asked at all.
+  // Only the two feed houses can be followed. Anything else in the record —
+  // a name written by an older build — falls back to the boolean rather than
+  // being asked of a feed that has never heard of it.
   const FEED_SOURCES = [bhawService.SOURCES.JMD_PATIL, bhawService.SOURCES.MEGA_BULLION];
   const storedSource = String(bullionSetting?.selected || '').trim();
   const selectedBhawSource = FEED_SOURCES.includes(storedSource)
     ? storedSource
-    : storedSource
-      ? storedSource
-      : metrics?.metricsData?.bhaw_source_jmd
-        ? bhawService.SOURCES.JMD_PATIL
-        : bhawService.SOURCES.MEGA_BULLION;
-  const followsFeed = FEED_SOURCES.includes(selectedBhawSource);
-  const vendorBhaw = followsFeed ? await bhawService.getBhawForSource(selectedBhawSource) : null;
+    : metrics?.metricsData?.bhaw_source_jmd
+      ? bhawService.SOURCES.JMD_PATIL
+      : bhawService.SOURCES.MEGA_BULLION;
+  const vendorBhaw = await bhawService.getBhawForSource(selectedBhawSource);
   if (vendorBhaw) {
     supremeChanges = {
       rtgsChange: vendorBhaw.rtgsBhaw,
@@ -133,9 +130,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
     key: selectedBhawSource,
     name:
       vendorBhaw?.name
-      || (followsFeed
-        ? (selectedBhawSource === bhawService.SOURCES.JMD_PATIL ? 'JMD Patil' : 'Mega Bullion')
-        : selectedBhawSource),
+      || (selectedBhawSource === bhawService.SOURCES.JMD_PATIL ? 'JMD Patil' : 'Mega Bullion'),
     live: Boolean(vendorBhaw),
   };
 
