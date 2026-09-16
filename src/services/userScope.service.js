@@ -154,6 +154,9 @@ const ensureUserScopedIndexes = async () => {
   await dropIndexIfPresent(DiamondRate, 'businessId_1_packetCode_1');
   await DiamondRate.syncIndexes();
   await dropIndexIfPresent(ColorstoneRate, 'businessId_1_color_1_clarity_1');
+  // The colour + clarity index became partial when colorstone rates gained a
+  // packet code; the old full one has to go before the partial can take.
+  await dropIndexIfPresent(ColorstoneRate, 'businessId_1_userId_1_color_1_clarity_1');
   await ColorstoneRate.syncIndexes();
   await dropIndexIfPresent(LabourRate, 'businessId_1');
   await LabourRate.syncIndexes();

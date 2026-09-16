@@ -18,7 +18,7 @@ const {
 } = require('../services/userScope.service');
 
 const DIAMOND_KEY_FIELDS = ['color', 'clarity', 'shape', 'packetCode'];
-const COLORSTONE_KEY_FIELDS = ['color', 'clarity'];
+const COLORSTONE_KEY_FIELDS = ['color', 'clarity', 'packetCode'];
 const {
   addPromptCustomization,
   getPromptCustomizations,
@@ -518,7 +518,7 @@ const deleteDiamondRate = async (req, res) => {
 
 const addOrUpdateColorstoneRate = async (req, res) => {
   try {
-    const { color, clarity, rate } = req.body;
+    const { color, clarity, packetCode, rate } = req.body;
     const businessId = req.user.businessId;
     const scope = settingsScope(req.user);
     // Filed under the caller, the way their rate rows are.
@@ -526,11 +526,12 @@ const addOrUpdateColorstoneRate = async (req, res) => {
 
     const trimmedColor = typeof color === 'string' ? color.trim() : '';
     const trimmedClarity = typeof clarity === 'string' ? clarity.trim() : '';
+    const trimmedPacketCode = typeof packetCode === 'string' ? packetCode.trim() : '';
 
-    if (!trimmedColor && !trimmedClarity) {
+    if (!trimmedColor && !trimmedClarity && !trimmedPacketCode) {
       return res
         .status(400)
-        .json({ success: false, message: 'At least one of color or clarity is required' });
+        .json({ success: false, message: 'A packet code, a color or a clarity is required' });
     }
 
     if (rate == null) {
@@ -549,12 +550,28 @@ const addOrUpdateColorstoneRate = async (req, res) => {
       const { added } = await addPromptCustomization('colorstone', 'clarity', trimmedClarity, promptId);
       promptUpdated = promptUpdated || added;
     }
+    if (trimmedPacketCode) {
+      // The reader needs to know the shop's packet codes to find one on a tag.
+      const { added } = await addPromptCustomization('colorstone', 'packetCode', trimmedPacketCode, promptId);
+      promptUpdated = promptUpdated || added;
+    }
 
     // An employee's first colorstone edit copies the shop's table for them.
     await materializeOwnRows(ColorstoneRate, scope);
+    // A packet code identifies the row on its own; without one the colour and
+    // clarity do, the way they always have.
+    const filter = trimmedPacketCode
+      ? { businessId, userId: scope.userId ?? null, packetCode: trimmedPacketCode }
+      : {
+        businessId,
+        userId: scope.userId ?? null,
+        packetCode: '',
+        color: trimmedColor,
+        clarity: trimmedClarity,
+      };
     const colorstoneRate = await ColorstoneRate.findOneAndUpdate(
-      { businessId, userId: scope.userId ?? null, color: trimmedColor, clarity: trimmedClarity },
-      { rate },
+      filter,
+      { rate, color: trimmedColor, clarity: trimmedClarity, packetCode: trimmedPacketCode },
       { new: true, upsert: true }
     );
 
