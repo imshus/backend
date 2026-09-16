@@ -4,6 +4,7 @@ const GoldRate = require('../models/goldRate.model');
 const redisService = require('./redis.service');
 const SupremeChange = require('../models/supremeChange.model');
 const DashboardMetrics = require('../models/dashboardMetrics.model');
+const BullionSource = require('../models/bullionSource.model');
 const bhawService = require('./bhaw.service');
 const { findScopedSetting } = require('./userScope.service');
 
@@ -49,7 +50,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // The vendor rows are warmed here too, so the lookup by name below finds
   // them ready.
   const bhawWarm = bhawService.prefetch();
-  const [mcxLiveRate, taxSettingsDoc, supremeRead, metrics, karatRowsRead] = await Promise.all([
+  const [mcxLiveRate, taxSettingsDoc, supremeRead, metrics, bullionSetting, karatRowsRead] = await Promise.all([
     mcxService.getLiveMcxRate24K(),
     findScopedSetting(GoldTaxSetting, settings),
     (async () => {
@@ -74,6 +75,14 @@ const getLiveGoldRates = async (businessId, scope = null) => {
         console.warn('[Gold Rates] Could not read bhaw source preference:', metricsError.message);
         return null;
       }),
+    // Which bullion house this account follows. Missing is normal: accounts
+    // that never opened the setting still carry the older boolean.
+    Promise.resolve()
+      .then(() => findScopedSetting(BullionSource, settings))
+      .catch((bullionError) => {
+        console.warn('[Gold Rates] Could not read the bullion house:', bullionError.message);
+        return null;
+      }),
     // Both the shop's rows and (for an employee) their own copy, one query;
     // whichever set applies is picked below.
     GoldRate.find({
@@ -96,13 +105,24 @@ const getLiveGoldRates = async (businessId, scope = null) => {
 
   // 4. Supreme changes, unless the selected bhaw vendor is live (4b).
   let supremeChanges = supremeRead;
-  // Both vendors are published by the same live feed, so the selected one is
-  // fetched by name. Only if that vendor is unavailable do we keep the stored
-  // supreme changes as a fallback.
-  const selectedBhawSource = metrics?.metricsData?.bhaw_source_jmd
-    ? bhawService.SOURCES.JMD_PATIL
-    : bhawService.SOURCES.MEGA_BULLION;
-  const vendorBhaw = await bhawService.getBhawForSource(selectedBhawSource);
+  // Both feed vendors are published by the same live feed, so the selected one
+  // is fetched by name. Only if that vendor is unavailable do we keep the
+  // stored supreme changes as a fallback.
+  //
+  // A house the shop added itself is not on the feed and is not meant to be:
+  // choosing it means following no vendor, so the stored changes stand and the
+  // feed is not asked at all.
+  const FEED_SOURCES = [bhawService.SOURCES.JMD_PATIL, bhawService.SOURCES.MEGA_BULLION];
+  const storedSource = String(bullionSetting?.selected || '').trim();
+  const selectedBhawSource = FEED_SOURCES.includes(storedSource)
+    ? storedSource
+    : storedSource
+      ? storedSource
+      : metrics?.metricsData?.bhaw_source_jmd
+        ? bhawService.SOURCES.JMD_PATIL
+        : bhawService.SOURCES.MEGA_BULLION;
+  const followsFeed = FEED_SOURCES.includes(selectedBhawSource);
+  const vendorBhaw = followsFeed ? await bhawService.getBhawForSource(selectedBhawSource) : null;
   if (vendorBhaw) {
     supremeChanges = {
       rtgsChange: vendorBhaw.rtgsBhaw,
@@ -111,7 +131,11 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   }
   const bhawSource = {
     key: selectedBhawSource,
-    name: vendorBhaw?.name || (selectedBhawSource === bhawService.SOURCES.JMD_PATIL ? 'JMD Patil' : 'Mega Bullion'),
+    name:
+      vendorBhaw?.name
+      || (followsFeed
+        ? (selectedBhawSource === bhawService.SOURCES.JMD_PATIL ? 'JMD Patil' : 'Mega Bullion')
+        : selectedBhawSource),
     live: Boolean(vendorBhaw),
   };
 

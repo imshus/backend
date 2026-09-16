@@ -18,6 +18,10 @@ router.post('/einvoice', requireRole('OWNER', 'ADMIN'), settingsController.updat
 router.get('/formula', settingsController.getFormulaConfig);
 router.post('/formula', requirePermission('manageFormulae'), settingsController.updateFormulaConfig);
 
+// Which bullion house the Home rate follows, plus the houses a shop added.
+router.get('/bullion', settingsController.getBullionSources);
+router.post('/bullion', requirePermission('homeDashboardMetricsControls'), settingsController.updateBullionSources);
+
 router.get('/matrices', settingsController.getDashboardMatrices);
 router.post('/matrices', requirePermission('homeDashboardMetricsControls'), settingsController.updateDashboardMatrices);
 

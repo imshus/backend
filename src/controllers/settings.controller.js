@@ -1,5 +1,6 @@
 const FormulaConfig = require('../models/formulaConfig.model');
 const DashboardMetrics = require('../models/dashboardMetrics.model');
+const BullionSource = require('../models/bullionSource.model');
 const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
 const einvoiceService = require('../services/einvoice.service');
@@ -284,6 +285,106 @@ const updateDashboardMatrices = async (req, res) => {
   }
 };
 
+// The two houses on the live bhaw feed. A shop may add more; those follow no
+// vendor, so their rate is the shop's own RTGS and Cash changes.
+const BUILT_IN_BULLION = [
+  { key: 'jmd_patil', label: 'JMD Patil' },
+  { key: 'mega_bullion', label: 'Mega Bullion' },
+];
+const MAX_CUSTOM_BULLION = 10;
+const BULLION_NAME_MAX = 40;
+
+const cleanBullionName = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').slice(0, BULLION_NAME_MAX);
+
+/** The names a shop added: trimmed, de-duplicated, and never a built-in. */
+const cleanCustomNames = (values) => {
+  const out = [];
+  const seen = new Set(BUILT_IN_BULLION.flatMap((house) => [house.key, house.label.toLowerCase()]));
+  for (const value of Array.isArray(values) ? values : []) {
+    const name = cleanBullionName(value);
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+    if (out.length >= MAX_CUSTOM_BULLION) break;
+  }
+  return out;
+};
+
+/**
+ * GET /settings/bullion — the houses this account can choose from and the one
+ * it follows. An account that has never chosen follows the record the older
+ * boolean left behind, so nothing changes under anyone.
+ */
+const getBullionSources = async (req, res) => {
+  try {
+    const scope = settingsScope(req.user);
+    const [setting, metrics] = await Promise.all([
+      findScopedSetting(BullionSource, scope),
+      findScopedSetting(DashboardMetrics, scope),
+    ]);
+
+    const customNames = cleanCustomNames(setting?.customNames);
+    const fallback = metrics?.metricsData?.bhaw_source_jmd ? 'jmd_patil' : 'mega_bullion';
+    const stored = cleanBullionName(setting?.selected);
+    const known = [...BUILT_IN_BULLION.map((house) => house.key), ...customNames];
+    const selected = stored && known.includes(stored) ? stored : fallback;
+
+    return res.status(200).json({
+      success: true,
+      data: { builtIn: BUILT_IN_BULLION, customNames, selected },
+    });
+  } catch (error) {
+    console.error('Get Bullion Sources Error:', error);
+    return res.status(500).json({ success: false, message: 'Server Error' });
+  }
+};
+
+/** POST /settings/bullion — the chosen house and the shop's own list. */
+const updateBullionSources = async (req, res) => {
+  try {
+    const scope = settingsScope(req.user);
+    const customNames = cleanCustomNames(req.body?.customNames);
+    const requested = cleanBullionName(req.body?.selected);
+    const known = [...BUILT_IN_BULLION.map((house) => house.key), ...customNames];
+
+    if (requested && !known.includes(requested)) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'That bullion house is not one of yours' });
+    }
+
+    const selected = requested || BUILT_IN_BULLION[1].key;
+    const setting = await upsertScopedSetting(BullionSource, scope, { selected, customNames });
+
+    // The older boolean still drives anything that has not read this setting
+    // yet, so it is kept in step: a house the shop added is not JMD Patil.
+    const metrics = await findScopedSetting(DashboardMetrics, scope);
+    await upsertScopedSetting(DashboardMetrics, scope, {
+      metricsData: {
+        ...(metrics?.metricsData || {}),
+        bhaw_source_jmd: selected === 'jmd_patil',
+      },
+    });
+
+    // The rate is cached per account; the choice changes what it should be.
+    const redisService = require('../services/redis.service');
+    await redisService.invalidateGoldRatesCache(scope.businessId.toString());
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        builtIn: BUILT_IN_BULLION,
+        customNames: cleanCustomNames(setting.customNames),
+        selected: setting.selected,
+      },
+    });
+  } catch (error) {
+    console.error('Update Bullion Sources Error:', error);
+    return res.status(500).json({ success: false, message: 'Server Error' });
+  }
+};
+
 const getSupremeRates = async (req, res) => {
   try {
     const redisService = require('../services/redis.service');
@@ -358,6 +459,8 @@ module.exports = {
   getFormulaConfig,
   updateFormulaConfig,
   getDashboardMatrices,
-  updateDashboardMatrices
+  updateDashboardMatrices,
+  getBullionSources,
+  updateBullionSources
   ,getSupremeRates, updateSupremeRates
 };

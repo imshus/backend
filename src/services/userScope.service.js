@@ -6,6 +6,7 @@ const { InvoiceCounter } = require('../models/invoiceCounter.model');
 const GoldRate = require('../models/goldRate.model');
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
+const BullionSource = require('../models/bullionSource.model');
 const LabourRate = require('../models/labourRate.model');
 const ItemCode = require('../models/itemCode.model');
 const CustomCharge = require('../models/customCharge.model');
@@ -163,6 +164,8 @@ const ensureUserScopedIndexes = async () => {
   // Item codes: one code per business becomes one code per user's list.
   await dropIndexIfPresent(ItemCode, 'businessId_1_code_1');
   await ItemCode.syncIndexes();
+  // The bullion house a shop follows, and the houses it added.
+  await BullionSource.syncIndexes();
   // Charge names: the same, or two users could not keep the same name.
   await dropIndexIfPresent(CustomCharge, 'businessId_1_name_1');
   await CustomCharge.syncIndexes();
