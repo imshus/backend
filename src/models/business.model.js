@@ -1,10 +1,12 @@
 const mongoose = require('mongoose');
 
 const businessSchema = new mongoose.Schema({
+  // Looked up on every registration, but deliberately not unique: one GSTIN
+  // may cover several shops, and the licence a shop holds is not the GSTIN's.
   gstNumber: {
     type: String,
     required: true,
-    unique: true,
+    index: true,
     trim: true,
     uppercase: true
   },

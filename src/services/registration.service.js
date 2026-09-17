@@ -76,7 +76,17 @@ function hashResetNonce(nonce) {
 }
 
 const confirmGst = async (gstData) => {
-  let business = await Business.findOne({ gstNumber: gstData.gstNumber });
+  // A GSTIN covers a taxpayer, not a shop: a group trading under one number
+  // may run several counters, and each is its own shop here. A business that
+  // has finished registering is therefore never joined — doing so would hand
+  // whoever knows a public GSTIN that shop's rates, invoices and licence.
+  //
+  // The shell left behind by an unfinished registration IS picked up again, so
+  // retrying the GST step does not leave abandoned businesses behind.
+  let business = await Business.findOne({
+    gstNumber: gstData.gstNumber,
+    isRegistered: { $ne: true },
+  });
   
   if (business) {
     // Refresh the stored details from this lookup so a record captured while
@@ -110,11 +120,12 @@ const confirmGst = async (gstData) => {
       }
     }
 
-    // Multiple accounts may share one GST number: attach the new user to the
-    // existing business instead of rejecting an already-registered GSTIN.
+    // Only ever an unfinished registration, so there is no REGISTERED case to
+    // report here: a registered shop under this GSTIN was left alone above and
+    // a new business is created below.
     return {
       businessId: business._id.toString(),
-      status: business.isRegistered ? 'REGISTERED' : business.registrationStep
+      status: business.registrationStep
     };
   }
 
