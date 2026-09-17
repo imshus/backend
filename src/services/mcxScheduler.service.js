@@ -260,8 +260,28 @@ async function fetchAndStoreMcxRate(options = {}) {
     return { success: true, liveRate };
   } catch (error) {
     const context = phase === 'startup' ? 'Startup synchronization failed' : 'Fetch failed';
-    console.error(`[MCX Scheduler] ${context} at ${formatIstDateTime(attemptAt)}:`, error.message);
-    return { success: false, reason: error.message };
+    // metals.dev refuses a request with a body that says why: the plan does not
+    // cover this endpoint, the month's requests are spent, a parameter is no
+    // longer accepted. Logging error.message alone made every one of those read
+    // the same — "Request failed with status code 400" — and left the reason in
+    // the response that was thrown away.
+    //
+    // The status and body only. Never error.config.url: the API key travels in
+    // the query string, and a log is not the place for it.
+    const status = error.response?.status ?? null;
+    const raw = error.response?.data;
+    const body = raw === undefined || raw === null
+      ? ''
+      : String(typeof raw === 'string' ? raw : JSON.stringify(raw)).slice(0, 500);
+
+    console.error(
+      `[MCX Scheduler] ${context} at ${formatIstDateTime(attemptAt)}:`,
+      error.message,
+      status ? `| HTTP ${status}` : '',
+      body ? `| metals.dev said: ${body}` : '| no response body',
+    );
+
+    return { success: false, reason: error.message, status, body };
   }
 }
 
