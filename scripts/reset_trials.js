@@ -16,9 +16,13 @@
  * license.service reads as "nothing to expire": the trial then runs until
  * someone ends it. Credits still run down as scans are made.
  *
- * Shops on a PERMANENT_LICENSE are never touched — they have paid, and a trial
- * would be a demotion. Nobody's balance is lowered either: a wallet already
- * above the trial grant keeps what it has.
+ * Shops on a PERMANENT_LICENSE are left alone by default — they have paid, and
+ * a trial would take away what they bought. --include-permanent overrides that
+ * for a deployment where nobody has really purchased yet; the purchase fields
+ * are left on the record either way, so it can be put back.
+ *
+ * Nobody's balance is lowered: a wallet already above the trial grant keeps
+ * what it has.
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
@@ -50,7 +54,13 @@ const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 
  * @param {number} [options.credits]   Credits to top each wallet up to.
  *                                     Defaults to each licence's own trialCredits.
  */
-async function resetTrials({ days = 7, noExpiry = false, apply = false, credits } = {}) {
+async function resetTrials({
+  days = 7,
+  noExpiry = false,
+  apply = false,
+  credits,
+  includePermanent = false,
+} = {}) {
   const now = new Date();
   const licenses = await OrganizationLicense.find({});
   const summary = { total: licenses.length, reset: 0, skippedPermanent: 0, creditsTopped: 0 };
@@ -58,7 +68,7 @@ async function resetTrials({ days = 7, noExpiry = false, apply = false, credits 
   for (const license of licenses) {
     const businessId = String(license.businessId);
 
-    if (license.licenseStatus === 'PERMANENT_LICENSE') {
+    if (license.licenseStatus === 'PERMANENT_LICENSE' && !includePermanent) {
       summary.skippedPermanent += 1;
       console.log(`skip     ${businessId}  PERMANENT_LICENSE`);
       continue;
@@ -66,12 +76,15 @@ async function resetTrials({ days = 7, noExpiry = false, apply = false, credits 
 
     const was = license.licenseStatus;
     const grant = Number(credits ?? license.trialCredits ?? 0);
+    // Worked out before the write so a dry run reports the date it WOULD set,
+    // not the one the record still holds.
+    const nextEnd = noExpiry ? null : addDays(now, days);
 
     if (apply) {
       license.licenseStatus = 'FREE_TRIAL_LICENSE';
       license.trialDays = noExpiry ? 0 : days;
       license.trialStartDate = now;
-      license.trialEndDate = noExpiry ? null : addDays(now, days);
+      license.trialEndDate = nextEnd;
       // The gate that refuses a second trial, and the mark the app reads as
       // "this shop's trial is over".
       license.trialExpiredAt = null;
@@ -79,7 +92,7 @@ async function resetTrials({ days = 7, noExpiry = false, apply = false, credits 
     }
 
     summary.reset += 1;
-    const until = noExpiry ? 'no end date' : license.trialEndDate?.toISOString?.() ?? addDays(now, days).toISOString();
+    const until = nextEnd ? nextEnd.toISOString() : 'no end date';
     console.log(`reset    ${businessId}  ${was} -> FREE_TRIAL_LICENSE  until ${until}`);
 
     // Credits only ever go up: a wallet holding more than the grant is left
@@ -119,7 +132,18 @@ async function main() {
   console.log(`${apply ? 'APPLYING' : 'DRY RUN (nothing is written; pass --apply)'}`);
   console.log(noExpiry ? 'trial: no end date' : `trial: ${days} days from now`);
 
-  const summary = await resetTrials({ days, noExpiry, apply, credits: args.credits ? Number(args.credits) : undefined });
+  const includePermanent = Boolean(args['include-permanent'] || args.includePermanent);
+  if (includePermanent) {
+    console.log('including shops on a permanent licence — they will be put on a trial');
+  }
+
+  const summary = await resetTrials({
+    days,
+    noExpiry,
+    apply,
+    includePermanent,
+    credits: args.credits ? Number(args.credits) : undefined,
+  });
 
   console.log('\n--- summary');
   console.log(`licences            ${summary.total}`);
