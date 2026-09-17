@@ -51,7 +51,7 @@ const billingConfigSchema = new mongoose.Schema(
     },
     trialDays: {
       type: Number,
-      default: 10,
+      default: 7,
       min: 1,
     },
     lowCreditThreshold: {

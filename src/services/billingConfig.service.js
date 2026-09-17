@@ -10,7 +10,7 @@ const DEFAULT_BILLING_CONFIG = {
   applicationPrice: 12000,
   freeTrialCredits: 10,
   purchasedBonusCredits: 1000,
-  trialDays: 10,
+  trialDays: 7,
   lowCreditThreshold: 20,
   criticalCreditThreshold: 10,
 };
@@ -25,6 +25,15 @@ async function ensureConfig() {
   // Keep historic deployments aligned with current billing baseline.
   if (Number(config.aComp) === 0.15) {
     config.aComp = 0;
+    await config.save();
+  }
+
+  // The free trial is seven days now. A deployment still holding the old
+  // ten-day default moves with it; any other length is a number someone chose
+  // in billing settings, so it stays. An admin who wants ten days again sets
+  // it there rather than here.
+  if (Number(config.trialDays) === 10) {
+    config.trialDays = 7;
     await config.save();
   }
 
