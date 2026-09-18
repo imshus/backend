@@ -46,6 +46,14 @@ const businessUserSchema = new mongoose.Schema({
     default: '',
     trim: true
   },
+  // What an owner signs in with now: four digits, hashed the way the password
+  // was. An account that predates it has no mpinHash and is asked to set one
+  // over an OTP rather than being locked out, so this cannot be required.
+  mpinHash: {
+    type: String
+  },
+  // Kept for those accounts until they set an MPIN, and for employees, whose
+  // credential is still a password.
   passwordHash: {
     type: String,
     required: true

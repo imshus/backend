@@ -17,17 +17,30 @@ async function attachLicenseContext(req, res, next) {
       walletService.ensureWallet(businessId),
     ]);
 
+    // The number the licence is held under: the owner's account, which is how
+    // a shop knows itself. Not necessarily the number of whoever is signed in
+    // — an employee inherits their shop's licence, and their own phone holds
+    // none — so the licence is still reached through the account above rather
+    // than looked up by the caller's number.
+    const ownerPhone = overview.license?.ownerPhone || '';
+
     req.licenseContext = {
       businessId,
+      ownerPhone,
       ...overview,
       wallet,
     };
 
+    // Phone first: it is what a shop is identified by when someone asks why
+    // their scanner stopped. businessId stays at the end because every other
+    // line in these logs, and every collection, is keyed by it — without it a
+    // licence line cannot be joined to the scan it gated.
     console.info('[LICENSE_VERIFIED]', {
-      businessId: String(businessId),
+      phone: ownerPhone || '(not recorded)',
       licenseStatus: overview.licenseStatus,
       walletEnabled: overview.walletEnabled,
       scannerEnabled: overview.scannerEnabled,
+      businessId: String(businessId),
     });
 
     next();

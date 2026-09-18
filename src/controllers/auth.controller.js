@@ -38,10 +38,11 @@ const submitContactDetails = async (req, res, next) => {
 
 const register = async (req, res, next) => {
   try {
-    const { mobile, password, userId, fullName, referralCode, businessDetails } = req.body;
+    const { mobile, password, mpin, userId, fullName, referralCode, businessDetails } = req.body;
     const data = await registrationService.register({
       mobile,
       password,
+      mpin,
       userId,
       fullName,
       referralCode,
@@ -148,10 +149,20 @@ const createPassword = async (req, res, next) => {
 
 const login = async (req, res, next) => {
   try {
-    const { mobile, password } = req.body;
-    const data = await registrationService.login(mobile, password);
+    const { mobile, password, mpin } = req.body;
+    const data = await registrationService.login(mobile, { password, mpin });
     sendSuccess(res, data);
   } catch (err) {
+    // An account that predates the MPIN has nothing wrong with it: the app is
+    // told to send this shop through the OTP that sets one, rather than
+    // showing them a credential error they cannot act on.
+    if (err?.message === 'MPIN_NOT_SET') {
+      return res.status(409).json({
+        success: false,
+        error: 'MPIN_NOT_SET',
+        message: 'Set a 4-digit MPIN for this phone number to sign in.',
+      });
+    }
     next(err);
   }
 };
@@ -200,6 +211,20 @@ const resetForgottenPassword = async (req, res, next) => {
   try {
     const { resetToken, newPassword } = req.body;
     const data = await registrationService.resetForgottenPassword(resetToken, newPassword);
+    sendSuccess(res, data);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Sets the MPIN behind the same OTP-backed token the password reset uses —
+ * both for an owner who forgot theirs and for one who never had one.
+ */
+const setForgottenMpin = async (req, res, next) => {
+  try {
+    const { resetToken, mpin } = req.body;
+    const data = await registrationService.resetForgottenPassword(resetToken, undefined, mpin);
     sendSuccess(res, data);
   } catch (err) {
     next(err);
@@ -278,6 +303,7 @@ module.exports = {
   requestPasswordReset,
   verifyPasswordResetOtp,
   resetForgottenPassword,
+  setForgottenMpin,
   getDevOtps,
   verifyPhoneOtp,
   createPassword,

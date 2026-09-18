@@ -16,6 +16,7 @@ const {
   requestPasswordResetSchema,
   verifyPasswordResetOtpSchema,
   resetPasswordSchema,
+  resetMpinSchema,
   employeeLoginSchema,
   changePasswordSchema,
 } = require('../validators/auth.validator');
@@ -24,6 +25,7 @@ const {
   otpSendLimiter,
   otpVerifyLimiter,
   accountLookupLimiter,
+  loginAttemptLimiter,
 } = require('../middleware/rateLimiter');
 const { authenticateJWT } = require('../middleware/auth.middleware');
 
@@ -43,11 +45,17 @@ router.post('/forgot-user-id', otpVerifyLimiter, validate(loginOtpSchema), authC
 router.post('/forgot-password/request', accountLookupLimiter, validate(requestPasswordResetSchema), authController.requestPasswordReset);
 router.post('/forgot-password/verify-otp', validate(verifyPasswordResetOtpSchema), authController.verifyPasswordResetOtp);
 router.post('/forgot-password/reset', validate(resetPasswordSchema), authController.resetForgottenPassword);
+// The MPIN behind the same token: a forgotten one, or a first one for an
+// account created before MPINs existed.
+router.post('/forgot-password/set-mpin', validate(resetMpinSchema), authController.setForgottenMpin);
 router.get('/dev/otps/:businessId', authController.getDevOtps);
 router.post('/business/verify-phone-otp', validate(verifyOtpSchema), authController.verifyPhoneOtp);
 router.post('/business/create-password', validate(createPasswordSchema), authController.createPassword);
-router.post('/business/login', validate(loginSchema), authController.login);
-router.post('/login', validate(loginSchema), authController.login);
+// A 4-digit MPIN is ten thousand guesses, so signing in is no longer an
+// endpoint anyone may hammer: attempts are counted per phone number (or User
+// ID) rather than per IP, which is what a shop's own connection shares.
+router.post('/business/login', loginAttemptLimiter, validate(loginSchema), authController.login);
+router.post('/login', loginAttemptLimiter, validate(loginSchema), authController.login);
 router.post('/employee/login', validate(employeeLoginSchema), authController.loginEmployee);
 router.get('/employee/permissions', authenticateJWT, authController.getEmployeePermissions);
 router.post('/change-password', authenticateJWT, validate(changePasswordSchema), authController.changePassword);

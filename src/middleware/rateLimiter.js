@@ -110,6 +110,25 @@ const accountLookupLimiter = bodyKeyLimiter({
   pick: (req) => req.body?.identifier || req.body?.userId || mobileOf(req),
 });
 
+/**
+ * Signing in, counted per phone number.
+ *
+ * The credential is four digits: ten thousand possibilities, which an
+ * unlimited endpoint gives up in minutes. Twenty attempts an hour is far more
+ * than a shop mistyping its own MPIN and nowhere near enough to walk the
+ * space — a script would need three weeks per account.
+ *
+ * Keyed on the number, not the IP: a shop's staff share one connection, and
+ * whoever is guessing does not.
+ */
+const loginAttemptLimiter = bodyKeyLimiter({
+  name: 'login_attempt',
+  limit: 20,
+  windowSeconds: 3600,
+  message: 'Too many sign-in attempts for this number. Please try again in an hour.',
+  pick: (req) => req.body?.mobile || mobileOf(req),
+});
+
 // One gallery pick is one detection; 120 an hour is far beyond a person
 // and a firm cap on a script. A refused call just means framing by hand.
 const detectTagRateLimiter = perUserLimiter({
@@ -138,4 +157,5 @@ module.exports = {
   otpSendLimiter,
   otpVerifyLimiter,
   accountLookupLimiter,
+  loginAttemptLimiter,
 };

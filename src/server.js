@@ -31,6 +31,36 @@ async function dropObsoleteBusinessUserEmailIndex() {
   }
 }
 
+/**
+ * The GSTIN used to be unique, which made one taxpayer number one shop. It no
+ * longer is, and the index that enforced it has to go or a second shop under
+ * the same number cannot register.
+ *
+ * Only the unique index is dropped; syncIndexes then lays down the plain one
+ * the lookups still want.
+ */
+async function dropUniqueBusinessGstIndex() {
+  try {
+    const Business = require('./models/business.model');
+    const collection = require('mongoose').connection.db.collection(Business.collection.name);
+    const indexes = await collection.indexes();
+    const gstIndex = indexes.find((idx) => idx?.key && idx.key.gstNumber === 1 && idx.unique);
+
+    if (gstIndex) {
+      await collection.dropIndex(gstIndex.name);
+      console.log(`[DB] Dropped unique index ${collection.collectionName}.${gstIndex.name}`);
+    }
+
+    await Business.syncIndexes();
+    console.log('[DB] Business indexes synced');
+  } catch (error) {
+    if (error?.codeName === 'IndexNotFound' || error?.code === 27) {
+      return;
+    }
+    console.warn('[DB] Failed to retire the unique Business GST index:', error.message);
+  }
+}
+
 async function reconcilePaymentTransactionIndexes() {
   try {
     const collection = require('mongoose').connection.db.collection('payment_transactions');
@@ -77,6 +107,7 @@ function getLanAddresses() {
 connectDB().then(async () => {
   try {
     await dropObsoleteBusinessUserEmailIndex();
+    await dropUniqueBusinessGstIndex();
     await DiamondRate.syncIndexes();
     console.log('[DB] DiamondRate indexes synced');
     await reconcilePaymentTransactionIndexes();

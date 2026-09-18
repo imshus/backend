@@ -1,4 +1,5 @@
 const OrganizationLicense = require('../models/organizationLicense.model');
+const BusinessUser = require('../models/businessUser.model');
 const billingConfigService = require('./billingConfig.service');
 const walletService = require('./wallet.service');
 const referralService = require('./referral.service');
@@ -53,24 +54,69 @@ function canAccessPaymentHistory(license) {
   return isPermanentLicense(license);
 }
 
+/**
+ * The account a licence belongs to: the shop's owner. The earliest one, for
+ * the handful of shops that collected a second owner while one GSTIN meant one
+ * business.
+ */
+async function resolveOwnerAccount(businessId) {
+  return BusinessUser.findOne({ businessId, role: 'OWNER' })
+    .sort({ createdAt: 1 })
+    .select('phone')
+    .lean();
+}
+
 async function ensureLicense(businessId) {
   const cfg = await billingConfigService.getEffectiveConfig();
   let license = await OrganizationLicense.findOne({ businessId });
 
+  // Looked up before the licence is written so a new one carries its owner
+  // from the start, and an older one missing it is filled in on this read.
+  const owner = license?.ownerUserId && license?.ownerPhone
+    ? null
+    : await resolveOwnerAccount(businessId);
+
   if (!license) {
     license = await OrganizationLicense.create({
       businessId,
+      ownerUserId: owner?._id ?? null,
+      ownerPhone: owner?.phone || '',
       licenseStatus: 'NO_LICENSE',
-      trialDays: Number(cfg.trialDays || 10),
+      trialDays: Number(cfg.trialDays || 7),
       trialCredits: Number(cfg.freeTrialCredits || 10),
     });
     console.info('[LICENSE_CREATED]', {
-      businessId: String(businessId),
+      phone: license.ownerPhone || '(not recorded)',
       licenseStatus: 'NO_LICENSE',
+      businessId: String(businessId),
     });
+  } else if (owner) {
+    license.ownerUserId = owner._id;
+    license.ownerPhone = owner.phone || '';
+    await license.save();
   }
 
   return syncLicenseState(license);
+}
+
+/**
+ * The licence reached on a mobile number — what support is asked for, since a
+ * shop knows its phone number and not its businessId.
+ *
+ * A number identifies one account (phones are unique on business_users), so it
+ * identifies one licence. Licences written before the owner was recorded are
+ * found through the account instead, and recorded on the way past.
+ */
+async function findLicenseByPhone(phone) {
+  const normalized = String(phone || '').replace(/\D/g, '').slice(-10);
+  if (!normalized) return null;
+
+  const license = await OrganizationLicense.findOne({ ownerPhone: normalized });
+  if (license) return syncLicenseState(license);
+
+  const owner = await BusinessUser.findOne({ phone: normalized, role: 'OWNER' });
+  if (!owner) return null;
+  return ensureLicense(owner.businessId);
 }
 
 async function syncLicenseState(license) {
@@ -99,14 +145,16 @@ async function syncLicenseState(license) {
     }
 
     console.info('[TRIAL_EXPIRED]', {
-      businessId: String(license.businessId),
+      phone: license.ownerPhone || '(not recorded)',
       trialEndDate: license.trialEndDate,
       trialExpiredAt: license.trialExpiredAt,
+      businessId: String(license.businessId),
     });
 
     console.info('[WALLET_DISABLED]', {
-      businessId: String(license.businessId),
+      phone: license.ownerPhone || '(not recorded)',
       reason: 'TRIAL_EXPIRED',
+      businessId: String(license.businessId),
     });
   }
 
@@ -155,7 +203,7 @@ async function startTrialLicense(businessId, actorUserId) {
   }
 
   const now = new Date();
-  const trialDays = Number(cfg.trialDays || 10);
+  const trialDays = Number(cfg.trialDays || 7);
   const trialCredits = Number(cfg.freeTrialCredits || 10);
 
   license.licenseStatus = 'FREE_TRIAL_LICENSE';
@@ -166,6 +214,7 @@ async function startTrialLicense(businessId, actorUserId) {
   await license.save();
 
   console.info('[TRIAL_STARTED]', {
+    phone: license.ownerPhone || '(not recorded)',
     businessId: String(businessId),
     actorUserId: actorUserId || null,
     trialDays,
@@ -175,8 +224,9 @@ async function startTrialLicense(businessId, actorUserId) {
   });
 
   console.info('[WALLET_ENABLED]', {
-    businessId: String(businessId),
+    phone: license.ownerPhone || '(not recorded)',
     reason: 'TRIAL_LICENSE_ACTIVE',
+    businessId: String(businessId),
   });
 
   await payReferralReward({ businessId, trigger: 'TRIAL_STARTED' });
@@ -213,6 +263,7 @@ async function activatePermanentLicense({
   await license.save();
 
   console.info('[LICENSE_ACTIVATED]', {
+    phone: license.ownerPhone || '(not recorded)',
     businessId: String(businessId),
     actorUserId: actorUserId || null,
     purchaseAmount: license.purchaseAmount,
@@ -223,8 +274,9 @@ async function activatePermanentLicense({
   });
 
   console.info('[WALLET_ENABLED]', {
-    businessId: String(businessId),
+    phone: license.ownerPhone || '(not recorded)',
     reason: 'PERMANENT_LICENSE_ACTIVE',
+    businessId: String(businessId),
   });
 
   await payReferralReward({ businessId, trigger: 'LICENSE_PURCHASED' });
@@ -234,6 +286,7 @@ async function activatePermanentLicense({
 
 module.exports = {
   ensureLicense,
+  findLicenseByPhone,
   syncLicenseState,
   getLicenseOverview,
   hasActiveLicense,

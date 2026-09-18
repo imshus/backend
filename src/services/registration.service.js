@@ -76,7 +76,17 @@ function hashResetNonce(nonce) {
 }
 
 const confirmGst = async (gstData) => {
-  let business = await Business.findOne({ gstNumber: gstData.gstNumber });
+  // A GSTIN covers a taxpayer, not a shop: a group trading under one number
+  // may run several counters, and each is its own shop here. A business that
+  // has finished registering is therefore never joined — doing so would hand
+  // whoever knows a public GSTIN that shop's rates, invoices and licence.
+  //
+  // The shell left behind by an unfinished registration IS picked up again, so
+  // retrying the GST step does not leave abandoned businesses behind.
+  let business = await Business.findOne({
+    gstNumber: gstData.gstNumber,
+    isRegistered: { $ne: true },
+  });
   
   if (business) {
     // Refresh the stored details from this lookup so a record captured while
@@ -110,11 +120,12 @@ const confirmGst = async (gstData) => {
       }
     }
 
-    // Multiple accounts may share one GST number: attach the new user to the
-    // existing business instead of rejecting an already-registered GSTIN.
+    // Only ever an unfinished registration, so there is no REGISTERED case to
+    // report here: a registered shop under this GSTIN was left alone above and
+    // a new business is created below.
     return {
       businessId: business._id.toString(),
-      status: business.isRegistered ? 'REGISTERED' : business.registrationStep
+      status: business.registrationStep
     };
   }
 
@@ -198,7 +209,17 @@ const verifyPhoneOtp = async (businessId, otp) => {
   return { phoneVerified: true };
 };
 
-const createPassword = async (businessId, password, userId, fullName, referralCode) => {
+/**
+ * Hashes whichever credential the caller is setting. An MPIN is four digits,
+ * so it is hashed at the same cost as a password was — the work factor is what
+ * makes four digits survivable at rest.
+ */
+const hashCredentials = async ({ password, mpin }) => ({
+  ...(password ? { passwordHash: await bcrypt.hash(password, 10) } : {}),
+  ...(mpin ? { mpinHash: await bcrypt.hash(mpin, 10) } : {}),
+});
+
+const createPassword = async (businessId, password, userId, fullName, referralCode, mpin) => {
   const stateStr = await redisClient.get(`registration:${businessId}`);
   if (!stateStr) throw new Error('Session expired or incomplete registration');
   
@@ -214,7 +235,13 @@ const createPassword = async (businessId, password, userId, fullName, referralCo
   // instead of leaving a registered shop with a referral it cannot add later.
   const referrer = await referralService.resolveReferralCode({ businessId, code: referralCode });
 
-  const passwordHash = await bcrypt.hash(password, 10);
+  // One of the two is always present: the validator refuses a registration
+  // with neither. A build that sends a password still gets a passwordHash;
+  // this build sends an MPIN and gets an mpinHash.
+  const credentials = await hashCredentials({ password, mpin });
+  // The column is required, so an MPIN-only account stores a hash of the MPIN
+  // there as well until the column can be dropped.
+  const passwordHash = credentials.passwordHash || credentials.mpinHash;
 
   // Transactions removed because free-tier M0 clusters have limitations with them
 
@@ -224,6 +251,7 @@ const createPassword = async (businessId, password, userId, fullName, referralCo
       phone: state.phone,
       ...(userId ? { userId } : {}),
       fullName: String(fullName || '').trim(),
+      ...(credentials.mpinHash ? { mpinHash: credentials.mpinHash } : {}),
       address: business.address || '',
       gstNumber: business.gstNumber || '',
       businessName: business.tradeName || business.legalName || '',
@@ -268,19 +296,47 @@ const createPassword = async (businessId, password, userId, fullName, referralCo
   }
 };
 
-const login = async (mobile, password) => {
-  // Sign-in is by User ID only. Phone numbers are no longer accepted here, so
-  // a User ID that looks like a phone number resolves to its owner rather than
-  // being claimed by whoever holds that number.
-  const userId = String(mobile || '').trim();
-  const user = await BusinessUser.findOne({ userId });
+/**
+ * Signs an owner in.
+ *
+ * The identifier is a phone number now — ten digits, which is what the app
+ * asks for — and the credential is a 4-digit MPIN. A User ID and password are
+ * still accepted so a build already on someone's phone keeps working; that
+ * path resolves the User ID exactly, so one that looks like a phone number
+ * still belongs to its owner rather than to whoever holds that number.
+ *
+ * An account with no MPIN yet (every account created before this) is not
+ * refused as if the credential were wrong: it is told to set one, which the
+ * app does over the same OTP as a forgotten MPIN.
+ */
+const login = async (mobile, credential) => {
+  const { mpin, password } = typeof credential === 'string'
+    ? { password: credential }
+    : (credential || {});
+
+  const identifier = String(mobile || '').trim();
+  const asPhone = identifier.replace(/\D/g, '').slice(-10);
+  const user = /^[0-9]{10}$/.test(asPhone)
+    ? await BusinessUser.findOne({ phone: asPhone })
+    : await BusinessUser.findOne({ userId: identifier });
+
   if (!user || !user.isActive) {
     throw new Error('INVALID_PHONE_CREDENTIALS');
   }
 
-  const isMatch = await bcrypt.compare(password, user.passwordHash);
-  if (!isMatch) {
-    throw new Error('INVALID_PHONE_CREDENTIALS');
+  if (mpin) {
+    if (!user.mpinHash) {
+      // Distinguishable on purpose: the app turns this into "set your MPIN",
+      // not "wrong MPIN".
+      throw new Error('MPIN_NOT_SET');
+    }
+    if (!await bcrypt.compare(mpin, user.mpinHash)) {
+      throw new Error('INVALID_PHONE_CREDENTIALS');
+    }
+  } else {
+    if (!await bcrypt.compare(String(password || ''), user.passwordHash)) {
+      throw new Error('INVALID_PHONE_CREDENTIALS');
+    }
   }
 
   user.lastLoginAt = new Date();
@@ -396,7 +452,7 @@ const verifyPasswordResetOtp = async (identifier, otp) => {
   };
 };
 
-const resetForgottenPassword = async (resetToken, newPassword) => {
+const resetForgottenPassword = async (resetToken, newPassword, newMpin) => {
   const payload = authService.verifyPasswordResetToken(resetToken);
   const user = await BusinessUser.findById(payload.userId)
     .select('+passwordResetNonceHash +passwordResetExpiresAt');
@@ -415,15 +471,29 @@ const resetForgottenPassword = async (resetToken, newPassword) => {
     throw new Error('INVALID_RESET_TOKEN');
   }
 
-  user.passwordHash = await bcrypt.hash(newPassword, 10);
+  // The same OTP-backed token sets either credential. This is also how an
+  // account that predates the MPIN gets one: it has nothing to "reset", so the
+  // app sends it here to set one for the first time.
+  if (newMpin) {
+    user.mpinHash = await bcrypt.hash(newMpin, 10);
+    // The column is required and still holds the old password's hash; point it
+    // at the MPIN too, so the credential someone knows is the only one that
+    // opens the account.
+    user.passwordHash = user.mpinHash;
+  } else {
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+  }
   user.passwordResetNonceHash = undefined;
   user.passwordResetExpiresAt = undefined;
   await user.save();
 
-  return { success: true, message: 'Password reset successfully' };
+  return {
+    success: true,
+    message: newMpin ? 'MPIN set successfully' : 'Password reset successfully',
+  };
 };
 
-const register = async ({ mobile, password, userId, fullName, referralCode, businessDetails }) => {
+const register = async ({ mobile, password, mpin, userId, fullName, referralCode, businessDetails }) => {
   const businessId = businessDetails?.businessId;
   if (!businessId) {
     throw new Error('REGISTRATION_SESSION_EXPIRED');
@@ -476,7 +546,14 @@ const register = async ({ mobile, password, userId, fullName, referralCode, busi
     if (existingUserId) throw new Error('USER_ID_ALREADY_EXISTS');
   }
 
-  return createPassword(businessId, password, normalizedUserId || undefined, fullName, referralCode);
+  return createPassword(
+    businessId,
+    password,
+    normalizedUserId || undefined,
+    fullName,
+    referralCode,
+    mpin,
+  );
 };
 
 const loginEmployee = async ({ phone }, password) => {
