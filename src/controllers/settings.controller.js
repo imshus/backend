@@ -356,6 +356,8 @@ const updateDashboardMatrices = async (req, res) => {
 const BUILT_IN_BULLION = [
   { key: 'jmd_patil', label: 'JMD Patil' },
   { key: 'mega_bullion', label: 'Mega Bullion' },
+  { key: 'shri_sai', label: 'Shri Sai Jewels' },
+  { key: 'shri_ganesh', label: 'Shri Ganesh Bullion' },
 ];
 const MAX_CUSTOM_BULLION = 10;
 const BULLION_NAME_MAX = 40;
