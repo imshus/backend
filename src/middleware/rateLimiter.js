@@ -148,8 +148,18 @@ const scanUploadRateLimiter = perUserLimiter({
   message: 'Too many uploads this hour. Please try again later.',
 });
 
+// The MPIN in front of a profile edit is a four-digit secret, so guessing it
+// has to cost something: ten tries an hour for this signed-in user.
+const profileEditLimiter = perUserLimiter({
+  name: 'profile_edit_mpin',
+  limit: 10,
+  windowSeconds: 3600,
+  message: 'Too many MPIN attempts. Please try again in an hour.',
+});
+
 module.exports = {
   gstRateLimiter,
+  profileEditLimiter,
   perUserLimiter,
   bodyKeyLimiter,
   detectTagRateLimiter,

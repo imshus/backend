@@ -5,11 +5,20 @@ const customChargeController = require('../controllers/customCharge.controller')
 const { authenticateJWT } = require('../middleware/auth.middleware');
 const { requirePermission } = require('../middleware/rbac.middleware');
 const { requireRole } = require('../middleware/auth.middleware');
+const { gstRateLimiter, otpSendLimiter, profileEditLimiter } = require('../middleware/rateLimiter');
 
 router.use(authenticateJWT);
 
 // Business identity straight from the database, for the Profile screen.
 router.get('/business-profile', settingsController.getBusinessProfile);
+
+// Changing the phone number or the GSTIN: the MPIN again, then an OTP to the
+// new number and a registry lookup for the new GSTIN. The owner's alone — an
+// employee moving the account's phone number would be moving the licence.
+router.post('/business-profile/verify-mpin', requireRole('OWNER'), profileEditLimiter, settingsController.startProfileEdit);
+router.post('/business-profile/phone-otp', requireRole('OWNER'), otpSendLimiter, settingsController.sendProfilePhoneOtp);
+router.post('/business-profile/gst-preview', requireRole('OWNER'), gstRateLimiter, settingsController.previewProfileGst);
+router.post('/business-profile', requireRole('OWNER'), settingsController.updateBusinessProfile);
 
 // Per-business e-invoicing (IRP) credentials; the owner's to manage.
 router.get('/einvoice', requireRole('OWNER', 'ADMIN'), settingsController.getEInvoiceSettings);

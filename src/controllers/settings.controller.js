@@ -4,6 +4,7 @@ const BullionSource = require('../models/bullionSource.model');
 const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
 const einvoiceService = require('../services/einvoice.service');
+const profileEditService = require('../services/profileEdit.service');
 const { settingsScope, findScopedSetting, upsertScopedSetting } = require('../services/userScope.service');
 
 // A shop that has saved nothing shows the 24K price alone; the lighter
@@ -63,6 +64,61 @@ const normalizeDashboardMatrices = (values = {}) => {
  * The business's e-invoicing state for the profile screen. The password is
  * never returned — only whether one is saved.
  */
+/** The session the profile-edit flow runs under: this user, this business. */
+const editSession = (req) => ({ businessId: req.user.businessId, userId: req.user.userId });
+
+/**
+ * The four steps of changing a phone number or a GSTIN. Errors are passed to
+ * the error handler by code (INVALID_MPIN, PHONE_ALREADY_REGISTERED and the
+ * rest), which is what the app turns into a sentence.
+ */
+const startProfileEdit = async (req, res, next) => {
+  try {
+    const result = await profileEditService.startProfileEdit(editSession(req), req.body?.mpin);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const sendProfilePhoneOtp = async (req, res, next) => {
+  try {
+    const result = await profileEditService.sendPhoneChangeOtp(editSession(req), {
+      editToken: req.body?.editToken,
+      phone: req.body?.phone,
+    });
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const previewProfileGst = async (req, res, next) => {
+  try {
+    const result = await profileEditService.previewGstChange(editSession(req), {
+      editToken: req.body?.editToken,
+      gstNumber: req.body?.gstNumber,
+    });
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const updateBusinessProfile = async (req, res, next) => {
+  try {
+    const result = await profileEditService.applyProfileChanges(editSession(req), {
+      editToken: req.body?.editToken,
+      phone: req.body?.phone,
+      otp: req.body?.otp,
+      gstNumber: req.body?.gstNumber,
+    });
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 const getEInvoiceSettings = async (req, res) => {
   try {
     const business = await Business.findById(req.user.businessId)
@@ -477,6 +533,10 @@ const updateSupremeRates = async (req, res) => {
 
 module.exports = {
   getBusinessProfile,
+  startProfileEdit,
+  sendProfilePhoneOtp,
+  previewProfileGst,
+  updateBusinessProfile,
   getEInvoiceSettings,
   updateEInvoiceSettings,
   getFormulaConfig,
