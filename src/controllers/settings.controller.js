@@ -209,7 +209,8 @@ const getFormulaConfig = async (req, res) => {
     if (!config) {
       config = {
         activeFormula: 'F1',
-        formula2Rules: ['14K']
+        formula2Rules: ['14K'],
+        salesInvoiceLayout: 'SEPARATE'
       };
     }
 
@@ -222,7 +223,8 @@ const getFormulaConfig = async (req, res) => {
 
 const updateFormulaConfig = async (req, res) => {
   try {
-    const { activeFormula, formula2Rules } = req.body;
+    const { activeFormula, formula2Rules, salesInvoiceLayout } = req.body;
+    const INVOICE_LAYOUTS = ['SEPARATE', 'GOLD_WITH_LABOUR', 'GOLD_WITH_WASTAGE'];
 
     const updateData = {};
     if (activeFormula) {
@@ -234,6 +236,13 @@ const updateFormulaConfig = async (req, res) => {
     
     if (formula2Rules && Array.isArray(formula2Rules)) {
       updateData.formula2Rules = formula2Rules;
+    }
+
+    if (salesInvoiceLayout) {
+      if (!INVOICE_LAYOUTS.includes(salesInvoiceLayout)) {
+        return res.status(400).json({ success: false, message: 'Invalid salesInvoiceLayout value' });
+      }
+      updateData.salesInvoiceLayout = salesInvoiceLayout;
     }
 
     // The owner writes the shop's formula; an employee writes their own.

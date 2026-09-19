@@ -169,7 +169,11 @@ async function getLicenseOverview(businessId) {
   let trialHoursRemaining = 0;
   if (license.licenseStatus === 'FREE_TRIAL_LICENSE' && license.trialEndDate) {
     const ms = new Date(license.trialEndDate).getTime() - now.getTime();
-    trialDaysRemaining = Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+    // Rounded, not ceiled: a seven-day trial read as eight for its first
+    // moments, because the end date is a whole number of days from a start
+    // that is already a fraction of a second in the past. Hours stay ceiled —
+    // on the last day, "1 hour left" should not become "0".
+    trialDaysRemaining = Math.max(0, Math.round(ms / (24 * 60 * 60 * 1000)));
     trialHoursRemaining = Math.max(0, Math.ceil(ms / (60 * 60 * 1000)));
   }
 

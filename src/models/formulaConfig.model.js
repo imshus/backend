@@ -16,6 +16,21 @@ const formulaConfigSchema = new mongoose.Schema({
     default: null,
     index: true
   },
+  /**
+   * How a sales invoice groups what was scanned (Masters → Sales Invoice):
+   *
+   *   SEPARATE           Gold, Diamond, Labour each on their own line + Tax
+   *   GOLD_WITH_LABOUR   (Gold + Labour), Diamond + Tax
+   *   GOLD_WITH_WASTAGE  (Gold + Wastage), Diamond + Tax
+   *
+   * Per user like the rest of this record: the owner's choice is the shop's,
+   * and an employee who picks another keeps their own.
+   */
+  salesInvoiceLayout: {
+    type: String,
+    enum: ['SEPARATE', 'GOLD_WITH_LABOUR', 'GOLD_WITH_WASTAGE'],
+    default: 'SEPARATE'
+  },
   activeFormula: {
     type: String,
     enum: ['F1', 'F2'],

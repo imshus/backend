@@ -33,6 +33,20 @@ const itemCodeSchema = new mongoose.Schema(
       trim: true,
       maxlength: 200,
     },
+    // What this kind of item usually carries, so a scan of it can start from
+    // the shop's own figures instead of a blank field. Null means the shop has
+    // not said, which is not the same as zero.
+    wastage: {
+      type: Number,
+      default: null,
+      min: 0,
+      max: 100,
+    },
+    labour: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
   },
   {
     timestamps: true,

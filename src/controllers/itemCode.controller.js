@@ -25,18 +25,38 @@ const listItemCodes = async (req, res) => {
   }
 };
 
-/** Creates a code, or renames/redescribes one when an id is sent along. */
+/**
+ * A figure a shop may simply not have given. Blank stays blank rather than
+ * becoming zero, because zero wastage and no wastage price differently.
+ */
+const toOptionalNumber = (value, { max } = {}) => {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const parsed = Number(String(value).replace(/,/g, ''));
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  if (max !== undefined && parsed > max) return undefined;
+  return parsed;
+};
+
+/** Creates a code, or edits one when an id is sent along. */
 const saveItemCode = async (req, res) => {
   try {
     const scope = settingsScope(req.user);
-    const { id, code, description } = req.body || {};
+    const { id, code, description, wastage, labour } = req.body || {};
     const normalized = normalizeCode(code);
+    const parsedWastage = toOptionalNumber(wastage, { max: 100 });
+    const parsedLabour = toOptionalNumber(labour);
 
     if (!normalized) {
       return res.status(400).json({ success: false, message: 'Item code is required' });
     }
     if (normalized.length > 40) {
       return res.status(400).json({ success: false, message: 'Item code must stay under 40 characters' });
+    }
+    if (parsedWastage === undefined) {
+      return res.status(400).json({ success: false, message: 'Wastage must be a percentage between 0 and 100' });
+    }
+    if (parsedLabour === undefined) {
+      return res.status(400).json({ success: false, message: 'Labour must be a number that is not negative' });
     }
 
     // An employee editing the shop's list for the first time gets their own
@@ -46,6 +66,8 @@ const saveItemCode = async (req, res) => {
     const set = {
       code: normalized,
       description: String(description || '').trim().slice(0, 200),
+      wastage: parsedWastage,
+      labour: parsedLabour,
     };
 
     let item;
