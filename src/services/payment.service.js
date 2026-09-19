@@ -104,11 +104,10 @@ async function createOrderForApplicationPurchase({ businessId, userId }) {
 }
 
 async function createOrderForCreditRecharge({ businessId, userId, requestedAmount }) {
-  const { licenseStatus } = await licenseService.getLicenseOverview(businessId);
-  if (licenseStatus !== 'PERMANENT_LICENSE') {
-    throw new Error('PERMANENT_LICENSE_REQUIRED');
-  }
-
+  // Deliberately no licence check. Credits are prepaid scanning, and a shop on
+  // its trial is the one most likely to run out of them: refusing its money
+  // here only pushed it to stop using the app. The licence still gates what
+  // scanning is allowed, so buying credits early costs nobody anything.
   const parsed = toTwo(requestedAmount);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error('INVALID_RECHARGE_AMOUNT');
