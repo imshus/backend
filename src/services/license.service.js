@@ -47,7 +47,10 @@ function canUseScanner(license) {
 }
 
 function canRechargeCredits(license) {
-  return isPermanentLicense(license);
+  // Anyone may buy credits, licence or not: a shop on trial that runs out
+  // mid-day should be able to pay for more rather than be told to buy the
+  // application first.
+  return true;
 }
 
 function canAccessPaymentHistory(license) {
