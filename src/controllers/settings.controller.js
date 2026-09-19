@@ -83,7 +83,7 @@ const startProfileEdit = async (req, res, next) => {
 
 const sendProfilePhoneOtp = async (req, res, next) => {
   try {
-    const result = await profileEditService.sendPhoneChangeOtp(editSession(req), {
+    const result = await profileEditService.sendProfileChangeOtp(editSession(req), {
       editToken: req.body?.editToken,
       phone: req.body?.phone,
     });

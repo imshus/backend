@@ -75,22 +75,34 @@ const requireEditToken = (editToken, { businessId, userId }) => {
 };
 
 /**
- * Whether a number can become this account's, and the OTP that proves it is
- * the shop's own. Phones are unique across accounts, so a number already in
- * use is refused here rather than as a database error on save.
+ * The OTP that guards every change, and where it goes.
+ *
+ * Every save needs one — the shop asked for it, and it turns an unlocked
+ * phone on a counter back into something only the owner can move. A new
+ * number gets the code itself, which is what proves it is the shop's own;
+ * any other change sends it to the number already on the account. Phones are
+ * unique across accounts, so a number already in use is refused here rather
+ * than as a database error on save.
  */
-const sendPhoneChangeOtp = async (session, { editToken, phone }) => {
+const sendProfileChangeOtp = async (session, { editToken, phone }) => {
   requireEditToken(editToken, session);
-
-  const next = tenDigits(phone);
-  if (!/^[6-9][0-9]{9}$/.test(next)) throw new Error('INVALID_PHONE_NUMBER');
 
   const user = await BusinessUser.findById(session.userId).select('phone');
   if (!user) throw new Error('UNAUTHORIZED');
-  if (tenDigits(user.phone) === next) throw new Error('PHONE_UNCHANGED');
+  const current = tenDigits(user.phone);
 
-  const taken = await BusinessUser.findOne({ phone: next }).select('_id').lean();
-  if (taken) throw new Error('PHONE_ALREADY_REGISTERED');
+  const next = phone === undefined || phone === null || String(phone).trim() === ''
+    ? current
+    : tenDigits(phone);
+  const changingNumber = next !== current;
+
+  if (changingNumber) {
+    if (!/^[6-9][0-9]{9}$/.test(next)) throw new Error('INVALID_PHONE_NUMBER');
+    const taken = await BusinessUser.findOne({ phone: next }).select('_id').lean();
+    if (taken) throw new Error('PHONE_ALREADY_REGISTERED');
+  } else if (!/^[6-9][0-9]{9}$/.test(current)) {
+    throw new Error('INVALID_PHONE_NUMBER');
+  }
 
   await otpService.sendMobileOtp({
     mobile: next,
@@ -98,7 +110,7 @@ const sendPhoneChangeOtp = async (session, { editToken, phone }) => {
     businessId: session.businessId,
     route: '/api/v1/settings/business-profile/phone-otp',
   });
-  return { phone: next };
+  return { phone: next, changingNumber };
 };
 
 /** The registry's answer for a GSTIN the shop wants to move to. */
@@ -155,22 +167,25 @@ const applyProfileChanges = async (session, { editToken, phone, otp, gstNumber }
     }
   }
 
+  const previousPhone = tenDigits(user.phone);
+
   if (phoneChanged) {
     if (!/^[6-9][0-9]{9}$/.test(nextPhone)) throw new Error('INVALID_PHONE_NUMBER');
     const taken = await BusinessUser.findOne({ phone: nextPhone, _id: { $ne: user._id } })
       .select('_id')
       .lean();
     if (taken) throw new Error('PHONE_ALREADY_REGISTERED');
-
-    await otpService.verifyOtpByMobile({
-      mobile: nextPhone,
-      otp: String(otp || ''),
-      flow: PHONE_CHANGE_FLOW,
-      route: '/api/v1/settings/business-profile',
-    });
   }
 
-  const previousPhone = tenDigits(user.phone);
+  // Every change is proved with the code, against the number it was sent to:
+  // the new number when that is what is changing, the account's own otherwise.
+  if (!String(otp || '').trim()) throw new Error('OTP_REQUIRED');
+  await otpService.verifyOtpByMobile({
+    mobile: phoneChanged ? nextPhone : previousPhone,
+    otp: String(otp || ''),
+    flow: PHONE_CHANGE_FLOW,
+    route: '/api/v1/settings/business-profile',
+  });
 
   if (gstChanged) {
     business.gstNumber = gstDetails.gstNumber || nextGst;
@@ -222,7 +237,7 @@ const applyProfileChanges = async (session, { editToken, phone, otp, gstNumber }
 
 module.exports = {
   startProfileEdit,
-  sendPhoneChangeOtp,
+  sendProfileChangeOtp,
   previewGstChange,
   applyProfileChanges,
 };
