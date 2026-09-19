@@ -48,6 +48,8 @@ const envVarsSchema = joi.object({
   OCR_MULTI_VIEW: joi.boolean().default(true),
   OCR_DOUBLE_READ: joi.boolean().default(true),
   OCR_ADJUDICATE: joi.boolean().default(true),
+  // Turns a tag photographed upside down or sideways upright before it is read.
+  OCR_ORIENTATION_FIX: joi.boolean().default(true),
   // Invoice PDF rendering; missing config previously surfaced only as a 502 at
   // request time, so it is declared here to be visible at startup.
   PDFMONKEY_API_SECRET: joi.string().allow('').default(''),
@@ -151,6 +153,7 @@ module.exports = {
     multiView: envVars.OCR_MULTI_VIEW,
     doubleRead: envVars.OCR_DOUBLE_READ,
     adjudicate: envVars.OCR_ADJUDICATE,
+    orientationFix: envVars.OCR_ORIENTATION_FIX,
   },
   publicBaseUrl: String(envVars.PUBLIC_BASE_URL).replace(/\/+$/, ''),
   invoicePdfCache: {

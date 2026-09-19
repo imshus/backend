@@ -900,10 +900,20 @@ const analyzeImages = async (
   ] = await Promise.all([
     preprocessed?.frontViews || preprocessed?.frontBase64
       ? asViews(preprocessed.frontViews || preprocessed.frontBase64)
-      : (frontImagePath && fs.existsSync(frontImagePath) ? prepareImageViews(frontImagePath) : null),
+      : (frontImagePath && fs.existsSync(frontImagePath)
+          ? prepareImageViews(frontImagePath, {
+              detectRotation: detectPrintRotation,
+              scanContext: scope,
+            })
+          : null),
     preprocessed?.backViews || preprocessed?.backBase64
       ? asViews(preprocessed.backViews || preprocessed.backBase64)
-      : (backImagePath && fs.existsSync(backImagePath) ? prepareImageViews(backImagePath) : null),
+      : (backImagePath && fs.existsSync(backImagePath)
+          ? prepareImageViews(backImagePath, {
+              detectRotation: detectPrintRotation,
+              scanContext: scope,
+            })
+          : null),
     getContextCached(scope),
   ]);
   const preprocessMs = Date.now() - tPipelineStart;
@@ -1127,12 +1137,82 @@ const analyzeImages = async (
 // A photo from the gallery frames the whole piece, the hand holding it and the
 // table under it; the reading only needs the printed tag. One small call finds
 // it, so the app can put the tag in its frame without the user pinching.
+const PRINT_ROTATION_SYSTEM_PROMPT =
+  'You judge which way up a photographed jewellery tag is. Answer only with JSON {"rotate":0} where the ' +
+  'number is how many degrees the image must be turned CLOCKWISE for the printed text to read normally ' +
+  'left to right: 0 when it already reads normally, 180 when the print is upside down, 90 when the lines ' +
+  'run from bottom to top (turning the image clockwise a quarter turn would fix it), 270 when they run ' +
+  'from top to bottom. Judge by the printed characters, not by the shape of the tag or the hole in it. ' +
+  'Answer 0 when you cannot tell.';
+
+// Room for the reasoning tokens a higher OPENAI_REASONING_EFFORT spends
+// before the answer: a budget that runs out reads as an empty answer, which
+// this function would quietly report as "already upright".
+const PRINT_ROTATION_MAX_COMPLETION_TOKENS = 600;
+const VALID_ROTATIONS = new Set([0, 90, 180, 270]);
+
+/**
+ * How far a photographed tag has to be turned for its print to read normally.
+ *
+ * A tag hanging the other way round, or a photo taken from across the counter,
+ * arrives upside down: the characters are still all there, but every reader
+ * downstream is worse at them, "top-left quarter" then names the bottom-right
+ * of the tag, and the weight/rate pairing reads the lines in the wrong order.
+ * Turning the image once, before anything is cut from it, fixes all of that at
+ * the source.
+ *
+ * Deliberately a separate, tiny call on a thumbnail: telling which way up
+ * print is needs far less of the image than transcribing it, and this runs
+ * while the upload is still being prepared, off the scan's critical path.
+ *
+ * Never throws and never guesses: anything other than a clear 0/90/180/270
+ * answers 0, which leaves the image exactly as it arrived.
+ */
+const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs = 12_000 } = {}) => {
+  const who = { businessId: businessId || null, userId: userId || null };
+  try {
+    const { parsedData } = await callModel(
+      [
+        { role: 'system', content: PRINT_ROTATION_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Which way up is the printed text on this tag?' },
+            // Full detail on a thumbnail: a 512px auto-tile can blur small
+            // print into grey lines, which have no direction to read.
+            imagePart(base64Image),
+          ],
+        },
+      ],
+      {
+        label: 'print-rotation',
+        businessId,
+        maxCompletionTokens: PRINT_ROTATION_MAX_COMPLETION_TOKENS,
+        timeoutMs,
+      },
+    );
+
+    const answered = Number(parsedData?.rotate);
+    const rotate = VALID_ROTATIONS.has(answered) ? answered : 0;
+    if (!VALID_ROTATIONS.has(answered)) {
+      console.info('[PRINT_ROTATION]', { ...who, rotate: 0, answer: parsedData });
+    }
+    return rotate;
+  } catch (error) {
+    // A tag read the way it arrived is worth more than a failed scan.
+    console.warn('[PRINT_ROTATION_FAILED]', { ...who, error: error?.message || String(error) });
+    return 0;
+  }
+};
+
 const TAG_BOX_SYSTEM_PROMPT =
   'You locate the printed jewellery tag or label in a photograph. The tag is the small printed card or ' +
   'sticker carrying weights and codes (GR WT, NET WT, DIA WT, SR NO and the like). Answer only with JSON ' +
   '{"x":0.0,"y":0.0,"width":0.0,"height":0.0,"found":true} where the numbers are fractions of the image ' +
   'width and height: x and y are the top-left corner of the smallest rectangle containing all of the ' +
-  'printed text, width and height its size. When no printed tag is visible answer {"found":false}.';
+  'printed text, width and height its size. The tag may be lying at any angle, upside down or sideways: ' +
+  'find it either way, and still measure the rectangle against the edges of the photograph. When no ' +
+  'printed tag is visible answer {"found":false}.';
 
 const TAG_BOX_MAX_COMPLETION_TOKENS = 600;
 
@@ -1197,6 +1277,7 @@ module.exports = {
   analyzeImages,
   prepareImageViews,
   detectTagBox,
+  detectPrintRotation,
   // Deterministic pieces, exported for the test suite.
   _internal: {
     normalizeFieldShapes,

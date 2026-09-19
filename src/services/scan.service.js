@@ -191,7 +191,10 @@ const saveImage = async (scanId, imagePath, type, session = {}, options = {}) =>
     [`${type}ImagePath`]: imagePath
   });
   // Fire-and-forget: start OCR preprocessing now so /analyze can reuse the result.
-  ocrPreprocessCache.warmPreprocess(scanId, type, imagePath);
+  ocrPreprocessCache.warmPreprocess(scanId, type, imagePath, {
+    businessId: session?.businessId || scan?.businessId || null,
+    userId: session?.userId || null,
+  });
   // A new image invalidates any call made for the old set; start one for the
   // new set if the client asked for it.
   dropSpeculative(scanId);

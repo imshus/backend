@@ -60,6 +60,12 @@ const THIRDS_ALONG_HEIGHT = [
 
 const ROTATED_ORIENTATIONS = new Set([5, 6, 7, 8]);
 
+// The thumbnail the orientation question is asked on. Which way up print is
+// does not need the print to be legible, and a small image keeps that call
+// short enough to finish inside the upload.
+const ROTATION_PROBE_EDGE_PX = 640;
+
+
 const regionPixels = (region, width, height) => {
   const left = Math.round(region.left * width);
   const top = Math.round(region.top * height);
@@ -82,12 +88,19 @@ const regionPixels = (region, width, height) => {
  *
  * `quarters` and `thirds` are empty for small sources and when multi-view is
  * switched off, in which case the whole image is all the model gets.
+ *
+ * A tag photographed the other way up is turned upright first, before any
+ * part is cut, so every view and every part name describes the tag as printed.
+ * `detectRotation` is the question that decides that, and it is the caller's
+ * to pass: this module makes no model call of its own, so a caller that wants
+ * only the pixels — every unit test, and any future one — gets exactly them.
  */
-const prepareImageViews = async (filePath) => {
+const prepareImageViews = async (filePath, { detectRotation, scanContext } = {}) => {
   const started = Date.now();
   const maxEdgePx = config.ocr?.maxEdgePx || 2400;
   const jpegQuality = config.ocr?.jpegQuality || 82;
   const multiView = config.ocr?.multiView !== false;
+  const orientationFix = config.ocr?.orientationFix !== false;
 
   const source = sharp(filePath, { failOn: 'none', limitInputPixels: MAX_INPUT_PIXELS });
   const metadata = await source.metadata();
@@ -110,13 +123,43 @@ const prepareImageViews = async (filePath) => {
       fastShrinkOnLoad: true,
     });
   }
-  const { data, info } = await pipeline.raw().toBuffer({ resolveWithObject: true });
-  const work = () => {
-    const image = sharp(data, {
-      raw: { width: info.width, height: info.height, channels: info.channels },
+  const decoded = await pipeline.raw().toBuffer({ resolveWithObject: true });
+  const asImage = (buffer, size) => {
+    const image = sharp(buffer, {
+      raw: { width: size.width, height: size.height, channels: size.channels },
     });
-    return info.channels === 4 ? image.flatten({ background: '#ffffff' }) : image;
+    return size.channels === 4 ? image.flatten({ background: '#ffffff' }) : image;
   };
+
+  // Which way up the print is, then the whole working image turned that far,
+  // once. Everything below cuts from the turned pixels, so a tag held the
+  // other way round produces exactly the views an upright one would.
+  const detector = orientationFix ? detectRotation : null;
+  let printRotation = 0;
+  if (detector) {
+    const probe = await asImage(decoded.data, decoded.info)
+      .resize({
+        width: ROTATION_PROBE_EDGE_PX,
+        height: ROTATION_PROBE_EDGE_PX,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: 70, mozjpeg: true })
+      .toBuffer();
+    printRotation = (await detector(probe.toString('base64'), scanContext || {})) || 0;
+  }
+
+  let data = decoded.data;
+  let info = decoded.info;
+  if (printRotation) {
+    const turned = await asImage(decoded.data, decoded.info)
+      .rotate(printRotation)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    data = turned.data;
+    info = turned.info;
+  }
+  const work = () => asImage(data, info);
 
   // The whole image: the original bytes when they are already what the model
   // should see, otherwise one encode of the upright, capped pixels.
@@ -127,7 +170,10 @@ const prepareImageViews = async (filePath) => {
   if (
     metadata.format === 'jpeg' &&
     (metadata.orientation === undefined || metadata.orientation === 1) &&
-    !needsResize
+    !needsResize &&
+    // The file on disk is still the way it arrived, so it cannot stand in for
+    // an image that had to be turned.
+    !printRotation
   ) {
     const { size } = await fs.promises.stat(filePath);
     if (size <= PASSTHROUGH_MAX_BYTES) {
@@ -201,6 +247,7 @@ const prepareImageViews = async (filePath) => {
   console.info('[OCR_IMAGE_VIEWS]', {
     filePath,
     format: metadata.format,
+    printRotation,
     sourceWidth: uprightWidth,
     sourceHeight: uprightHeight,
     workWidth: info.width,
@@ -219,6 +266,7 @@ const prepareImageViews = async (filePath) => {
     full: full.toString('base64'),
     width: fullWidth,
     height: fullHeight,
+    printRotation,
     quarters,
     thirds,
   };
@@ -226,6 +274,7 @@ const prepareImageViews = async (filePath) => {
 
 module.exports = {
   prepareImageViews,
+  ROTATION_PROBE_EDGE_PX,
   QUARTERS,
   THIRDS_ALONG_WIDTH,
   THIRDS_ALONG_HEIGHT,

@@ -17,6 +17,9 @@ const { prepareImageViews } = require('./ocrViews');
  *    them put a full decode back on the second one's critical path.
  *  - Any warm failure deletes the entry; analyze falls back to on-demand
  *    preparation from the file on disk — identical output either way.
+ *  - Warming is also where a tag photographed upside down is turned upright,
+ *    which is one small model call: it belongs here, off the /analyze critical
+ *    path, rather than in front of the reads.
  *
  * These entries are megabytes each, so the map is bounded: the oldest entry
  * is dropped once MAX_ENTRIES is reached, and stale ones expire on their own.
@@ -43,11 +46,18 @@ const pruneStale = () => {
   }
 };
 
-const warmPreprocess = (scanId, side, filePath) => {
+const warmPreprocess = (scanId, side, filePath, scanContext) => {
   if (!scanId || !side || !filePath) return;
 
   const key = keyFor(scanId, side);
-  const promise = prepareImageViews(filePath);
+  // Required here, not at the top: the reader service is what asks the model
+  // which way up the tag is, and requiring it while this module is still
+  // loading would be a cycle through ocrViews.
+  const { detectPrintRotation } = require('./openai.service');
+  const promise = prepareImageViews(filePath, {
+    detectRotation: detectPrintRotation,
+    scanContext,
+  });
   entries.delete(key);
   entries.set(key, { promise, filePath, createdAt: Date.now() });
   pruneStale();

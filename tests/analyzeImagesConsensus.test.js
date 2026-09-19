@@ -23,12 +23,17 @@ const answerFor = (body) => {
   const images = user.content.filter((c) => c.type === 'image_url').length;
   const kind = texts.startsWith('Two independent readings')
     ? 'adjudicate'
-    : texts.includes('quarter')
-      ? 'read-a'
-      : texts.includes('third')
-        ? 'read-b'
-        : 'read-plain';
+    : texts.startsWith('Which way up')
+      ? 'print-rotation'
+      : texts.includes('quarter')
+        ? 'read-a'
+        : texts.includes('third')
+          ? 'read-b'
+          : 'read-plain';
   requests.push({ kind, images, body, texts, system: body.messages[0]?.content ?? '' });
+  // Asked once per image, before anything is cut from it: this tag is already
+  // the right way up, so nothing is turned.
+  if (kind === 'print-rotation') return { rotate: 0 };
   if (failPartReads && (kind === 'read-a' || kind === 'read-b')) return null;
   if (kind === 'adjudicate') {
     return { answers: { 'diamonds[0].weight': ['.54', 96] } };
@@ -131,16 +136,18 @@ test('two reads, one disagreement, one adjudication: the tag comes out consisten
   const file = await tagImage();
   const result = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
 
-  // Three calls: read A (whole + 4 quarters), read B (whole + 3 thirds), the third look (whole + 4 quarters).
+  // Four calls: which way up the tag is (one thumbnail), read A (whole + 4
+  // quarters), read B (whole + 3 thirds), the third look (whole + 4 quarters).
   assert.deepEqual(
     requests.map((r) => `${r.kind}:${r.images}`).sort(),
-    ['adjudicate:5', 'read-a:5', 'read-b:4'],
+    ['adjudicate:5', 'print-rotation:1', 'read-a:5', 'read-b:4'],
   );
   for (const r of requests) {
     const user = r.body.messages.find((m) => m.role === 'user');
     assert.ok(user.content.every((c) => c.type !== 'image_url' || c.image_url.detail === 'high'));
     assert.equal(r.body.response_format.type, 'json_object');
-    assert.equal(r.body.max_completion_tokens, r.kind === 'adjudicate' ? 3000 : 6000);
+    const budget = { adjudicate: 3000, 'print-rotation': 600 }[r.kind] || 6000;
+    assert.equal(r.body.max_completion_tokens, budget);
     assert.equal(r.body.messages[0].role, 'system');
   }
   const adjudication = requests.find((r) => r.kind === 'adjudicate');
@@ -210,7 +217,7 @@ test('with the second read switched off a single read still answers', async () =
     const openaiService = require('../src/services/openai.service');
     const file = await tagImage();
     const result = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
-    assert.deepEqual(requests.map((r) => r.kind), ['read-a']);
+    assert.deepEqual(requests.map((r) => r.kind), ['print-rotation', 'read-a']);
     assert.equal(result.consensus.mode, 'single');
     // Read A alone said 5.54; the weight identity repairs it from gross minus net.
     assert.equal(result.structuredData.diamonds[0].weight.value, '0.54');
