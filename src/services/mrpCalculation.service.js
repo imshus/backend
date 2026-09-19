@@ -1,6 +1,7 @@
 const rateCalculationService = require('./rateCalculation.service');
 const redisService = require('./redis.service');
 const LabourRate = require('../models/labourRate.model');
+const ItemCode = require('../models/itemCode.model');
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
@@ -96,6 +97,8 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     grossWt,
     otherCharges,
     calculationMode,
+    itemCode,
+    wastagePercent,
   } = input || {};
 
   const businessId = user.businessId;
@@ -106,7 +109,14 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   const employeePromise = user?.role === 'EMP'
     ? Employee.findById(user.userId).select('permissions')
     : Promise.resolve(null);
-  const [liveRatesData, globalLabourDoc, scanResolution, employee] = await Promise.all([
+  // The wastage a shop charges belongs to the item, not to the scan: it is
+  // kept against the item code in Masters and matched here by the code the
+  // tag printed. A figure sent with the request overrides it, for a scan
+  // where this piece is an exception.
+  const itemCodePromise = itemCode
+    ? findScopedRows(ItemCode, settingsScope(user), { code: String(itemCode).trim() })
+    : Promise.resolve([]);
+  const [liveRatesData, globalLabourDoc, scanResolution, employee, itemRows] = await Promise.all([
     rateCalculationService.getLiveGoldRates(businessId, settingsScope(user)),
     // The calculating account's own labour charge when saved, else the
     // shop's; a stored NONE row means explicitly no labour charge.
@@ -115,6 +125,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
       ? Promise.resolve({ resolvedScanId: scanId, scan: knownScan })
       : resolveScanForCalculation(scanId, sessionContext),
     employeePromise,
+    itemCodePromise,
   ]);
   const globalLabour = globalLabourDoc && globalLabourDoc.chargeType !== 'NONE' ? globalLabourDoc : null;
   const { resolvedScanId, scan } = scanResolution;
@@ -253,11 +264,26 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
 
   const otherChargesAmount = toNumber(otherCharges);
 
+  // Wastage: the metal the making consumes, charged as gold. It is a share of
+  // the metal in the piece, so it runs on the NET weight — the stones are not
+  // gold and nothing is lost off them — and at the 24K rate, the same rate
+  // the gold line is priced at rather than the rate after karat purity.
+  const itemRow = Array.isArray(itemRows) && itemRows.length > 0 ? itemRows[0] : null;
+  const hasManualWastage =
+    wastagePercent !== undefined && wastagePercent !== null && String(wastagePercent).trim() !== '';
+  const resolvedWastagePercent = hasManualWastage
+    ? toNumber(wastagePercent)
+    : toNumber(itemRow?.wastage);
+  const wastageWeightGrams =
+    resolvedWastagePercent > 0 ? numericNetWt * (resolvedWastagePercent / 100) : 0;
+  const wastageAmount = wastageWeightGrams * selected24kGoldRatePerGram;
+
   const aggregation = aggregateJewelleryMrp({
     goldAmount,
     diamondAmount,
     colorstoneAmount,
     labourAmount,
+    wastageAmount,
     otherChargesAmount,
   });
 
@@ -282,6 +308,9 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     diamondLineItems,
     colorstoneLineItems,
     labourAmount: aggregation.labourAmount,
+    wastagePercent: resolvedWastagePercent,
+    wastageWeightGrams,
+    wastageAmount: aggregation.wastageAmount,
     otherChargesAmount: aggregation.otherChargesAmount,
     subtotal,
     finalMRP,
@@ -296,6 +325,12 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
       goldAmount: aggregation.goldAmount,
       labourAmount: aggregation.labourAmount,
       labourChargeType,
+      // Empty when the item carries no wastage, so the app can leave the tile
+      // blank rather than showing a confident zero.
+      wastageCode: resolvedWastagePercent > 0 ? String(itemRow?.code || itemCode || '') : '',
+      wastagePercent: resolvedWastagePercent,
+      wastageWeightGrams,
+      wastageAmount: aggregation.wastageAmount,
       otherCharges: aggregation.otherChargesAmount,
       subtotal,
     },

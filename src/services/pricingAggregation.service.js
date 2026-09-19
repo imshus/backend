@@ -8,6 +8,7 @@ const aggregateJewelleryMrp = ({
   diamondAmount,
   colorstoneAmount,
   labourAmount,
+  wastageAmount,
   otherChargesAmount,
 }) => {
   const normalized = {
@@ -15,6 +16,9 @@ const aggregateJewelleryMrp = ({
     diamondAmount: toFiniteNumber(diamondAmount),
     colorstoneAmount: toFiniteNumber(colorstoneAmount),
     labourAmount: toFiniteNumber(labourAmount),
+    // Metal lost in the making, charged as gold: a shop that quotes wastage
+    // instead of a making charge has it as a line of its own on the bill.
+    wastageAmount: toFiniteNumber(wastageAmount),
     otherChargesAmount: toFiniteNumber(otherChargesAmount),
   };
 
@@ -23,6 +27,7 @@ const aggregateJewelleryMrp = ({
     normalized.diamondAmount +
     normalized.colorstoneAmount +
     normalized.labourAmount +
+    normalized.wastageAmount +
     normalized.otherChargesAmount;
 
   return {
