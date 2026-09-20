@@ -231,6 +231,20 @@ const setForgottenMpin = async (req, res, next) => {
   }
 };
 
+/**
+ * Shows the MPIN already on the account, behind the same OTP-backed token.
+ * `mpin` comes back null for an account sealed before the vault existed, and
+ * the app then offers to set a new one.
+ */
+const revealStoredMpin = async (req, res, next) => {
+  try {
+    const data = await registrationService.revealStoredMpin(req.body.resetToken);
+    sendSuccess(res, data);
+  } catch (err) {
+    next(err);
+  }
+};
+
 const loginEmployee = async (req, res, next) => {
   try {
     const { phone, password } = req.body;
@@ -304,6 +318,7 @@ module.exports = {
   verifyPasswordResetOtp,
   resetForgottenPassword,
   setForgottenMpin,
+  revealStoredMpin,
   getDevOtps,
   verifyPhoneOtp,
   createPassword,

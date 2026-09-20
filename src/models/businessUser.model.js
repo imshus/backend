@@ -52,6 +52,14 @@ const businessUserSchema = new mongoose.Schema({
   mpinHash: {
     type: String
   },
+  // The same MPIN sealed under the server's key (utils/mpinVault), so the
+  // OTP-guarded Forgot MPIN screen can show it back. Never consulted by
+  // login, and `select: false` keeps it out of every ordinary query.
+  mpinVault: {
+    type: String,
+    default: null,
+    select: false
+  },
   // Kept for those accounts until they set an MPIN, and for employees, whose
   // credential is still a password.
   passwordHash: {

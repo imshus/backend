@@ -169,6 +169,10 @@ const resetPasswordSchema = Joi.object({
   }),
 });
 
+const revealMpinSchema = Joi.object({
+  resetToken: Joi.string().trim().required(),
+});
+
 const employeeLoginSchema = Joi.object({
   phone: Joi.string().pattern(/^[0-9]{10}$/).required(),
   password: Joi.string().required(),
@@ -194,6 +198,7 @@ module.exports = {
   verifyPasswordResetOtpSchema,
   resetPasswordSchema,
   resetMpinSchema,
+  revealMpinSchema,
   employeeLoginSchema,
   changePasswordSchema,
 };

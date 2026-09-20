@@ -10,6 +10,7 @@ const authService = require('./auth.service');
 const licenseService = require('./license.service');
 const walletService = require('./wallet.service');
 const referralService = require('./referral.service');
+const { sealMpin, openMpin } = require('../utils/mpinVault');
 
 function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '').slice(-10);
@@ -252,6 +253,8 @@ const createPassword = async (businessId, password, userId, fullName, referralCo
       ...(userId ? { userId } : {}),
       fullName: String(fullName || '').trim(),
       ...(credentials.mpinHash ? { mpinHash: credentials.mpinHash } : {}),
+      // Sealed beside the hash so Forgot MPIN can show it back after an OTP.
+      ...(mpin ? { mpinVault: sealMpin(mpin) } : {}),
       address: business.address || '',
       gstNumber: business.gstNumber || '',
       businessName: business.tradeName || business.legalName || '',
@@ -480,6 +483,9 @@ const resetForgottenPassword = async (resetToken, newPassword, newMpin) => {
     // at the MPIN too, so the credential someone knows is the only one that
     // opens the account.
     user.passwordHash = user.mpinHash;
+    // Kept in step with the hash, so a later Forgot MPIN shows the MPIN that
+    // is actually in force rather than a stale one.
+    user.mpinVault = sealMpin(newMpin);
   } else {
     user.passwordHash = await bcrypt.hash(newPassword, 10);
   }
@@ -491,6 +497,39 @@ const resetForgottenPassword = async (resetToken, newPassword, newMpin) => {
     success: true,
     message: newMpin ? 'MPIN set successfully' : 'Password reset successfully',
   };
+};
+
+/**
+ * The MPIN behind a reset token, for the Forgot MPIN screen.
+ *
+ * Guarded exactly as the reset itself is: the token has to verify, its nonce
+ * has to match the one written when the OTP was accepted, and that nonce has
+ * to be inside its ten minutes. The nonce is deliberately NOT consumed — an
+ * account sealed before the vault existed has nothing to show, and the same
+ * token is what lets the shop set a new MPIN instead.
+ */
+const revealStoredMpin = async (resetToken) => {
+  const payload = authService.verifyPasswordResetToken(resetToken);
+  const user = await BusinessUser.findById(payload.userId)
+    .select('+passwordResetNonceHash +passwordResetExpiresAt +mpinVault');
+
+  const storedNonceHash = user?.passwordResetNonceHash;
+  const resetExpiresAt = user?.passwordResetExpiresAt
+    ? new Date(user.passwordResetExpiresAt).getTime()
+    : 0;
+  if (
+    !user
+    || !user.isActive
+    || !storedNonceHash
+    || storedNonceHash !== hashResetNonce(payload.nonce)
+    || resetExpiresAt <= Date.now()
+  ) {
+    throw new Error('INVALID_RESET_TOKEN');
+  }
+
+  // Null means "this account predates the sealed copy", which the app reads
+  // as "ask them to set a new one" rather than as an error.
+  return { mpin: openMpin(user.mpinVault) };
 };
 
 const register = async ({ mobile, password, mpin, userId, fullName, referralCode, businessDetails }) => {
@@ -632,6 +671,7 @@ module.exports = {
   requestPasswordReset,
   verifyPasswordResetOtp,
   resetForgottenPassword,
+  revealStoredMpin,
   loginEmployee,
   changePassword,
 };

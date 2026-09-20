@@ -16,6 +16,7 @@ const {
   requestPasswordResetSchema,
   verifyPasswordResetOtpSchema,
   resetPasswordSchema,
+  revealMpinSchema,
   resetMpinSchema,
   employeeLoginSchema,
   changePasswordSchema,
@@ -48,6 +49,9 @@ router.post('/forgot-password/reset', validate(resetPasswordSchema), authControl
 // The MPIN behind the same token: a forgotten one, or a first one for an
 // account created before MPINs existed.
 router.post('/forgot-password/set-mpin', validate(resetMpinSchema), authController.setForgottenMpin);
+// The MPIN already on the account, for the Forgot MPIN screen. Same token,
+// same ten minutes; null when the account predates the sealed copy.
+router.post('/forgot-password/reveal-mpin', otpVerifyLimiter, validate(revealMpinSchema), authController.revealStoredMpin);
 router.get('/dev/otps/:businessId', authController.getDevOtps);
 router.post('/business/verify-phone-otp', validate(verifyOtpSchema), authController.verifyPhoneOtp);
 router.post('/business/create-password', validate(createPasswordSchema), authController.createPassword);
