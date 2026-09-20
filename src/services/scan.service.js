@@ -230,6 +230,17 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
     return scan;
   }
 
+  // The stored paths must still be on disk before anything runs. A file can
+  // vanish under a scan — a redeploy that replaces the uploads folder is the
+  // known way — and reading it raw surfaced ENOENT with a server path on the
+  // shop's screen. Refuse with something a person can act on instead.
+  for (const [side, imagePath] of [['front', frontImagePath], ['back', backImagePath]]) {
+    if (imagePath && !fs.existsSync(imagePath)) {
+      console.error('[SCAN_IMAGE_MISSING]', { scanId, side, imagePath });
+      throw new Error('SCAN_IMAGES_MISSING');
+    }
+  }
+
   const startedAt = Date.now();
   console.info('[OPENAI_REQUEST_START]', {
     scanId,

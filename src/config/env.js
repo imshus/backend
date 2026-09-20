@@ -50,6 +50,9 @@ const envVarsSchema = joi.object({
   OCR_ADJUDICATE: joi.boolean().default(true),
   // Turns a tag photographed upside down or sideways upright before it is read.
   OCR_ORIENTATION_FIX: joi.boolean().default(true),
+  // Where tag uploads land until they are analysed. Point it outside the
+  // deploy directory on the server, or a redeploy deletes in-flight scans.
+  UPLOAD_DIR: joi.string().allow('').default(''),
   // Invoice PDF rendering; missing config previously surfaced only as a 502 at
   // request time, so it is declared here to be visible at startup.
   PDFMONKEY_API_SECRET: joi.string().allow('').default(''),
@@ -146,6 +149,7 @@ module.exports = {
   },
   upload: {
     maxUploadMb: envVars.MAX_UPLOAD_MB,
+    dir: envVars.UPLOAD_DIR || '',
   },
   ocr: {
     maxEdgePx: envVars.OCR_MAX_EDGE_PX,

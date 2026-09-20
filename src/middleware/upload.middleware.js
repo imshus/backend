@@ -3,7 +3,9 @@ const path = require('path');
 const fs = require('fs');
 const config = require('../config/env');
 
-const uploadDir = path.join(__dirname, '../../src/uploads');
+// Overridable so the folder can sit OUTSIDE the deploy directory: a deploy
+// that replaces the app tree must not take fresh, un-analysed uploads with it.
+const uploadDir = config.upload.dir || path.join(__dirname, '../../src/uploads');
 
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
