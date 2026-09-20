@@ -7,12 +7,12 @@ const einvoiceService = require('../services/einvoice.service');
 const profileEditService = require('../services/profileEdit.service');
 const { settingsScope, findScopedSetting, upsertScopedSetting } = require('../services/userScope.service');
 
-// A shop that has saved nothing shows the 24K price alone; the lighter
-// karats wait in the Choose Karat menu until they are ticked.
+// A shop that has saved nothing shows the MCX card alone; the 24K
+// RTGS/Cash card and the lighter karats wait in settings until ticked.
 const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   '24k_mcx': true,
-  '24k_rtgs': true,
-  '24k_cash': true,
+  '24k_rtgs': false,
+  '24k_cash': false,
   '22k_rtgs': false,
   '22k_cash': false,
   '20k_rtgs': false,
@@ -27,12 +27,11 @@ const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   'bhaw_source_jmd': false,
 };
 
-// The three 24K rates are the shop's headline price and what Home falls back
-// to: a record with no rate selected at all leaves the dashboard blank, which
-// is how an abandoned or half-written record reads rather than a choice, so
-// these come back on. Any record with something selected is left exactly as
-// it is — 24K can be switched off like any other rate.
-const OPENING_MATRIX_KEYS = ['24k_mcx', '24k_rtgs', '24k_cash'];
+// MCX is the shop's headline price and what Home falls back to: a record
+// with no rate selected at all leaves the dashboard blank, which is how an
+// abandoned or half-written record reads rather than a choice, so it comes
+// back on. Any record with something selected is left exactly as it is.
+const OPENING_MATRIX_KEYS = ['24k_mcx'];
 
 const isRateKey = (key) => key !== 'bhaw_source_jmd';
 
