@@ -47,10 +47,12 @@ function canUseScanner(license) {
 }
 
 function canRechargeCredits(license) {
-  // Anyone may buy credits, licence or not: a shop on trial that runs out
-  // mid-day should be able to pay for more rather than be told to buy the
-  // application first.
-  return true;
+  // A shop on its trial may buy credits — running out mid-day should not
+  // stop it working, and being told to buy the application first is what
+  // made it give up. Once the seven days are over the trial becomes
+  // NO_LICENSE, and from there credits are closed until the application is
+  // bought: that is the shop's own rule for the app.
+  return hasActiveLicense(license);
 }
 
 function canAccessPaymentHistory(license) {

@@ -61,6 +61,10 @@ const errorHandler = (err, req, res, next) => {
     },
     'TRIAL_REQUIRED': { status: 403, msg: 'Start your FREE Trial Today to use scanner features.' },
     'TRIAL_EXPIRED': { status: 403, msg: 'Free trial expired. Purchase application to continue scanning.' },
+    'LICENSE_REQUIRED_FOR_CREDITS': {
+      status: 403,
+      msg: 'Your free trial has ended. Purchase the application to add credits.',
+    },
     'NO_CREDITS_AVAILABLE': { status: 402, msg: 'No credits available. Please add credits to continue scanning.' },
     'INSUFFICIENT_CREDITS': { status: 402, msg: 'Insufficient credits for this scan.' },
     'INVALID_CREDIT_AMOUNT': { status: 400, msg: 'Credit amount must be greater than zero.' },

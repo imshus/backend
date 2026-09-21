@@ -104,10 +104,15 @@ async function createOrderForApplicationPurchase({ businessId, userId }) {
 }
 
 async function createOrderForCreditRecharge({ businessId, userId, requestedAmount }) {
-  // Deliberately no licence check. Credits are prepaid scanning, and a shop on
-  // its trial is the one most likely to run out of them: refusing its money
-  // here only pushed it to stop using the app. The licence still gates what
-  // scanning is allowed, so buying credits early costs nobody anything.
+  // Checked here rather than on the route alone: this is where the charge is
+  // raised, and a guard that only decorates the endpoint is one refactor away
+  // from being bypassed. A trial shop may still buy credits; an expired one
+  // has to buy the application first.
+  const license = await licenseService.ensureLicense(businessId);
+  if (!licenseService.canRechargeCredits(license)) {
+    throw new Error('LICENSE_REQUIRED_FOR_CREDITS');
+  }
+
   const parsed = toTwo(requestedAmount);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error('INVALID_RECHARGE_AMOUNT');
