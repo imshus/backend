@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const { sealMpin } = require('../utils/mpinVault');
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 
@@ -41,11 +42,17 @@ const tenDigits = (value) => String(value || '').replace(/\D/g, '').slice(-10);
  * it can be logged or kept.
  */
 const startProfileEdit = async ({ businessId, userId }, mpin) => {
-  const user = await BusinessUser.findById(userId);
+  const user = await BusinessUser.findById(userId).select('+mpinVault');
   if (!user || !user.isActive) throw new Error('UNAUTHORIZED');
   if (!user.mpinHash) throw new Error('MPIN_NOT_SET');
   if (!(await bcrypt.compare(String(mpin || ''), user.mpinHash))) {
     throw new Error('INVALID_MPIN');
+  }
+  // The other moment the MPIN is in plain text and just proved right: an
+  // account from before the readable copy existed gets one here too.
+  if (!user.mpinVault) {
+    user.mpinVault = sealMpin(String(mpin));
+    await user.save();
   }
 
   const editToken = jwt.sign(

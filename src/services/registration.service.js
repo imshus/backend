@@ -319,9 +319,11 @@ const login = async (mobile, credential) => {
 
   const identifier = String(mobile || '').trim();
   const asPhone = identifier.replace(/\D/g, '').slice(-10);
+  // The sealed copy is selected too, so a login can tell whether the
+  // account has one and write it if not — see below.
   const user = /^[0-9]{10}$/.test(asPhone)
-    ? await BusinessUser.findOne({ phone: asPhone })
-    : await BusinessUser.findOne({ userId: identifier });
+    ? await BusinessUser.findOne({ phone: asPhone }).select('+mpinVault')
+    : await BusinessUser.findOne({ userId: identifier }).select('+mpinVault');
 
   if (!user || !user.isActive) {
     throw new Error('INVALID_PHONE_CREDENTIALS');
@@ -335,6 +337,14 @@ const login = async (mobile, credential) => {
     }
     if (!await bcrypt.compare(mpin, user.mpinHash)) {
       throw new Error('INVALID_PHONE_CREDENTIALS');
+    }
+    // An MPIN set before the readable copy existed has only its hash, so
+    // Forgot MPIN could not show it and asked for a new one instead. This
+    // is one of two moments the server holds the MPIN in plain text and has
+    // just proved it right; the copy is written here, once, and from the
+    // next Forgot MPIN on the shop reads its own digits.
+    if (!user.mpinVault) {
+      user.mpinVault = sealMpin(mpin);
     }
   } else {
     if (!await bcrypt.compare(String(password || ''), user.passwordHash)) {
