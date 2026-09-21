@@ -116,9 +116,10 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const storedSource = String(bullionSetting?.selected || '').trim();
   const selectedBhawSource = FEED_SOURCES.includes(storedSource)
     ? storedSource
-    : metrics?.metricsData?.bhaw_source_jmd
-      ? bhawService.SOURCES.JMD_PATIL
-      : bhawService.SOURCES.MEGA_BULLION;
+    // Unset means JMD Patil, the default; only a saved "off" means the other house.
+    : metrics?.metricsData?.bhaw_source_jmd === false
+      ? bhawService.SOURCES.MEGA_BULLION
+      : bhawService.SOURCES.JMD_PATIL;
   const vendorBhaw = await bhawService.getBhawForSource(selectedBhawSource);
   if (vendorBhaw) {
     supremeChanges = {

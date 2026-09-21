@@ -24,7 +24,8 @@ const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   '9k_rtgs': false,
   '9k_cash': false,
   // Bhaw rate source: true = JMD Patil live feed, false = Mega Bullion (supreme changes).
-  'bhaw_source_jmd': false,
+  // JMD Patil unless the shop has picked otherwise, at the shop's asking.
+  'bhaw_source_jmd': true,
 };
 
 // MCX is the shop's headline price and what Home falls back to: a record
@@ -393,7 +394,8 @@ const getBullionSources = async (req, res) => {
     ]);
 
     const requestedNames = cleanCustomNames(setting?.customNames);
-    const fallback = metrics?.metricsData?.bhaw_source_jmd ? 'jmd_patil' : 'mega_bullion';
+    // Unset means JMD Patil, the default; only a saved "off" means the other house.
+    const fallback = metrics?.metricsData?.bhaw_source_jmd === false ? 'mega_bullion' : 'jmd_patil';
     const stored = cleanBullionName(setting?.selected);
     const followable = BUILT_IN_BULLION.map((house) => house.key);
     const selected = followable.includes(stored) ? stored : fallback;

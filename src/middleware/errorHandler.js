@@ -43,6 +43,17 @@ const errorHandler = (err, req, res, next) => {
       status: 503,
       msg: 'GST verification is not available right now, so the number was not changed.',
     },
+    // The registry lookup itself failed — the number was never judged. These
+    // came out as a bare 500, which the app shows as "could not be saved"
+    // and the shop reads as a fault in what they typed.
+    'GST_VERIFICATION_FAILED': {
+      status: 502,
+      msg: 'The GST registry could not be reached to check this number. Please try again in a few minutes.',
+    },
+    'GST_AUTH_FAILED': {
+      status: 502,
+      msg: 'The GST registry refused the server\'s credentials, so the number could not be checked. Please contact support.',
+    },
     'REFERRAL_CODE_INVALID': { status: 400, msg: 'That referral code was not recognised. Check it or leave it blank.' },
     'REFERRAL_CODE_GENERATION_FAILED': { status: 500, msg: 'Could not create a referral code. Please try again.' },
     'ACCOUNT_NOT_FOUND': { status: 404, msg: 'No active account was found for this phone number or User ID.' },
