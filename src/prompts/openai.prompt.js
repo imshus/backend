@@ -11,9 +11,18 @@ WEIGHT FIELDS
 -------------------------
 
 GWt / GW / G.Wt / Gross      → Gross Weight
+Wt / WT / W.T / Weight       → Gross Weight
 NWt / NW / NetWt             → Net Weight
 Dia / DiaWt / DWt            → Diamond Weight (Carats)
 CS / CSWt / ColWt            → Colour Stone Weight
+
+A tag that labels the metal's weight simply "Weight" or "Wt", with no
+"Gross" or "Net" in front of it, means GROSS weight. Read it as
+grossWeight, never as netWeight.
+
+This applies to the tag's own weight line only. A weight that appears
+inside a diamond or colour-stone line is still that stone's weight, and a
+line that already says Net stays net.
 
 -------------------------
 PURITY / KARAT
