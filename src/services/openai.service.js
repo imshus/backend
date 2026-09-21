@@ -712,8 +712,9 @@ const ADJUDICATION_SYSTEM_PROMPT =
 // several megabytes of images again.
 const OPTIONAL_SPEED_PARAMS = ['service_tier', 'prompt_cache_key', 'reasoning_effort'];
 
-const isOptionalParamRejection = (error) => {
-  if (Number(error?.status) !== 400) return false;
+/** The optional speed parameters a 400 refuses, by name. */
+const refusedSpeedParamsIn = (error) => {
+  if (Number(error?.status) !== 400) return [];
   let detail = '';
   try {
     detail = JSON.stringify(error?.error ?? '');
@@ -721,8 +722,14 @@ const isOptionalParamRejection = (error) => {
     detail = '';
   }
   const text = `${error?.message || ''} ${detail}`.toLowerCase();
-  return OPTIONAL_SPEED_PARAMS.some((param) => text.includes(param));
+  return OPTIONAL_SPEED_PARAMS.filter((param) => text.includes(param));
 };
+
+const isOptionalParamRejection = (error) => refusedSpeedParamsIn(error).length > 0;
+
+// Speed parameters the API has refused once in this process are left out of
+// every later call, rather than paid for with a failed request each time.
+const refusedSpeedParams = new Set();
 
 /**
  * One JSON-mode call, with its own slice of the pipeline's time budget.
@@ -741,22 +748,34 @@ const callModel = async (
     // reads keep the default; a job that only has to point at something
     // should not pay for a reasoning pass it does not use.
     reasoningEffort: reasoningEffortOverride,
+    // A call may also name its own model and service tier: the tag finder
+    // is a far smaller job than a read and can run on quicker settings.
+    model: modelOverride,
+    serviceTier: serviceTierOverride,
   },
 ) => {
-  const { model, serviceTier, reasoningEffort: defaultEffort } = resolveModelSettings();
-  const reasoningEffort = reasoningEffortOverride || defaultEffort;
+  const settings = resolveModelSettings();
+  const model = modelOverride || settings.model;
+  const serviceTier = serviceTierOverride || settings.serviceTier;
+  const reasoningEffort = reasoningEffortOverride || settings.reasoningEffort;
   const requestOptions = {
     model,
     messages,
     response_format: { type: 'json_object' },
     max_completion_tokens: maxCompletionTokens,
-    // Stable per-user cache routing so repeated scans hit the same prompt-cache
-    // shard: the system prompt carries that user's own customizations, so two
-    // people in one shop are two shards.
-    prompt_cache_key: String(businessId || 'global'),
   };
-  if (reasoningEffort) requestOptions.reasoning_effort = reasoningEffort;
-  if (serviceTier) requestOptions.service_tier = serviceTier;
+  // Stable per-user cache routing so repeated scans hit the same prompt-cache
+  // shard: the system prompt carries that user's own customizations, so two
+  // people in one shop are two shards.
+  if (!refusedSpeedParams.has('prompt_cache_key')) {
+    requestOptions.prompt_cache_key = String(businessId || 'global');
+  }
+  if (reasoningEffort && !refusedSpeedParams.has('reasoning_effort')) {
+    requestOptions.reasoning_effort = reasoningEffort;
+  }
+  if (serviceTier && !refusedSpeedParams.has('service_tier')) {
+    requestOptions.service_tier = serviceTier;
+  }
 
   // One attempt, bounded by what is left of the scan's budget: the two reads
   // are the redundancy, so a stalled call must not also be retried.
@@ -771,10 +790,12 @@ const callModel = async (
     response = await openai.chat.completions.create(requestOptions, perRequest);
   } catch (requestError) {
     if (!isOptionalParamRejection(requestError)) throw requestError;
+    refusedSpeedParamsIn(requestError).forEach((param) => refusedSpeedParams.add(param));
     console.error('[OPENAI_REQUEST_FALLBACK]', {
       label,
       error: requestError?.message || String(requestError),
       status: requestError?.status || null,
+      refused: [...refusedSpeedParams],
     });
     response = await openai.chat.completions.create(
       {
@@ -1252,7 +1273,14 @@ const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_00
       role: 'user',
       content: [
         { type: 'text', text: 'Where is the printed tag in this photograph?' },
-        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Image}` } },
+        {
+          type: 'image_url',
+          // A 512px look is plenty to place a white card, and a fraction of
+          // the tokens of the tiled look the reads need for digits; the app
+          // widens the box by a sixth of itself before cutting, which covers
+          // the coarser edge.
+          image_url: { url: `data:image/jpeg;base64,${base64Image}`, detail: 'low' },
+        },
       ],
     },
   ];
@@ -1266,6 +1294,13 @@ const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_00
     // front of every capture. It ran at the deployment's default effort —
     // the reader's — which was most of a wait the shop called huge.
     reasoningEffort: 'minimal',
+    // Its own model and tier, from the environment: a lighter model may
+    // place a card as well as the reader's, and the priority tier answers
+    // sooner. Neither can be judged from here, so both can be changed
+    // without a deploy. The call is a few hundred tokens, so priority
+    // pricing on it is a fraction of a paisa.
+    model: process.env.OPENAI_TAG_BOX_MODEL || undefined,
+    serviceTier: process.env.OPENAI_TAG_BOX_SERVICE_TIER || 'priority',
   });
 
   if (!parsedData || parsedData.found === false) {
