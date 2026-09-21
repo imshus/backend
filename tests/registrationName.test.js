@@ -67,7 +67,10 @@ stub('../repositories/otp.repository', {
 stub('./auth.service', {
   generateTokens: () => ({ accessToken: 'access', refreshToken: 'refresh' }),
 });
-stub('./license.service', { ensureLicense: async () => ({}) });
+stub('./license.service', {
+  ensureLicense: async () => ({}),
+  startTrialWithCredits: async () => ({ started: true }),
+});
 stub('./wallet.service', { ensureWallet: async () => ({}) });
 stub('./referral.service', {
   applyReferralCode: async () => ({}),

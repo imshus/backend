@@ -104,18 +104,9 @@ async function startTrial(req, res, next) {
     const businessId = req.user.businessId;
     const actorUserId = req.user.userId;
 
-    const result = await licenseService.startTrialLicense(businessId, actorUserId);
-    if (result.started && result.trialCreditsToGrant > 0) {
-      await creditService.grantTrialCredits({
-        businessId,
-        actionByUserId: actorUserId,
-        credits: result.trialCreditsToGrant,
-        metadata: {
-          licenseStatus: result.license.licenseStatus,
-          reason: 'TRIAL_START',
-        },
-      });
-    }
+    // The same start a new registration gets, for the accounts from before
+    // trials began on their own.
+    const result = await licenseService.startTrialWithCredits(businessId, actorUserId);
 
     const wallet = await walletService.ensureWallet(businessId);
 

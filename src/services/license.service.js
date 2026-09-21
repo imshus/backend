@@ -2,6 +2,7 @@ const OrganizationLicense = require('../models/organizationLicense.model');
 const BusinessUser = require('../models/businessUser.model');
 const billingConfigService = require('./billingConfig.service');
 const walletService = require('./wallet.service');
+const creditService = require('./credit.service');
 const referralService = require('./referral.service');
 
 /**
@@ -247,6 +248,28 @@ async function startTrialLicense(businessId, actorUserId) {
   };
 }
 
+/**
+ * The trial and its credits, together: a shop "on its trial" is both, and
+ * no path should be able to do one without the other. Answers exactly what
+ * startTrialLicense does, so a caller can tell a fresh start from a licence
+ * that was already past that point.
+ */
+async function startTrialWithCredits(businessId, actorUserId) {
+  const result = await startTrialLicense(businessId, actorUserId);
+  if (result.started && result.trialCreditsToGrant > 0) {
+    await creditService.grantTrialCredits({
+      businessId,
+      actionByUserId: actorUserId,
+      credits: result.trialCreditsToGrant,
+      metadata: {
+        licenseStatus: result.license.licenseStatus,
+        reason: 'TRIAL_START',
+      },
+    });
+  }
+  return result;
+}
+
 async function activatePermanentLicense({
   businessId,
   actorUserId,
@@ -305,5 +328,6 @@ module.exports = {
   canRechargeCredits,
   canAccessPaymentHistory,
   startTrialLicense,
+  startTrialWithCredits,
   activatePermanentLicense,
 };

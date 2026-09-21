@@ -275,6 +275,10 @@ const createPassword = async (businessId, password, userId, fullName, referralCo
 
     await licenseService.ensureLicense(business._id);
     await walletService.ensureWallet(business._id);
+    // A new shop is on its trial from this moment, credits included. It used
+    // to open on a Start Free Trial button and a popup; the shop's rule is
+    // that a new user simply starts, with nothing to tap or dismiss.
+    await licenseService.startTrialWithCredits(business._id, newUsers[0]?._id ?? null);
 
     // await session.commitTransaction();
     // session.endSession();
