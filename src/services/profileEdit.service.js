@@ -42,7 +42,9 @@ const tenDigits = (value) => String(value || '').replace(/\D/g, '').slice(-10);
  * it can be logged or kept.
  */
 const startProfileEdit = async ({ businessId, userId }, mpin) => {
-  const user = await BusinessUser.findById(userId).select('+mpinVault');
+  // Projection as an argument, not a chained .select(): the same query, and
+  // it does not assume a query object where the test fakes return a promise.
+  const user = await BusinessUser.findById(userId, '+mpinVault');
   if (!user || !user.isActive) throw new Error('UNAUTHORIZED');
   if (!user.mpinHash) throw new Error('MPIN_NOT_SET');
   if (!(await bcrypt.compare(String(mpin || ''), user.mpinHash))) {
