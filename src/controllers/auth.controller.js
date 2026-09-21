@@ -75,6 +75,13 @@ const checkAvailability = async (req, res, next) => {
     sendSuccess(res, {
       phoneTaken: Boolean(phoneUser),
       userIdTaken: Boolean(userIdUser),
+      // Whether that account has an MPIN yet. The login screen reads this to
+      // offer "Create MPIN" instead of "Forgot MPIN?" to an account from
+      // before MPINs existed — most of the accounts in the database — which
+      // has nothing to have forgotten. The document is already loaded here,
+      // and this route is already rate-limited per number, so the answer
+      // costs nothing new and reveals nothing new.
+      phoneHasMpin: Boolean(phoneUser?.mpinHash),
     });
   } catch (err) {
     next(err);
