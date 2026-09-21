@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Environment variables. The live one holds the Mongo URI, the JWT secrets,
+# MSG91, Razorpay and the MPIN vault key — it must never be committed. The
+# paths that used to protect it lived in the monorepo's root ignore file and
+# did not travel with the code, so they are restated here.
+.env
+.env.local
+.env.*.local
+*.env
+.env.bak*
+!.env.example
+
+# Runtime uploads: tag photographs written by the scanner, not source.
+src/uploads/*
+!src/uploads/.gitkeep
+
+# Backups of the live PDFMonkey template, written by scripts/pushInvoiceTemplate.js
+templates/backups/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
