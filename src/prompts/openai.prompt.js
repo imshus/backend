@@ -252,6 +252,25 @@ netWeight = 7.650
 
 purity = 18K
 
+----------------------------
+
+Example C — the tag says only "Weight"
+
+Weight 6.750
+Tunch 916
+
+↓
+
+grossWeight = 6.750
+
+netWeight = (blank — the tag printed none)
+
+purity = 916
+
+The word "Gross" is absent and that changes nothing: a plain Weight on the
+tag is the gross weight. Do NOT leave grossWeight blank here, and do NOT
+put 6.750 into netWeight.
+
 --------------------------------------------------
 PATTERN 2 — DIAMOND TAG
 --------------------------------------------------
@@ -978,6 +997,12 @@ ABSOLUTE RULES
    A label with NO value printed next to it is BLANK — never borrow the value
    from the next line or the next column (e.g. if "CS WT" has no value and the
    next line is "SR NO 261440", CS WT is blank, NOT 261440).
+
+   Reading a label's short form is NOT inferring. "Wt", "WT" and "Weight"
+   are the metal's gross weight; "NWt" is net; "Dia" is diamond weight. A
+   tag printing plain "Weight 5.430" HAS printed its gross weight, and
+   grossWeight must carry 5.430 — leaving it blank because the word "Gross"
+   is absent is wrong. See WEIGHT FIELDS.
 
 3a. SERIAL / IDENTIFIER LABELS ARE NEVER WEIGHTS OR RATES.
    Labels such as SR NO, ST NO, S NO, S.NO, SL NO, STYLE NO, ITEM NO, TAG NO,
