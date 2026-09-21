@@ -732,9 +732,19 @@ const isOptionalParamRejection = (error) => {
  */
 const callModel = async (
   messages,
-  { label, businessId, maxCompletionTokens = READ_MAX_COMPLETION_TOKENS, timeoutMs },
+  {
+    label,
+    businessId,
+    maxCompletionTokens = READ_MAX_COMPLETION_TOKENS,
+    timeoutMs,
+    // A call may ask for less thinking than the deployment default. The
+    // reads keep the default; a job that only has to point at something
+    // should not pay for a reasoning pass it does not use.
+    reasoningEffort: reasoningEffortOverride,
+  },
 ) => {
-  const { model, serviceTier, reasoningEffort } = resolveModelSettings();
+  const { model, serviceTier, reasoningEffort: defaultEffort } = resolveModelSettings();
+  const reasoningEffort = reasoningEffortOverride || defaultEffort;
   const requestOptions = {
     model,
     messages,
@@ -1252,6 +1262,10 @@ const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_00
     businessId,
     maxCompletionTokens: TAG_BOX_MAX_COMPLETION_TOKENS,
     timeoutMs,
+    // Locating a white card is not a reasoning task, and this call sits in
+    // front of every capture. It ran at the deployment's default effort —
+    // the reader's — which was most of a wait the shop called huge.
+    reasoningEffort: 'minimal',
   });
 
   if (!parsedData || parsedData.found === false) {
