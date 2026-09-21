@@ -56,7 +56,15 @@ async function getOverview(req, res, next) {
       scannerEnabled,
       rechargeEnabled,
       paymentHistoryEnabled,
-      trialDays: license.trialDays,
+      // A trial that has not started has no length of its own yet: what it
+      // will get is the configured one. The licence document's figure was
+      // written when the document was, so an account created under the old
+      // ten-day default still carried 10 here and the app said "10 days
+      // free" against a seven-day rule. Once started, the document's figure
+      // is what was actually granted and stands.
+      trialDays: license.licenseStatus === 'NO_LICENSE'
+        ? Number(cfg.trialDays || 7)
+        : license.trialDays,
       trialCredits: license.trialCredits,
       trialStartDate: license.trialStartDate,
       trialEndDate: license.trialEndDate,
@@ -82,7 +90,7 @@ async function getOverview(req, res, next) {
       applicationPrice: Number(cfg.applicationPrice || 12000),
       freeTrialCreditsConfigured: Number(cfg.freeTrialCredits || 100),
       purchasedBonusCreditsConfigured: Number(cfg.purchasedBonusCredits || 1000),
-      trialDaysConfigured: Number(cfg.trialDays || 10),
+      trialDaysConfigured: Number(cfg.trialDays || 7),
       lastScanCost: walletEnabled ? (wallet.lastScanCost || 0) : 0,
       lastScanAt: walletEnabled ? wallet.lastScanAt : null,
     });
