@@ -1205,14 +1205,26 @@ const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs 
   }
 };
 
+// The rectangle asked for is the WHOLE white card, edge to edge, not the
+// extent of its text. A card's edges are a far clearer thing to see than
+// where the printing stops, and they come with the card's own unprinted
+// border as margin — which matters, because a model places a box roughly,
+// and "the smallest rectangle containing the text" cut off the top line of
+// the shop's first tag. Better a little bag and background around the card
+// than a line of it missing.
 const TAG_BOX_SYSTEM_PROMPT =
-  'You locate the printed jewellery tag or label in a photograph. The tag is the small printed card or ' +
-  'sticker carrying weights and codes (GR WT, NET WT, DIA WT, SR NO and the like). Answer only with JSON ' +
-  '{"x":0.0,"y":0.0,"width":0.0,"height":0.0,"found":true} where the numbers are fractions of the image ' +
-  'width and height: x and y are the top-left corner of the smallest rectangle containing all of the ' +
-  'printed text, width and height its size. The tag may be lying at any angle, upside down or sideways: ' +
-  'find it either way, and still measure the rectangle against the edges of the photograph. When no ' +
-  'printed tag is visible answer {"found":false}.';
+  'You locate the jewellery price tag in a photograph. It is a small white paper card or sticker, ' +
+  'usually 2-4 cm across, printed with weights and codes such as GR WT, NET WT, DIA WT, CS WT, SR NO, ' +
+  'ST NO, sometimes with a barcode or QR code. It is often tied to a ring, held in fingers, or sealed ' +
+  'inside a clear plastic bag with glare across it; it may be small in the photograph, and may lie at any ' +
+  'angle, sideways or upside down. Answer only with JSON ' +
+  '{"x":0.0,"y":0.0,"width":0.0,"height":0.0,"found":true}, the numbers being fractions of the image ' +
+  'width and height. The rectangle is the WHOLE white card, from its top edge to its bottom edge and ' +
+  'its left edge to its right edge, including the unprinted border around the text — not the text alone. ' +
+  'Every printed line on the card, the first and the last included, must fall inside the rectangle; when ' +
+  'unsure of an edge, place it further out, never further in. Measure the rectangle against the edges of ' +
+  'the photograph however the card is turned. Do not box the plastic bag, the ring, the hand or the ' +
+  'background. When no such card is visible answer {"found":false}.';
 
 const TAG_BOX_MAX_COMPLETION_TOKENS = 600;
 
