@@ -144,7 +144,16 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const businessCashChange = taxSettings.cashChangeBy || 0;
 
   const mcxFinalRate = mcxLiveRate + businessMcxChange;
-  const rtgsFinalRate = mcxFinalRate + supremeRtgsChange + businessRtgsChange;
+  // RTGS in its two forms: Rate 2, without tax, is the plain sum; Rate 1
+  // carries the shop's tax percent on top. The one the shop selected is the
+  // RTGS rate everything downstream prices on.
+  const rtgsPlainFinalRate = mcxFinalRate + supremeRtgsChange + businessRtgsChange;
+  const rtgsTaxPercent = Number.isFinite(Number(taxSettings.rtgsTaxPercent))
+    ? Number(taxSettings.rtgsTaxPercent)
+    : 3;
+  const rtgsTaxedFinalRate = Math.round(rtgsPlainFinalRate * (1 + rtgsTaxPercent / 100));
+  const rtgsVariant = taxSettings.rtgsVariant === 'taxed' ? 'taxed' : 'plain';
+  const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsTaxedFinalRate : rtgsPlainFinalRate;
   const cashFinalRate = mcxFinalRate + supremeCashChange + businessCashChange;
 
   // 5. Determine Base Rate for Karat Calculations
@@ -245,6 +254,10 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       rtgsChangeBy: businessRtgsChange,
       cashChangeBy: businessCashChange,
       scannerCalculationUse: taxSettings.scannerCalculationUse,
+      rtgsTaxPercent,
+      rtgsVariant,
+      rtgsPlainFinalRate,
+      rtgsTaxedFinalRate,
       rtgsFinalRate,
       cashFinalRate
     },

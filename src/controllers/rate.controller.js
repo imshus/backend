@@ -242,7 +242,7 @@ const getGoldTaxSettings = async (req, res) => {
 
 const updateGoldTaxSettings = async (req, res) => {
   try {
-    const { rtgsChangeBy, cashChangeBy, scannerCalculationUse, mcxChange } = req.body;
+    const { rtgsChangeBy, cashChangeBy, scannerCalculationUse, mcxChange, rtgsTaxPercent, rtgsVariant } = req.body;
     const businessId = req.user.businessId;
 
     const updateData = {};
@@ -257,6 +257,11 @@ const updateGoldTaxSettings = async (req, res) => {
     if (rtgsChangeBy !== undefined) updateData.rtgsChangeBy = rtgsChangeBy;
     if (cashChangeBy !== undefined) updateData.cashChangeBy = cashChangeBy;
     if (scannerCalculationUse) updateData.scannerCalculationUse = scannerCalculationUse === 'cash' ? 'cash' : 'rtgs';
+    if (rtgsTaxPercent !== undefined) {
+      const percent = Number(rtgsTaxPercent);
+      updateData.rtgsTaxPercent = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 3;
+    }
+    if (rtgsVariant !== undefined) updateData.rtgsVariant = rtgsVariant === 'taxed' ? 'taxed' : 'plain';
 
     // The owner writes the shop's adjustments; an employee writes their own.
     const taxSettings = await upsertScopedSetting(GoldTaxSetting, settingsScope(req.user), updateData);
