@@ -171,8 +171,9 @@ function buildInv01(payload, business) {
       SlNo: String(index + 1),
       PrdDesc: String(item.description || 'Jewellery').slice(0, 300),
       IsServc: 'N',
-      // 7113: articles of jewellery — the default when a line carries none.
-      HsnCd: String(item.hsn || '7113').replace(/\D/g, '') || '7113',
+      // 71131913: articles of jewellery, gold and diamond — the default when
+      // a line carries none, and what every line the app sends carries.
+      HsnCd: String(item.hsn || '71131913').replace(/\D/g, '') || '71131913',
       Qty: Number(item.qty) || 1,
       Unit: String(item.unit || 'NOS').toUpperCase().slice(0, 8) || 'NOS',
       UnitPrice: toTwo(item.price),

@@ -316,7 +316,8 @@ const buildInvoicePayload = (body, context) => {
           sn: index + 1,
           description: item.description ?? '',
           note: item.note ?? '',
-          hsn: item.hsn ?? '',
+          // Articles of jewellery — gold of every karat and diamond alike.
+          hsn: String(item.hsn ?? '').trim() || '71131913',
           qty: Number(item.qty) || 0,
           qty_unit: item.qty_unit ?? item.qtyUnit ?? '',
           net_weight: Number(item.net_weight) || 0,

@@ -125,8 +125,10 @@ test('the INV-01 document mirrors the printed invoice exactly', () => {
 
   assert.equal(doc.ItemList.length, 2);
   const [ring, chain] = doc.ItemList;
+  // A line's own HSN passes through; a line without one takes the
+  // jewellery code, 71131913.
   assert.equal(ring.HsnCd, '7113');
-  assert.equal(chain.HsnCd, '7113');
+  assert.equal(chain.HsnCd, '71131913');
   assert.equal(ring.Unit, 'PCS');
   assert.equal(chain.Unit, 'NOS');
   // The tax splits proportionally over the two lines: 60/40.
