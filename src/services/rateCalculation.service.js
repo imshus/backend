@@ -188,8 +188,12 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   }
 
   // 7. Calculate Final Live Rates for Each Row
+  // The MCX 24K rate counts as 100%: a row's rate is its purity as a
+  // fraction of that — 92% purity is 0.92 of the MCX rate — at the shop's
+  // asking. It was a fraction of 99.9 before, which priced every karat a
+  // touch above the shop's own arithmetic.
   const computedKaratRates = karatRows.map(row => {
-    const basePurityRate = baseRate * (row.purity / 99.9);
+    const basePurityRate = baseRate * (row.purity / 100);
     let finalRate = basePurityRate;
 
     if (row.increaseByAmount && !isNaN(row.increaseByAmount)) {
@@ -201,9 +205,9 @@ const getLiveGoldRates = async (businessId, scope = null) => {
     }
 
     // Compute all three rates explicitly for the UI dashboard
-    const mcxRate = Math.round(mcxFinalRate * (row.purity / 99.9));
-    const cashRate = Math.round(cashFinalRate * (row.purity / 99.9));
-    const rtgsRate = Math.round(rtgsFinalRate * (row.purity / 99.9));
+    const mcxRate = Math.round(mcxFinalRate * (row.purity / 100));
+    const cashRate = Math.round(cashFinalRate * (row.purity / 100));
+    const rtgsRate = Math.round(rtgsFinalRate * (row.purity / 100));
 
     return {
       _id: row._id,
