@@ -1247,12 +1247,15 @@ const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs 
 };
 
 // The rectangle asked for is the WHOLE white card, edge to edge, not the
-// extent of its text. A card's edges are a far clearer thing to see than
-// where the printing stops, and they come with the card's own unprinted
-// border as margin — which matters, because a model places a box roughly,
-// and "the smallest rectangle containing the text" cut off the top line of
-// the shop's first tag. Better a little bag and background around the card
-// than a line of it missing.
+/// The rectangle the finder answers with is the tag's WRITTEN block — the
+// printed or handwritten details — not the whole sheet. It was the whole
+// card for a while, because a card's edges are easier to place than where
+// the writing stops and the card's own border made a margin; but a tag's
+// writing often sits at the top of a long white slip, and boxing the slip
+// gave the reader a crop that was mostly blank paper. The app widens the
+// box by a sixth of itself on every side before cutting, which is what
+// keeps the first and last lines in when the model's edge lands a little
+// inside them.
 const TAG_BOX_SYSTEM_PROMPT =
   'You locate the jewellery price tag in a photograph. It is a small white paper card or sticker, ' +
   'usually 2-4 cm across, printed with weights and codes such as GR WT, NET WT, DIA WT, CS WT, SR NO, ' +
@@ -1260,12 +1263,15 @@ const TAG_BOX_SYSTEM_PROMPT =
   'inside a clear plastic bag with glare across it; it may be small in the photograph, and may lie at any ' +
   'angle, sideways or upside down. Answer only with JSON ' +
   '{"x":0.0,"y":0.0,"width":0.0,"height":0.0,"found":true}, the numbers being fractions of the image ' +
-  'width and height. The rectangle is the WHOLE white card, from its top edge to its bottom edge and ' +
-  'its left edge to its right edge, including the unprinted border around the text — not the text alone. ' +
-  'Every printed line on the card, the first and the last included, must fall inside the rectangle; when ' +
-  'unsure of an edge, place it further out, never further in. Measure the rectangle against the edges of ' +
-  'the photograph however the card is turned. Do not box the plastic bag, the ring, the hand or the ' +
-  'background. When no such card is visible answer {"found":false}.';
+  'width and height. The rectangle is the WRITTEN AREA of the tag: the block of printed or handwritten ' +
+  'details — weights, codes, karat — from the top of its first line to the bottom of its last line, and ' +
+  'from its leftmost character to its rightmost, with a small margin of white from the card around it. ' +
+  'Do NOT box the whole sheet or card when it is much larger than the writing: the writing often sits at ' +
+  'the top of a long white slip, and the blank paper below it must be left out. Every written line, the ' +
+  'first and the last included, must fall inside the rectangle; when unsure of an edge, place it a little ' +
+  'further out, never further in. Measure the rectangle against the edges of the photograph however the ' +
+  'card is turned. Do not box the plastic bag, the ring, the hand or the background. When no such tag is ' +
+  'visible answer {"found":false}.';
 
 const TAG_BOX_MAX_COMPLETION_TOKENS = 600;
 
