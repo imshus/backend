@@ -485,11 +485,18 @@ const repairCompactGradeTokens = (parsedData, diamondCustoms) => {
  * Weight identity check. A jewellery tag's net weight is its gross weight
  * minus the stones at 0.2 g per carat, so gross - net fixes the total stone
  * carats. When the stone weights read contradict that total while a
- * digit-level variant of exactly one of them (a dropped leading digit, a
- * shifted decimal point) makes the total fit, that variant is taken and the
- * field marked for review. Readings that already fit, or a tag without both
- * weights, are never touched. This is arithmetic the tag provides, not a
- * rule about any particular tag.
+ * digit-level variant of exactly one of them (a spurious leading digit, or
+ * a decimal point the read lost) makes the total fit, that variant is taken
+ * and the field marked for review. Readings that already fit, or a tag
+ * without both weights, are never touched. This is arithmetic the tag
+ * provides, not a rule about any particular tag.
+ *
+ * The repairs only ever make a reading smaller. A read is never scaled up:
+ * a shop's tag printed G.Wt 12.00, N.Wt 8.00, D.Wt 2.00 — its own arithmetic
+ * does not follow 0.2 g a carat — and the diamond the model read correctly
+ * as 2.00 reached the screen as 20. The identity is the tag's convention,
+ * not a fact about every tag; a clean reading outranks it, and a tag that
+ * does not close is flagged, never rewritten upward.
  */
 const parseWeightNumber = (field) => {
   const text = String(field?.value ?? '').replace(/[^0-9.]/g, '');
@@ -505,13 +512,16 @@ const weightVariants = (raw) => {
   const out = new Set();
   const [intPart = '', fracPart = ''] = text.split('.');
   if (intPart.length >= 1 && (intPart.length > 1 || fracPart)) {
-    out.add(`0.${intPart.slice(1)}${fracPart}`.replace(/^0\.$/, ''));      // dropped leading digit
-    out.add(`${intPart.slice(1) || '0'}.${fracPart}`);                       // dropped leading digit, keep point
+    out.add(`0.${intPart.slice(1)}${fracPart}`.replace(/^0\.$/, ''));      // spurious leading digit
+    out.add(`${intPart.slice(1) || '0'}.${fracPart}`);                       // spurious leading digit, keep point
   }
-  out.add(String(num / 10));
-  out.add(String(num / 100));
-  out.add(String(num * 10));
-  return [...out].map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0);
+  // A decimal point the read lost — "64" for ".64" — puts the point back.
+  // A reading that has its point is not shifted: "2.00" is what the tag says.
+  if (!text.includes('.')) {
+    out.add(String(num / 10));
+    out.add(String(num / 100));
+  }
+  return [...out].map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0 && v < num);
 };
 
 const reconcileStoneWeightsWithGrossNet = (parsedData) => {

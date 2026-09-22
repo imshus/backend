@@ -50,6 +50,30 @@ test('a single stone read with a spurious leading digit is repaired from gross m
   assert.ok(data.structuredData.diamonds[0].weight.confidence <= 75);
 });
 
+test('a clean reading is never scaled up to fit gross minus net', () => {
+  // The shop's tag: G.Wt 12.00, N.Wt 8.00, D.Wt 2.00. Its arithmetic says
+  // 20 ct at 0.2 g a carat; the diamond the model read correctly as 2.00
+  // reached the screen as 20. The reading stands and the group is flagged.
+  const data = parsed('12.00', '8.00', ['2.00']);
+  reconcileStoneWeightsWithGrossNet(data);
+  assert.equal(data.structuredData.diamonds[0].weight.value, '2.00');
+  assert.ok(data.structuredData.diamonds[0].weight.confidence <= 55);
+  assert.ok(data.structuredData.grossWeight.confidence <= 70);
+});
+
+test('a reading that lost its decimal point is put back, one that has it is not shifted', () => {
+  // 8.128 - 8.000 = 0.128 g = 0.64 ct.
+  const lost = parsed('8.128', '8.000', ['64']);
+  reconcileStoneWeightsWithGrossNet(lost);
+  assert.equal(lost.structuredData.diamonds[0].weight.value, '0.64');
+  // 8.400 - 8.000 = 0.4 g = 2.00 ct; a read of 20.0 is not divided down —
+  // it has its point — so it is flagged instead.
+  const kept = parsed('8.400', '8.000', ['20.0']);
+  reconcileStoneWeightsWithGrossNet(kept);
+  assert.equal(kept.structuredData.diamonds[0].weight.value, '20.0');
+  assert.ok(kept.structuredData.diamonds[0].weight.confidence <= 55);
+});
+
 test('a reading that already fits the identity is left alone', () => {
   const data = parsed('8.208', '8.100', ['.54']);
   reconcileStoneWeightsWithGrossNet(data);
