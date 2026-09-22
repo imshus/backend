@@ -259,7 +259,7 @@ const updateGoldTaxSettings = async (req, res) => {
     if (scannerCalculationUse) updateData.scannerCalculationUse = scannerCalculationUse === 'cash' ? 'cash' : 'rtgs';
     if (rtgsTaxPercent !== undefined) {
       const percent = Number(rtgsTaxPercent);
-      updateData.rtgsTaxPercent = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 3;
+      updateData.rtgsTaxPercent = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
     }
     if (rtgsVariant !== undefined) updateData.rtgsVariant = rtgsVariant === 'taxed' ? 'taxed' : 'plain';
 

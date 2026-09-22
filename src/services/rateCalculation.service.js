@@ -1,4 +1,7 @@
 const mcxService = require('./mcx.service');
+
+/** RTGS Rate 1 always carries this GST; the shop cannot change it. */
+const RTGS_RATE_1_TAX_PERCENT = 3;
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const GoldRate = require('../models/goldRate.model');
 const redisService = require('./redis.service');
@@ -144,16 +147,18 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const businessCashChange = taxSettings.cashChangeBy || 0;
 
   const mcxFinalRate = mcxLiveRate + businessMcxChange;
-  // RTGS in its two forms: Rate 2, without tax, is the plain sum; Rate 1
-  // carries the shop's tax percent on top. The one the shop selected is the
-  // RTGS rate everything downstream prices on.
-  const rtgsPlainFinalRate = mcxFinalRate + supremeRtgsChange + businessRtgsChange;
+  // RTGS in its two forms, both off the same base (MCX + bhaw + the shop's
+  // change). Rate 1 carries a fixed 3% GST. Rate 2 carries the percent the
+  // shop entered, none by default. The one the shop selected is the RTGS
+  // rate everything downstream prices on.
+  const rtgsBaseRate = mcxFinalRate + supremeRtgsChange + businessRtgsChange;
+  const rtgsRate1FinalRate = Math.round(rtgsBaseRate * (1 + RTGS_RATE_1_TAX_PERCENT / 100));
   const rtgsTaxPercent = Number.isFinite(Number(taxSettings.rtgsTaxPercent))
     ? Number(taxSettings.rtgsTaxPercent)
-    : 3;
-  const rtgsTaxedFinalRate = Math.round(rtgsPlainFinalRate * (1 + rtgsTaxPercent / 100));
+    : 0;
+  const rtgsRate2FinalRate = Math.round(rtgsBaseRate * (1 + rtgsTaxPercent / 100));
   const rtgsVariant = taxSettings.rtgsVariant === 'taxed' ? 'taxed' : 'plain';
-  const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsTaxedFinalRate : rtgsPlainFinalRate;
+  const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
   const cashFinalRate = mcxFinalRate + supremeCashChange + businessCashChange;
 
   // 5. Determine Base Rate for Karat Calculations
@@ -256,8 +261,8 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       scannerCalculationUse: taxSettings.scannerCalculationUse,
       rtgsTaxPercent,
       rtgsVariant,
-      rtgsPlainFinalRate,
-      rtgsTaxedFinalRate,
+      rtgsRate1FinalRate,
+      rtgsRate2FinalRate,
       rtgsFinalRate,
       cashFinalRate
     },
