@@ -1015,6 +1015,12 @@ ABSOLUTE RULES
    choose in this order: ITEM NO, STYLE NO, DESIGN NO, ST NO, TAG NO, then
    SR NO / S NO / SL NO. Put every other identifier (and HUID) into
    unknownFields as { "label": "SR NO", "value": "261440" }.
+   A tag often prints its item number with NO label at all: a short group
+   of letters followed by a number — "PSE 1086", "GR10286", "LR 2231" —
+   usually on the first line or at the top of the tag. That line IS the
+   item's number: put it into serialNumber exactly as printed, letters,
+   space and digits, whenever no labelled item number is present. It is
+   never a weight, a rate or a karat.
 
 3b. WEIGHTS CROSS-CHECK EACH OTHER.
    Net weight = gross weight - 0.2 g per carat of stones. After reading the
