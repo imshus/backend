@@ -6,10 +6,14 @@ const {
   resolveScopedRowById,
 } = require('../services/userScope.service');
 
-// Default charge names that are always available
+// Default charge names that are always available, in the order the shop
+// asked for: Kundan and Polki first, and HUID spelt as the hallmark scheme
+// spells it. The app carries the same list as its offline fallback.
 const DEFAULT_CHARGES = [
+  'Kundan',
+  'Polki',
   'Hall Marking',
-  'HUIV',
+  'HUID',
   'Certificate',
   'Packing',
   'Insurance',
