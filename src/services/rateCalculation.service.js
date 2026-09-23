@@ -1,7 +1,4 @@
 const mcxService = require('./mcx.service');
-
-/** RTGS Rate 1 always carries this GST; the shop cannot change it. */
-const RTGS_RATE_1_TAX_PERCENT = 3;
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const GoldRate = require('../models/goldRate.model');
 const redisService = require('./redis.service');
@@ -148,11 +145,11 @@ const getLiveGoldRates = async (businessId, scope = null) => {
 
   const mcxFinalRate = mcxLiveRate + businessMcxChange;
   // RTGS in its two forms, both off the same base (MCX + bhaw + the shop's
-  // change). Rate 1 carries a fixed 3% GST. Rate 2 carries the percent the
-  // shop entered, none by default. The one the shop selected is the RTGS
-  // rate everything downstream prices on.
+  // change). Rate 1 is that base as it comes, nothing on it. Rate 2 carries
+  // the percent the shop entered, none by default. The one the shop selected
+  // is the RTGS rate everything downstream prices on.
   const rtgsBaseRate = mcxFinalRate + supremeRtgsChange + businessRtgsChange;
-  const rtgsRate1FinalRate = Math.round(rtgsBaseRate * (1 + RTGS_RATE_1_TAX_PERCENT / 100));
+  const rtgsRate1FinalRate = rtgsBaseRate;
   const rtgsTaxPercent = Number.isFinite(Number(taxSettings.rtgsTaxPercent))
     ? Number(taxSettings.rtgsTaxPercent)
     : 0;

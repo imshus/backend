@@ -41,11 +41,11 @@ const goldTaxSettingSchema = new mongoose.Schema({
     enum: ['rtgs', 'cash'],
     default: 'rtgs'
   },
-  // The shop's RTGS rate comes in two forms. RTGS Rate 1 carries a fixed 3%
-  // GST. RTGS Rate 2 carries whatever percent the shop enters here — none
-  // to begin with, so a shop from before this setting, which is on Rate 2,
-  // prices exactly as it always had. `rtgsVariant` says which one the app
-  // prices on.
+  // The shop's RTGS rate comes in two forms. RTGS Rate 1 is the base as it
+  // comes from MCX, bhaw and the shop's change, nothing on it. RTGS Rate 2
+  // carries whatever percent the shop enters here — none to begin with, so
+  // a shop from before this setting, which is on Rate 2, prices exactly as
+  // it always had. `rtgsVariant` says which one the app prices on.
   rtgsTaxPercent: {
     type: Number,
     default: 0
