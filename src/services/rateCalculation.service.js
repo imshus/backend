@@ -145,15 +145,16 @@ const getLiveGoldRates = async (businessId, scope = null) => {
 
   const mcxFinalRate = mcxLiveRate + businessMcxChange;
   // RTGS in its two forms, both off the same base (MCX + bhaw + the shop's
-  // change). Rate 1 is that base as it comes, nothing on it. Rate 2 carries
-  // the percent the shop entered, none by default. The one the shop selected
-  // is the RTGS rate everything downstream prices on.
+  // change). Rate 1 is that base as it comes, nothing on it. Rate 2 is the
+  // base LESS the percent the shop entered — 1% typed takes 1% off — none
+  // by default. The one the shop selected is the RTGS rate everything
+  // downstream prices on.
   const rtgsBaseRate = mcxFinalRate + supremeRtgsChange + businessRtgsChange;
   const rtgsRate1FinalRate = rtgsBaseRate;
   const rtgsTaxPercent = Number.isFinite(Number(taxSettings.rtgsTaxPercent))
     ? Number(taxSettings.rtgsTaxPercent)
     : 0;
-  const rtgsRate2FinalRate = Math.round(rtgsBaseRate * (1 + rtgsTaxPercent / 100));
+  const rtgsRate2FinalRate = Math.round(rtgsBaseRate * (1 - rtgsTaxPercent / 100));
   const rtgsVariant = taxSettings.rtgsVariant === 'taxed' ? 'taxed' : 'plain';
   const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
   const cashFinalRate = mcxFinalRate + supremeCashChange + businessCashChange;
