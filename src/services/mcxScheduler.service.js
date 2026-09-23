@@ -3,6 +3,7 @@ const redisService = require('./redis.service');
 const MCXFetch = require('../models/mcxFetch.model');
 const SupremeChange = require('../models/supremeChange.model');
 const config = require('../config/env');
+const bhawService = require('./bhaw.service');
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const WEEKDAY_TO_ISO = {
@@ -172,28 +173,45 @@ async function fetchAndStoreMcxRate(options = {}) {
   const phase = options.phase === 'startup' ? 'startup' : 'scheduled';
   const attemptAt = new Date();
   try {
-    const apiKey = process.env.METALS_API_KEY;
-    if (!apiKey) {
-      console.error('[MCX Scheduler] METALS_API_KEY is not defined');
-      return { success: false, reason: 'METALS_API_KEY missing' };
-    }
-
     if (phase === 'startup') {
       console.log(`[MCX Scheduler] Performing startup synchronization at ${formatIstDateTime(attemptAt)}...`);
     } else {
       console.log(`[MCX Scheduler] Trading session active. Fetching MCX rate at ${formatIstDateTime(attemptAt)}...`);
     }
 
-    const url = `https://api.metals.dev/v1/metal/authority?api_key=${apiKey}&authority=mcx&currency=INR&unit=10g`;
-    const response = await axios.get(url, { timeout: 10000 });
-    const data = response.data;
-
-    if (!(data && data.status === 'success' && data.rates && data.rates.mcx_gold)) {
-      console.error('[MCX Scheduler] Invalid response format from Metals API:', data);
-      return { success: false, reason: 'Invalid response format from Metals API' };
+    // metals.dev first. When it gives nothing — no key, a refused key, a
+    // spent plan, an odd answer — the board's own "Gold Future MCX" stands
+    // in: the figure the app's Home card prints, so the rate table and Home
+    // can never drift apart. metals.dev stopped answering on 21 Sep and the
+    // table sat on that morning's rate for two days while Home moved.
+    let liveRate = null;
+    let source = 'metals.dev';
+    const apiKey = process.env.METALS_API_KEY;
+    if (!apiKey) {
+      console.error('[MCX Scheduler] METALS_API_KEY is not defined');
+    } else {
+      try {
+        const url = `https://api.metals.dev/v1/metal/authority?api_key=${apiKey}&authority=mcx&currency=INR&unit=10g`;
+        const response = await axios.get(url, { timeout: 10000 });
+        const data = response.data;
+        if (data && data.status === 'success' && data.rates && data.rates.mcx_gold) {
+          liveRate = Math.round(data.rates.mcx_gold);
+        } else {
+          console.error('[MCX Scheduler] Invalid response format from Metals API:', data);
+        }
+      } catch (error) {
+        logMetalsFailure(error, phase, attemptAt);
+      }
     }
-
-    const liveRate = Math.round(data.rates.mcx_gold);
+    if (liveRate === null) {
+      const board = await bhawService.boardMcxSell();
+      if (board === null) {
+        return { success: false, reason: 'metals.dev gave no rate and the board has no MCX line' };
+      }
+      liveRate = board;
+      source = 'board';
+      console.warn(`[MCX Scheduler] metals.dev gave no rate; using the board's Gold Future MCX: INR ${liveRate}`);
+    }
     const oldSnapshot = await redisService.getMcxCacheSnapshot();
     const oldRate = oldSnapshot?.rate ?? null;
 
@@ -203,7 +221,7 @@ async function fetchAndStoreMcxRate(options = {}) {
       rate: liveRate,
       timestamp: fetchedAt.toISOString(),
       lastSuccessfulFetchTime: fetchedAt.toISOString(),
-      source: 'metals.dev',
+      source,
       currency: 'INR',
       date: `${fetchedIst.year}-${String(fetchedIst.month).padStart(2, '0')}-${String(fetchedIst.day).padStart(2, '0')}`,
     };
@@ -260,29 +278,34 @@ async function fetchAndStoreMcxRate(options = {}) {
     return { success: true, liveRate };
   } catch (error) {
     const context = phase === 'startup' ? 'Startup synchronization failed' : 'Fetch failed';
-    // metals.dev refuses a request with a body that says why: the plan does not
-    // cover this endpoint, the month's requests are spent, a parameter is no
-    // longer accepted. Logging error.message alone made every one of those read
-    // the same — "Request failed with status code 400" — and left the reason in
-    // the response that was thrown away.
-    //
-    // The status and body only. Never error.config.url: the API key travels in
-    // the query string, and a log is not the place for it.
-    const status = error.response?.status ?? null;
-    const raw = error.response?.data;
-    const body = raw === undefined || raw === null
-      ? ''
-      : String(typeof raw === 'string' ? raw : JSON.stringify(raw)).slice(0, 500);
-
-    console.error(
-      `[MCX Scheduler] ${context} at ${formatIstDateTime(attemptAt)}:`,
-      error.message,
-      status ? `| HTTP ${status}` : '',
-      body ? `| metals.dev said: ${body}` : '| no response body',
-    );
-
-    return { success: false, reason: error.message, status, body };
+    console.error(`[MCX Scheduler] ${context} at ${formatIstDateTime(attemptAt)}:`, error.message);
+    return { success: false, reason: error.message };
   }
+}
+
+/**
+ * metals.dev refuses a request with a body that says why: the plan does not
+ * cover this endpoint, the month's requests are spent, a parameter is no
+ * longer accepted. Logging error.message alone made every one of those read
+ * the same — "Request failed with status code 400" — and left the reason in
+ * the response that was thrown away.
+ *
+ * The status and body only. Never error.config.url: the API key travels in
+ * the query string, and a log is not the place for it.
+ */
+function logMetalsFailure(error, phase, attemptAt) {
+  const context = phase === 'startup' ? 'Startup synchronization failed' : 'Fetch failed';
+  const status = error.response?.status ?? null;
+  const raw = error.response?.data;
+  const body = raw === undefined || raw === null
+    ? ''
+    : String(typeof raw === 'string' ? raw : JSON.stringify(raw)).slice(0, 500);
+  console.error(
+    `[MCX Scheduler] ${context} at ${formatIstDateTime(attemptAt)}:`,
+    error.message,
+    status ? `| HTTP ${status}` : '',
+    body ? `| metals.dev said: ${body}` : '| no response body',
+  );
 }
 
 function scheduleNextFetch(reason) {

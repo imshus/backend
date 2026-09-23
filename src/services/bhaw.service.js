@@ -76,6 +76,25 @@ const getBhawForSource = async (source) => {
 /** Back-compat helper used before both vendors were served from this feed. */
 const getJmdBhaw = () => getBhawForSource(SOURCES.JMD_PATIL);
 
+/**
+ * The board's own "Gold Future MCX" sell — the very figure the app's Home
+ * card prints. Every house on the feed carries the same MCX line, so the
+ * first one that has it speaks for the market. Null when none has published
+ * it. Never throws.
+ */
+const boardMcxSell = async () => {
+  const rows = await fetchRows();
+  if (!rows) return null;
+  for (const vendor of rows) {
+    const row = (Array.isArray(vendor?.rows) ? vendor.rows : []).find((entry) =>
+      /gold\s*future\s*mcx/i.test(String(entry?.label || '')),
+    );
+    const sell = Number(String(row?.sell ?? '').replace(/[^0-9.]/g, ''));
+    if (Number.isFinite(sell) && sell > 0) return Math.round(sell);
+  }
+  return null;
+};
+
 /** Fetch the feed now, or hand back the fresh cache. Never throws. */
 const prefetch = () => fetchRows().catch(() => null);
 
@@ -96,4 +115,4 @@ const startKeepWarm = () => {
   return timer;
 };
 
-module.exports = { SOURCES, getBhawForSource, getJmdBhaw, prefetch, startKeepWarm };
+module.exports = { SOURCES, getBhawForSource, getJmdBhaw, boardMcxSell, prefetch, startKeepWarm };
