@@ -311,6 +311,17 @@ const refreshToken = async (req, res, next) => {
   }
 };
 
+const deleteAccount = async (req, res, next) => {
+  try {
+    const { businessId, userId, role } = req.user || {};
+    const accountDeletionService = require('../services/accountDeletion.service');
+    const result = await accountDeletionService.deleteAccount({ businessId, userId, role });
+    sendSuccess(res, result);
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   checkAvailability,
   verifyGst,
@@ -334,4 +345,5 @@ module.exports = {
   getEmployeePermissions,
   changePassword,
   refreshToken,
+  deleteAccount,
 };

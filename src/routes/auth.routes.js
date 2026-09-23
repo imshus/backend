@@ -64,5 +64,6 @@ router.post('/employee/login', validate(employeeLoginSchema), authController.log
 router.get('/employee/permissions', authenticateJWT, authController.getEmployeePermissions);
 router.post('/change-password', authenticateJWT, validate(changePasswordSchema), authController.changePassword);
 router.post('/refresh', authController.refreshToken);
+router.delete('/account', authenticateJWT, authController.deleteAccount);
 
 module.exports = router;
