@@ -1246,8 +1246,7 @@ const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs 
   }
 };
 
-// The rectangle asked for is the WHOLE white card, edge to edge, not the
-/// The rectangle the finder answers with is the tag's WRITTEN block — the
+// The rectangle the finder answers with is the tag's WRITTEN block — the
 // printed or handwritten details — not the whole sheet. It was the whole
 // card for a while, because a card's edges are easier to place than where
 // the writing stops and the card's own border made a margin; but a tag's
@@ -1291,11 +1290,11 @@ const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_00
         { type: 'text', text: 'Where is the printed tag in this photograph?' },
         {
           type: 'image_url',
-          // A 512px look is plenty to place a white card, and a fraction of
-          // the tokens of the tiled look the reads need for digits; the app
-          // widens the box by a sixth of itself before cutting, which covers
-          // the coarser edge.
-          image_url: { url: `data:image/jpeg;base64,${base64Image}`, detail: 'low' },
+          // The detailed look, not the 512px thumbnail: in a gallery photo the
+          // tag is often small, a few dozen pixels across at 512, and the box
+          // came back on the fingers holding it or not at all. The written
+          // block is a finer target than the whole card, and needs the pixels.
+          image_url: { url: `data:image/jpeg;base64,${base64Image}`, detail: 'high' },
         },
       ],
     },
