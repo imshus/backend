@@ -219,7 +219,7 @@
                 {% comment %} The labour line carries its figure in the Amount column alone: no amount echoed under its name, no quantity of 1.000. {% endcomment %}
                 {% if item.note != blank and item.description != "Labour Charge" %}<div class="sm" style="padding-left: 12px;">{{ item.note | escape }}</div>{% endif %}
               </td>
-              <td class="c">{{ item.hsn | escape }}</td>
+              <td class="c">{% if item.description != "Labour Charge" %}{{ item.hsn | escape }}{% endif %}</td>
               <td class="r nowrap">{% if item.description != "Labour Charge" %}{{ item.qty_display }}{% endif %}</td>
               <td class="c nowrap">{% if item.description != "Labour Charge" %}{{ item.unit_display }}{% endif %}</td>
               <td class="r nowrap">{{ item.price_display }}</td>

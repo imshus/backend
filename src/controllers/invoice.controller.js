@@ -317,7 +317,10 @@ const buildInvoicePayload = (body, context) => {
           description: item.description ?? '',
           note: item.note ?? '',
           // Articles of jewellery — gold of every karat and diamond alike.
-          hsn: String(item.hsn ?? '').trim() || '71131913',
+          // The labour line is a charge, not goods, and prints no HSN code.
+          hsn: item.description === 'Labour Charge'
+            ? ''
+            : String(item.hsn ?? '').trim() || '71131913',
           qty: Number(item.qty) || 0,
           qty_unit: item.qty_unit ?? item.qtyUnit ?? '',
           net_weight: Number(item.net_weight) || 0,
