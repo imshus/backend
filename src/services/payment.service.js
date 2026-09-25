@@ -12,6 +12,13 @@ const razorpayService = require('./razorpay.service');
 const { getStatsKeys } = require('./statistics.service');
 const config = require('../config/env');
 
+/**
+ * GST charged on top of the licence price (cfg.applicationPrice, the price
+ * the card shows next to "Plus GST (18%)"). The licence only: credit
+ * recharges are charged as before.
+ */
+const APPLICATION_GST_PERCENT = 18;
+
 function toTwo(value) {
   return Number(Number(value || 0).toFixed(2));
 }
@@ -46,10 +53,19 @@ async function createOrderForApplicationPurchase({ businessId, userId }) {
     throw new Error('APPLICATION_ALREADY_PURCHASED');
   }
 
-  const amount = toTwo(cfg.applicationPrice);
-  if (amount <= 0) {
+  // The licence price plus GST, worked in whole paise so base + GST always
+  // equals the charge exactly: 12,000 + 18% = 14,160. Verification and the
+  // webhook compare against the stored amountInPaise, so orders made before
+  // GST was added still verify at the price they were made for.
+  const basePaise = toPaise(cfg.applicationPrice);
+  if (!(basePaise > 0)) {
     throw new Error('INVALID_APPLICATION_PRICE');
   }
+  const gstPaise = Math.round((basePaise * APPLICATION_GST_PERCENT) / 100);
+  const amountInPaise = basePaise + gstPaise;
+  const baseAmount = basePaise / 100;
+  const gstAmount = gstPaise / 100;
+  const amount = amountInPaise / 100;
 
   const receipt = buildReceipt('APPLICATION_PURCHASE', businessId);
 
@@ -58,15 +74,20 @@ async function createOrderForApplicationPurchase({ businessId, userId }) {
     userId: String(userId),
     paymentType: 'APPLICATION_PURCHASE',
     amount,
+    baseAmount,
+    gstAmount,
   });
 
   const order = await razorpayService.createOrder({
-    amountInPaise: toPaise(amount),
+    amountInPaise,
     receipt,
     notes: {
       paymentType: 'APPLICATION_PURCHASE',
       businessId: String(businessId),
       initiatedByUserId: String(userId),
+      baseAmount: String(baseAmount),
+      gstAmount: String(gstAmount),
+      gstPercent: String(APPLICATION_GST_PERCENT),
     },
   });
 
@@ -76,6 +97,8 @@ async function createOrderForApplicationPurchase({ businessId, userId }) {
     paymentType: 'APPLICATION_PURCHASE',
     orderId: order.id,
     amount,
+    baseAmount,
+    gstAmount,
   });
 
   await PaymentTransaction.create({
@@ -85,9 +108,9 @@ async function createOrderForApplicationPurchase({ businessId, userId }) {
     orderId: order.id,
     receipt,
     amount,
-    baseAmount: amount,
-    gstAmount: 0,
-    amountInPaise: toPaise(amount),
+    baseAmount,
+    gstAmount,
+    amountInPaise,
     currency: order.currency || 'INR',
     status: 'ORDER_CREATED',
     idempotencyKey: `${order.id}:APPLICATION_PURCHASE`,
@@ -96,7 +119,10 @@ async function createOrderForApplicationPurchase({ businessId, userId }) {
   return {
     orderId: order.id,
     amount,
-    amountInPaise: toPaise(amount),
+    amountInPaise,
+    baseAmount,
+    gstAmount,
+    gstPercent: APPLICATION_GST_PERCENT,
     currency: order.currency || 'INR',
     keyId: cfg.razorpayKeyIdMasked || null,
     paymentType: 'APPLICATION_PURCHASE',
@@ -206,7 +232,9 @@ async function applyPaymentEffects({ txn, paymentPayload = {}, source = 'VERIFY_
     }).lean();
 
     const cfg = await billingConfigService.getEffectiveConfig();
-    const licenseAmount = Number(cfg.applicationPrice || txn.amount);
+    // The licence's price as this order charged it, before GST (older orders
+    // stored baseAmount == amount); the GST split stays on the payment row.
+    const licenseAmount = Number(txn.baseAmount || txn.amount);
     const bonusCredits = Number(cfg.purchasedBonusCredits || 1000);
 
     const purchaseResult = await licenseService.activatePermanentLicense({

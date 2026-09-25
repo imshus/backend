@@ -1,17 +1,16 @@
 const { sendSuccess } = require('../utils/apiResponse');
 const paymentService = require('../services/payment.service');
-const billingConfigService = require('../services/billingConfig.service');
 
 async function createApplicationOrder(req, res, next) {
   try {
     const businessId = req.user.businessId;
     const userId = req.user.userId;
     const order = await paymentService.createOrderForApplicationPurchase({ businessId, userId });
-    const cfg = await billingConfigService.getEffectiveConfig();
     sendSuccess(res, {
       ...order,
       razorpayKeyId: req.app.locals.razorpayKeyId || null,
-      applicationPrice: cfg.applicationPrice,
+      // The price before GST, from the same computation as the charge.
+      applicationPrice: order.baseAmount,
     });
   } catch (error) {
     next(error);
