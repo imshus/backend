@@ -71,6 +71,14 @@ stub('../models/supremeChange.model', {
 stub('../models/dashboardMetrics.model', {
   findOne: async () => ({ metricsData: { bhaw_source_jmd: true } }),
 });
+// The shop follows JMD Patil (and no database is reached for it).
+stub('../models/bullionSource.model', {
+  findOne: () => {
+    const doc = { selected: 'jmd_patil' };
+    const chain = { lean: async () => doc, sort: () => chain, then: (ok, ko) => Promise.resolve(doc).then(ok, ko) };
+    return chain;
+  },
+});
 
 const axiosResolved = Module._resolveFilename('axios', {
   id: SERVICE, filename: SERVICE, paths: Module._nodeModulePaths(SERVICE_DIR),
@@ -94,6 +102,11 @@ test('majorityMcx: quotes of one contract a few rupees apart count as one group'
 test('majorityMcx: a 2-2 split goes to the lower contract, never an average of the two', () => {
   const result = bhawService.majorityMcx([154261, 154284, 151920, 151969]);
   assert.equal(result, 151920);
+});
+
+test('majorityMcx: one stale low board cannot split a real cluster and win the tie', () => {
+  // Three quotes within 200 of each other, one stale board 550 below them.
+  assert.equal(bhawService.majorityMcx([151000, 151550, 151700, 151750]), 151700);
 });
 
 test('majorityMcx: a single house speaks alone; nothing gives null', () => {
@@ -121,4 +134,15 @@ test('a JMD shop: MCX shows the market figure, RTGS/Cash stay on JMD\'s own line
   // charges — and the one scans price on — is built there.
   assert.equal(result.taxSettings.rtgsFinalRate, JMD_DEC + 1900 + 200);
   assert.equal(result.taxSettings.cashFinalRate, JMD_DEC - 3000 - 100);
+  // And the app is told which MCX that was, for when its own feed is out.
+  assert.equal(result.taxSettings.pricingMcxLiveRate, JMD_DEC);
+});
+
+test('houseMcxLines lists every house line for the scheduler to compare', async () => {
+  assert.deepEqual(await bhawService.houseMcxLines(), {
+    jmd_patil: JMD_DEC,
+    mega_bullion: NEAR_MONTH,
+    shri_sai: NEAR_MONTH,
+    shri_ganesh: NEAR_MONTH,
+  });
 });

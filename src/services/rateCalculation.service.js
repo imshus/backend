@@ -270,7 +270,13 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       rtgsRate1FinalRate,
       rtgsRate2FinalRate,
       rtgsFinalRate,
-      cashFinalRate
+      cashFinalRate,
+      // The MCX this shop's RTGS and Cash were built on, before its own MCX
+      // change: the followed house's line while its bhaw is live, else the
+      // market MCX. The app builds on the same figure while its own board
+      // feed is not in, so Home never pairs a house's bhaw with another
+      // contract's MCX.
+      pricingMcxLiveRate: houseMcx ?? mcxLiveRate
     },
     karatRates: computedKaratRates
   };

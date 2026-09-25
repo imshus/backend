@@ -95,10 +95,13 @@ const SAME_CONTRACT_SPREAD = 0.004;
  * "Gold Future MCX" was the December contract (1,54,2xx) while Mega Bullion,
  * Shri Sai and Shri Ganesh quoted the October near month (1,51,9xx), the
  * figure market apps show. Taking the first house on the feed, as this used
- * to, put JMD's December figure on every shop's MCX. Quotes are grouped by
- * contract (within SAME_CONTRACT_SPREAD of each other); the largest group
- * wins, a tie going to the lower group, the near month. Its lower median is
- * returned — a real quote, never an average across two contracts.
+ * to, put JMD's December figure on every shop's MCX. Each quote opens a
+ * window of the quotes within SAME_CONTRACT_SPREAD above it (one contract);
+ * the window holding the most houses wins, a tie going to the lower one, the
+ * near month. A window, not fixed groups, so one stale low board cannot split
+ * a real cluster and win the tie. Its lower median is returned — a real
+ * quote, never an average across two contracts. The app's bhawApi
+ * majorityMcx is the same rule.
  */
 const majorityMcx = (values) => {
   const quotes = values
@@ -106,15 +109,28 @@ const majorityMcx = (values) => {
     .filter((value) => Number.isFinite(value) && value > 0)
     .sort((a, b) => a - b);
   if (!quotes.length) return null;
-  const groups = [];
-  for (const quote of quotes) {
-    const group = groups[groups.length - 1];
-    if (group && quote - group[0] <= group[0] * SAME_CONTRACT_SPREAD) group.push(quote);
-    else groups.push([quote]);
+  let best = [];
+  for (let i = 0; i < quotes.length; i += 1) {
+    const window = quotes.filter((quote, j) => j >= i && quote - quotes[i] <= quotes[i] * SAME_CONTRACT_SPREAD);
+    if (window.length > best.length) best = window;
   }
-  let best = groups[0];
-  for (const group of groups) if (group.length > best.length) best = group;
   return Math.round(best[Math.floor((best.length - 1) / 2)]);
+};
+
+/**
+ * Every house's own MCX line, keyed by source — what the scheduler compares
+ * between ticks: a shop's RTGS and Cash stand on its house's line, so a move
+ * in that line has to refresh the stored rates even when the majority holds.
+ */
+const houseMcxLines = async () => {
+  const rows = await fetchRows();
+  if (!rows) return {};
+  const lines = {};
+  for (const vendor of rows) {
+    const source = String(vendor?.source || '').toLowerCase();
+    if (source) lines[source] = futureMcxSellOf(vendor);
+  }
+  return lines;
 };
 
 /**
@@ -167,6 +183,7 @@ module.exports = {
   getJmdBhaw,
   boardMcxSell,
   houseMcxSell,
+  houseMcxLines,
   majorityMcx,
   prefetch,
   startKeepWarm,

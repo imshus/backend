@@ -98,7 +98,10 @@ test('startup always performs exactly one immediate synchronization fetch', asyn
   let apiCallCount = 0;
 
   try {
-    axios.get = async () => {
+    axios.get = async (url) => {
+      // The board feed is read too (each house's own MCX line, for cache
+      // invalidation); only metals.dev fetches are the synchronization.
+      if (!String(url).includes('metals.dev')) return { data: [] };
       apiCallCount += 1;
       return {
         data: {

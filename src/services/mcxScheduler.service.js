@@ -214,6 +214,9 @@ async function fetchAndStoreMcxRate(options = {}) {
     }
     const oldSnapshot = await redisService.getMcxCacheSnapshot();
     const oldRate = oldSnapshot?.rate ?? null;
+    // Each house's own MCX line: RTGS and Cash are priced on it, so a move in
+    // it clears the stored rates even when the majority MCX has not moved.
+    const houseLines = await bhawService.houseMcxLines().catch(() => ({}));
 
     const fetchedAt = new Date();
     const fetchedIst = getIstParts(fetchedAt);
@@ -222,6 +225,7 @@ async function fetchAndStoreMcxRate(options = {}) {
       timestamp: fetchedAt.toISOString(),
       lastSuccessfulFetchTime: fetchedAt.toISOString(),
       source,
+      houseLines,
       currency: 'INR',
       date: `${fetchedIst.year}-${String(fetchedIst.month).padStart(2, '0')}-${String(fetchedIst.day).padStart(2, '0')}`,
     };
@@ -255,8 +259,12 @@ async function fetchAndStoreMcxRate(options = {}) {
       console.error('[MCX Scheduler] Failed to update supreme cache:', err.message);
     }
 
-    if (oldRate !== null && oldRate !== liveRate) {
-      console.log(`[MCX Scheduler] Rate changed from ${oldRate} to ${liveRate}. Invalidating 24-hour dashboard cache.`);
+    const linesMoved = Boolean(oldSnapshot)
+      && JSON.stringify(oldSnapshot.houseLines ?? {}) !== JSON.stringify(houseLines);
+    if ((oldRate !== null && oldRate !== liveRate) || linesMoved) {
+      console.log(
+        `[MCX Scheduler] Rate ${oldRate} -> ${liveRate}${linesMoved ? ', house lines moved' : ''}. Invalidating 24-hour dashboard cache.`,
+      );
       await redisService.invalidateAllGoldRatesCache();
     }
 
