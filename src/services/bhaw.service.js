@@ -76,23 +76,69 @@ const getBhawForSource = async (source) => {
 /** Back-compat helper used before both vendors were served from this feed. */
 const getJmdBhaw = () => getBhawForSource(SOURCES.JMD_PATIL);
 
+/** One house's own "Gold Future MCX" sell, or null when it has not published one. */
+const futureMcxSellOf = (vendor) => {
+  const row = (Array.isArray(vendor?.rows) ? vendor.rows : []).find((entry) =>
+    /gold\s*future\s*mcx/i.test(String(entry?.label || '')),
+  );
+  const sell = Number(String(row?.sell ?? '').replace(/[^0-9.]/g, ''));
+  return Number.isFinite(sell) && sell > 0 ? Math.round(sell) : null;
+};
+
+/** Quotes within this share of each other are taken as the same contract. */
+const SAME_CONTRACT_SPREAD = 0.004;
+
 /**
- * The board's own "Gold Future MCX" sell — the very figure the app's Home
- * card prints. Every house on the feed carries the same MCX line, so the
- * first one that has it speaks for the market. Null when none has published
- * it. Never throws.
+ * The MCX figure most houses agree on.
+ *
+ * The houses do not all quote the same contract: on 25 Sep 2026 JMD Patil's
+ * "Gold Future MCX" was the December contract (1,54,2xx) while Mega Bullion,
+ * Shri Sai and Shri Ganesh quoted the October near month (1,51,9xx), the
+ * figure market apps show. Taking the first house on the feed, as this used
+ * to, put JMD's December figure on every shop's MCX. Quotes are grouped by
+ * contract (within SAME_CONTRACT_SPREAD of each other); the largest group
+ * wins, a tie going to the lower group, the near month. Its lower median is
+ * returned — a real quote, never an average across two contracts.
+ */
+const majorityMcx = (values) => {
+  const quotes = values
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  if (!quotes.length) return null;
+  const groups = [];
+  for (const quote of quotes) {
+    const group = groups[groups.length - 1];
+    if (group && quote - group[0] <= group[0] * SAME_CONTRACT_SPREAD) group.push(quote);
+    else groups.push([quote]);
+  }
+  let best = groups[0];
+  for (const group of groups) if (group.length > best.length) best = group;
+  return Math.round(best[Math.floor((best.length - 1) / 2)]);
+};
+
+/**
+ * The market's MCX off the board: the figure most houses agree on (see
+ * majorityMcx). Null when no house has published one. Never throws.
  */
 const boardMcxSell = async () => {
   const rows = await fetchRows();
   if (!rows) return null;
-  for (const vendor of rows) {
-    const row = (Array.isArray(vendor?.rows) ? vendor.rows : []).find((entry) =>
-      /gold\s*future\s*mcx/i.test(String(entry?.label || '')),
-    );
-    const sell = Number(String(row?.sell ?? '').replace(/[^0-9.]/g, ''));
-    if (Number.isFinite(sell) && sell > 0) return Math.round(sell);
-  }
-  return null;
+  return majorityMcx(rows.map(futureMcxSellOf));
+};
+
+/**
+ * The followed house's own "Gold Future MCX" sell. Its bhaw is quoted over
+ * this line, whichever contract it is, so the house's RTGS and Cash are built
+ * on it: MCX-majority plus JMD's bhaw would put a JMD shop ~2,300 below the
+ * rate JMD actually charges. Null when that house has no such line.
+ */
+const houseMcxSell = async (source) => {
+  const rows = await fetchRows();
+  if (!rows) return null;
+  const wanted = String(source || '').toLowerCase();
+  const vendor = rows.find((entry) => String(entry?.source || '').toLowerCase() === wanted);
+  return vendor ? futureMcxSellOf(vendor) : null;
 };
 
 /** Fetch the feed now, or hand back the fresh cache. Never throws. */
@@ -115,4 +161,13 @@ const startKeepWarm = () => {
   return timer;
 };
 
-module.exports = { SOURCES, getBhawForSource, getJmdBhaw, boardMcxSell, prefetch, startKeepWarm };
+module.exports = {
+  SOURCES,
+  getBhawForSource,
+  getJmdBhaw,
+  boardMcxSell,
+  houseMcxSell,
+  majorityMcx,
+  prefetch,
+  startKeepWarm,
+};

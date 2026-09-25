@@ -143,13 +143,21 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const businessRtgsChange = taxSettings.rtgsChangeBy || 0;
   const businessCashChange = taxSettings.cashChangeBy || 0;
 
+  // The MCX shown as MCX is the market's (the figure most houses agree on).
+  // The followed house's RTGS and Cash are built on that house's own MCX
+  // line, the one its bhaw is quoted over: houses do not all quote the same
+  // contract, and the house's bhaw on another contract's MCX is a rate the
+  // house does not charge. Off the live feed, the stored fallback changes
+  // go on the market MCX as before.
   const mcxFinalRate = mcxLiveRate + businessMcxChange;
+  const houseMcx = vendorBhaw ? await bhawService.houseMcxSell(selectedBhawSource) : null;
+  const pricingMcxRate = (houseMcx ?? mcxLiveRate) + businessMcxChange;
   // RTGS in its two forms, both off the same base (MCX + bhaw + the shop's
   // change). Rate 1 is that base as it comes, nothing on it. Rate 2 is the
   // base LESS the percent the shop entered — 1% typed takes 1% off — none
   // by default. The one the shop selected is the RTGS rate everything
   // downstream prices on.
-  const rtgsBaseRate = mcxFinalRate + supremeRtgsChange + businessRtgsChange;
+  const rtgsBaseRate = pricingMcxRate + supremeRtgsChange + businessRtgsChange;
   const rtgsRate1FinalRate = rtgsBaseRate;
   const rtgsTaxPercent = Number.isFinite(Number(taxSettings.rtgsTaxPercent))
     ? Number(taxSettings.rtgsTaxPercent)
@@ -157,7 +165,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const rtgsRate2FinalRate = Math.round(rtgsBaseRate * (1 - rtgsTaxPercent / 100));
   const rtgsVariant = taxSettings.rtgsVariant === 'taxed' ? 'taxed' : 'plain';
   const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
-  const cashFinalRate = mcxFinalRate + supremeCashChange + businessCashChange;
+  const cashFinalRate = pricingMcxRate + supremeCashChange + businessCashChange;
 
   // 5. Determine Base Rate for Karat Calculations
   const baseRate = taxSettings.scannerCalculationUse === 'cash' ? cashFinalRate : rtgsFinalRate;
