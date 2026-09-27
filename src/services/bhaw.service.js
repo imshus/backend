@@ -83,9 +83,12 @@ const getBhawForSource = async (source) => {
     return null;
   }
 
+  // Each side stands on its own: a house that quotes RTGS and no cash
+  // (Shri Sai) prices RTGS off its board; the side it has not published is
+  // null, and the caller falls back for that side alone.
   const cashBhaw = toFiniteNumber(row.cash_bhaw);
   const rtgsBhaw = toFiniteNumber(row.rtgs_bhaw);
-  if (cashBhaw === null || rtgsBhaw === null) {
+  if (cashBhaw === null && rtgsBhaw === null) {
     console.warn(`[Bhaw] Source "${source}" has not published rates yet.`);
     return null;
   }

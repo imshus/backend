@@ -131,9 +131,12 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       : bhawService.SOURCES.JMD_PATIL;
   const vendorBhaw = await bhawService.getBhawForSource(selectedBhawSource);
   if (vendorBhaw) {
+    // Per side: the house's own bhaw where it has published one, the
+    // stored fallback for the side it has not — a scan on that side still
+    // needs a number. The screens show a blank for that side instead.
     supremeChanges = {
-      rtgsChange: vendorBhaw.rtgsBhaw,
-      cashChange: vendorBhaw.cashBhaw
+      rtgsChange: vendorBhaw.rtgsBhaw ?? supremeChanges.rtgsChange,
+      cashChange: vendorBhaw.cashBhaw ?? supremeChanges.cashChange
     };
   }
   const bhawSource = {

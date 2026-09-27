@@ -96,12 +96,27 @@ const { getLiveGoldRates } = require(SERVICE);
 const BIZ = '507f1f77bcf86cd799439011';
 const reset = (selected) => { state.selected = selected; state.cached = null; state.writes = []; };
 
-test('a house with an unpublished side is not live: no bhaw of 0', async () => {
-  assert.equal(await bhawService.getBhawForSource('mega_bullion'), null);
-  assert.equal(await bhawService.getBhawForSource('shri_sai'), null);
+test('each bhaw side stands on its own: a silent house is null, a one-sided house keeps its side', async () => {
+  assert.equal(await bhawService.getBhawForSource('mega_bullion'), null, 'no side published');
+  assert.deepEqual(await bhawService.getBhawForSource('shri_sai'), {
+    cashBhaw: null, rtgsBhaw: 4450, name: 'Shri Sai Jewels',
+  }, 'RTGS published, cash not: never a cash of 0');
   assert.deepEqual(await bhawService.getBhawForSource('jmd_patil'), {
     cashBhaw: -3073, rtgsBhaw: 2127, name: 'JMD Patil',
   });
+});
+
+test('Shri Sai follower: RTGS off its own board, Retail on the stored fallback', async () => {
+  reset('shri_sai');
+  const r = await getLiveGoldRates(BIZ);
+  assert.equal(r.bhawSource.live, true);
+  assert.equal(r.taxSettings.pricingMcxLiveRate, MCX, 'its own line, 150720');
+  // RTGS Rate 1 = (line + mcxChange + its RTGS bhaw + rtgsChangeBy) + 3%:
+  // (150720 + 500 + 4450 + 200) * 1.03 — the board RTGS 155170 + changes + tax.
+  assert.equal(r.taxSettings.rtgsRate1FinalRate, Math.round((MCX + 500 + 4450 + 200) * 1.03));
+  // Retail: no cash side, so the stored fallback (-111) for that side only.
+  assert.equal(r.taxSettings.cashFinalRate, MCX + 500 - 111 - 100);
+  assert.equal(r.feedStamp, `${MCX}|null|4450`);
 });
 
 test('JMD follower: Retail and the ticked RTGS as Gold Rate Settings shows them', async () => {
