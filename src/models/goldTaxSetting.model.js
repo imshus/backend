@@ -46,11 +46,11 @@ const goldTaxSettingSchema = new mongoose.Schema({
   // carries whatever percent the shop enters here — none to begin with, so
   // a shop from before this setting, which is on Rate 2, prices exactly as
   // it always had. `rtgsVariant` says which one the app prices on.
-  // Rate 2's Tax box: 3 until the shop types otherwise, so Rate 2 is never
-  // Rate 1 by default.
+  // Rate 2's Tax box: 0 until the shop types otherwise — Rate 2 (without
+  // tax) is the board figure itself unless the shop takes something off.
   rtgsTaxPercent: {
     type: Number,
-    default: 3
+    default: 0
   },
   rtgsVariant: {
     type: String,

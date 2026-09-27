@@ -29,8 +29,12 @@ const normalizeMcxChange = (mcxChange) => {
 
 /** The tax RTGS Rate 1 carries, the "(Including tax 3%)" on its card. */
 const RTGS_TAX_PERCENT = 3;
-/** What RTGS Rate 2's Tax box holds until the shop types otherwise: 3%. */
-const RTGS_RATE2_DEFAULT_TAX_PERCENT = 3;
+/**
+ * What RTGS Rate 2's Tax box holds until the shop types otherwise: 0, at
+ * the shop's asking — Rate 2 (without tax) is the board figure itself
+ * unless the shop takes something off it.
+ */
+const RTGS_RATE2_DEFAULT_TAX_PERCENT = 0;
 
 const getLiveGoldRates = async (businessId, scope = null) => {
   if (!businessId) throw new Error('Business ID is required');
@@ -180,9 +184,8 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const rtgsBaseRate = pricingMcxRate + supremeRtgsChange + businessRtgsChange;
   const rtgsRate1FinalRate = Math.round(rtgsBaseRate * (1 + RTGS_TAX_PERCENT / 100));
   // Rate 2 is the board figure less the percent in its Tax box. A saved
-  // number is what the shop chose, 0 included — 0 means the board figure
-  // itself, at the shop's asking. Only a field that was never saved reads
-  // as the default 3.
+  // number is what the shop chose; a field never saved reads as the
+  // default 0, the board figure itself.
   const savedTaxPercent = Number(taxSettings.rtgsTaxPercent);
   const rtgsTaxPercent = taxSettings.rtgsTaxPercent != null && Number.isFinite(savedTaxPercent)
     ? savedTaxPercent
