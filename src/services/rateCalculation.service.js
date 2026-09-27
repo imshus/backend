@@ -29,6 +29,8 @@ const normalizeMcxChange = (mcxChange) => {
 
 /** The tax RTGS Rate 1 carries, the "(Including tax 3%)" on its card. */
 const RTGS_TAX_PERCENT = 3;
+/** The discount RTGS Rate 2 carries off Rate 1: a fixed 3%, at the shop's asking. */
+const RTGS_RATE2_DISCOUNT_PERCENT = 3;
 
 const getLiveGoldRates = async (businessId, scope = null) => {
   if (!businessId) throw new Error('Business ID is required');
@@ -171,10 +173,12 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // screens show a blank for it instead.
   const rtgsBaseRate = pricingMcxRate + supremeRtgsChange + businessRtgsChange;
   const rtgsRate1FinalRate = Math.round(rtgsBaseRate * (1 + RTGS_TAX_PERCENT / 100));
+  // Rate 2 is Rate 1 less a fixed 3% — not a percent the shop types. The
+  // saved rtgsTaxPercent is still returned, for older builds' display.
   const rtgsTaxPercent = Number.isFinite(Number(taxSettings.rtgsTaxPercent))
     ? Number(taxSettings.rtgsTaxPercent)
     : 0;
-  const rtgsRate2FinalRate = Math.round(rtgsRate1FinalRate * (1 - rtgsTaxPercent / 100));
+  const rtgsRate2FinalRate = Math.round(rtgsRate1FinalRate * (1 - RTGS_RATE2_DISCOUNT_PERCENT / 100));
   const rtgsVariant = taxSettings.rtgsVariant === 'taxed' ? 'taxed' : 'plain';
   const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
   const cashFinalRate = pricingMcxRate + supremeCashChange + businessCashChange;

@@ -128,7 +128,7 @@ test('JMD follower: Retail and the ticked RTGS as Gold Rate Settings shows them'
   // Retail = house line + mcxChange + cash bhaw + cashChangeBy
   assert.equal(r.taxSettings.cashFinalRate, JMD_LINE + 500 - 3073 - 100);
   // RTGS Rate 1 = (house line + mcxChange + rtgs bhaw + rtgsChangeBy) + 3% tax;
-  // Rate 2 = Rate 1 less the typed 3%.
+  // Rate 2 = Rate 1 less a fixed 3% (whatever the shop once typed).
   const rate1 = Math.round((JMD_LINE + 500 + 2127 + 200) * 1.03);
   assert.equal(r.taxSettings.rtgsRate1FinalRate, rate1);
   assert.equal(r.taxSettings.rtgsFinalRate, Math.round(rate1 * 0.97));

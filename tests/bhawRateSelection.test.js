@@ -95,8 +95,9 @@ test('selecting JMD Patil applies its live cash and rtgs bhaw to the MCX rate', 
   assert.equal(result.supremeChanges.rtgsChange, 4800);
   // final = MCX + vendor bhaw + business change
   assert.equal(result.taxSettings.cashFinalRate, MCX_LIVE - 3200 - 100);
-  // RTGS Rate 1 = base + 3%; the fixture ticks Rate 2 at 0%, which is Rate 1.
-  assert.equal(result.taxSettings.rtgsFinalRate, Math.round((MCX_LIVE + 4800 + 200) * 1.03));
+  // Rate 1 = base + 3%; the fixture ticks Rate 2, a fixed 3% off Rate 1.
+  assert.equal(result.taxSettings.rtgsRate1FinalRate, Math.round((MCX_LIVE + 4800 + 200) * 1.03));
+  assert.equal(result.taxSettings.rtgsFinalRate, Math.round(Math.round((MCX_LIVE + 4800 + 200) * 1.03) * 0.97));
 });
 
 test('selecting Mega Bullion applies its bhaw instead', async () => {
@@ -108,7 +109,7 @@ test('selecting Mega Bullion applies its bhaw instead', async () => {
   assert.equal(result.supremeChanges.cashChange, -3900);
   assert.equal(result.supremeChanges.rtgsChange, 4900);
   assert.equal(result.taxSettings.cashFinalRate, MCX_LIVE - 3900 - 100);
-  assert.equal(result.taxSettings.rtgsFinalRate, Math.round((MCX_LIVE + 4900 + 200) * 1.03));
+  assert.equal(result.taxSettings.rtgsFinalRate, Math.round(Math.round((MCX_LIVE + 4900 + 200) * 1.03) * 0.97));
 });
 
 test('the stored supreme-change fallback is not used while the feed is live', async () => {
