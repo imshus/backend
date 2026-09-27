@@ -129,9 +129,10 @@ test('houseMcxSell is that house\'s own line', async () => {
 
 test('a JMD shop: MCX shows the market figure, RTGS/Cash stay on JMD\'s own line', async () => {
   const result = await getLiveGoldRates('507f1f77bcf86cd799439011');
-  // The MCX shown is the market's.
+  // The scheduler's stored MCX is the market majority; the MCX the shop
+  // sees is its own house's line (JMD's December figure), at the shop's asking.
   assert.equal(result.mcxLiveRate, NEAR_MONTH);
-  assert.equal(result.taxSettings.mcxFinalRate, NEAR_MONTH);
+  assert.equal(result.taxSettings.mcxFinalRate, JMD_DEC);
   // JMD's bhaw is quoted over its own (December) line, so the rate JMD
   // charges — and the one scans price on — is built there.
   // Rate 2 ticked by default: the board figure less its Tax box (never saved, so the default 3).

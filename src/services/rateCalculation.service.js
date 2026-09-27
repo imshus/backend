@@ -161,9 +161,15 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // contract, and the house's bhaw on another contract's MCX is a rate the
   // house does not charge. Off the live feed, the stored fallback changes
   // go on the market MCX as before.
-  const mcxFinalRate = mcxLiveRate + businessMcxChange;
-  const houseMcx = vendorBhaw ? await bhawService.houseMcxSell(selectedBhawSource) : null;
-  const pricingMcxRate = (houseMcx ?? mcxLiveRate) + businessMcxChange;
+  // The MCX shown is the followed house's own "Gold Future MCX" — the shop
+  // follows one house, and its MCX is that house's, straight off its
+  // Dashboard Settings card. The market majority (mcxLiveRate) stands in
+  // only for a house with no line. The house line is read whenever the
+  // house has one, live bhaw or not.
+  const houseMcx = await bhawService.houseMcxSell(selectedBhawSource);
+  const shownMcxRate = houseMcx ?? mcxLiveRate;
+  const mcxFinalRate = shownMcxRate + businessMcxChange;
+  const pricingMcxRate = shownMcxRate + businessMcxChange;
   // RTGS Rate 1 is the house's board RTGS (its line + its bhaw) plus the
   // shop's change, with RTGS_TAX_PERCENT on top — the "(Including tax 3%)"
   // the card has always said. Rate 2 is Rate 1 LESS the percent the shop
