@@ -6,6 +6,7 @@ const BusinessUser = require('../models/businessUser.model');
 const einvoiceService = require('../services/einvoice.service');
 const profileEditService = require('../services/profileEdit.service');
 const { settingsScope, findScopedSetting, upsertScopedSetting } = require('../services/userScope.service');
+const bhawService = require('../services/bhaw.service');
 
 // A shop that has saved nothing shows the MCX card alone; the 24K
 // RTGS/Cash card and the lighter karats wait in settings until ticked.
@@ -353,12 +354,13 @@ const updateDashboardMatrices = async (req, res) => {
 // The two houses on the live bhaw feed — the only ones a shop can follow.
 // A name a shop adds is kept as a request for that house's rates; it is not
 // a choice, so it never changes what Home costs.
-const BUILT_IN_BULLION = [
-  { key: 'jmd_patil', label: 'JMD Patil' },
-  { key: 'mega_bullion', label: 'Mega Bullion' },
-  { key: 'shri_sai', label: 'Shri Sai Jewels' },
-  { key: 'shri_ganesh', label: 'Shri Ganesh Bullion' },
-];
+// One list, the feed service's: the houses a shop may follow are exactly
+// the houses the rate calculation can price on. Two literals once drifted,
+// and a shop's choice was silently priced on another house.
+const BUILT_IN_BULLION = Object.values(bhawService.SOURCES).map((key) => ({
+  key,
+  label: bhawService.SOURCE_NAMES[key] || key,
+}));
 const MAX_CUSTOM_BULLION = 10;
 const BULLION_NAME_MAX = 40;
 

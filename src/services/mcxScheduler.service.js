@@ -184,33 +184,36 @@ async function fetchAndStoreMcxRate(options = {}) {
     // in: the figure the app's Home card prints, so the rate table and Home
     // can never drift apart. metals.dev stopped answering on 21 Sep and the
     // table sat on that morning's rate for two days while Home moved.
-    let liveRate = null;
-    let source = 'metals.dev';
-    const apiKey = process.env.METALS_API_KEY;
-    if (!apiKey) {
-      console.error('[MCX Scheduler] METALS_API_KEY is not defined');
-    } else {
-      try {
-        const url = `https://api.metals.dev/v1/metal/authority?api_key=${apiKey}&authority=mcx&currency=INR&unit=10g`;
-        const response = await axios.get(url, { timeout: 10000 });
-        const data = response.data;
-        if (data && data.status === 'success' && data.rates && data.rates.mcx_gold) {
-          liveRate = Math.round(data.rates.mcx_gold);
-        } else {
-          console.error('[MCX Scheduler] Invalid response format from Metals API:', data);
-        }
-      } catch (error) {
-        logMetalsFailure(error, phase, attemptAt);
-      }
-    }
+    // The board first: the MCX the screens print is the figure most houses
+    // on the feed agree on, so the server's MCX is that same figure and
+    // nothing built on it (the 24K rows, a silent house's fallback) stands on
+    // a number no bullion card shows. metals.dev only stands in when the
+    // board has no MCX line at all.
+    let liveRate = await bhawService.boardMcxSell();
+    let source = 'board';
     if (liveRate === null) {
-      const board = await bhawService.boardMcxSell();
-      if (board === null) {
-        return { success: false, reason: 'metals.dev gave no rate and the board has no MCX line' };
+      const apiKey = process.env.METALS_API_KEY;
+      if (!apiKey) {
+        console.error('[MCX Scheduler] METALS_API_KEY is not defined');
+      } else {
+        try {
+          const url = `https://api.metals.dev/v1/metal/authority?api_key=${apiKey}&authority=mcx&currency=INR&unit=10g`;
+          const response = await axios.get(url, { timeout: 10000 });
+          const data = response.data;
+          if (data && data.status === 'success' && data.rates && data.rates.mcx_gold) {
+            liveRate = Math.round(data.rates.mcx_gold);
+            source = 'metals.dev';
+            console.warn(`[MCX Scheduler] The board has no MCX line; using metals.dev: INR ${liveRate}`);
+          } else {
+            console.error('[MCX Scheduler] Invalid response format from Metals API:', data);
+          }
+        } catch (error) {
+          logMetalsFailure(error, phase, attemptAt);
+        }
       }
-      liveRate = board;
-      source = 'board';
-      console.warn(`[MCX Scheduler] metals.dev gave no rate; using the board's Gold Future MCX: INR ${liveRate}`);
+      if (liveRate === null) {
+        return { success: false, reason: 'the board has no MCX line and metals.dev gave no rate' };
+      }
     }
     const oldSnapshot = await redisService.getMcxCacheSnapshot();
     const oldRate = oldSnapshot?.rate ?? null;
