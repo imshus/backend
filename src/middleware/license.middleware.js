@@ -1,5 +1,9 @@
 const licenseService = require('../services/license.service');
 const walletService = require('../services/wallet.service');
+const billingConfigService = require('../services/billingConfig.service');
+
+/** The fallback when the billing config cannot be read: the shop's own figure. */
+const { DEFAULT_MIN_SCAN_BALANCE } = billingConfigService;
 
 async function attachLicenseContext(req, res, next) {
   try {
@@ -123,10 +127,45 @@ function requireScannerAccess(req, res, next) {
   return next();
 }
 
+/**
+ * Starting a scan, and every step before it is billed, needs more than the
+ * billing config's minScanBalance (0.74) in the wallet. A scan is billed when
+ * it is done and only if the wallet covers the whole charge; the old check
+ * (anything above 0) let a wallet of 0.51 run scan after scan that it could
+ * never pay for. Steps of a scan already analysed (review, clarification,
+ * calculate) are not held to this, so a scan the shop has paid for always
+ * finishes.
+ */
+async function requireScanStartBalance(req, res, next) {
+  const ctx = req.licenseContext;
+  if (!ctx) {
+    const err = new Error('LICENSE_CONTEXT_MISSING');
+    err.statusCode = 500;
+    return next(err);
+  }
+
+  let minimum = DEFAULT_MIN_SCAN_BALANCE;
+  try {
+    minimum = billingConfigService.minScanBalanceOf(await billingConfigService.getEffectiveConfig());
+  } catch {
+    // The shop's figure stands when the config cannot be read.
+  }
+
+  if (Number(ctx.wallet?.creditBalance || 0) <= minimum) {
+    const err = new Error('NO_CREDITS_AVAILABLE');
+    err.statusCode = 402;
+    return next(err);
+  }
+
+  return next();
+}
+
 module.exports = {
   attachLicenseContext,
   requireLicense,
   requireTrialOrLicense,
   requireWallet,
   requireScannerAccess,
+  requireScanStartBalance,
+  DEFAULT_MIN_SCAN_BALANCE,
 };

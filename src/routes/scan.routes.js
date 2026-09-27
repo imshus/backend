@@ -9,6 +9,7 @@ const { detectTagRateLimiter, scanUploadRateLimiter } = require('../middleware/r
 const {
   attachLicenseContext,
   requireScannerAccess,
+  requireScanStartBalance,
 } = require('../middleware/license.middleware');
 
 router.use(authenticateJWT);
@@ -30,15 +31,17 @@ const clarificationSchema = joi.object({
   ).required()
 });
 
-router.post('/', validate(createScanSchema), scanController.createScan);
+// Everything up to the analysis is new, unbilled work, so it needs a wallet
+// that can pay for a scan (requireScanStartBalance); the steps after it do not.
+router.post('/', requireScanStartBalance, validate(createScanSchema), scanController.createScan);
 // Framing help for a gallery photo, before it belongs to any scan. It is a
 // paid model call that no scan bills, so it is capped per account.
-router.post('/detect-tag', detectTagRateLimiter, upload.single('image'), scanController.detectTagArea);
+router.post('/detect-tag', requireScanStartBalance, detectTagRateLimiter, upload.single('image'), scanController.detectTagArea);
 // An upload can start the speculative analysis — a paid model call that no
 // scan has billed yet — so uploads are capped per account too.
-router.post('/:scanId/front-image', scanUploadRateLimiter, upload.single('image'), scanController.uploadFrontImage);
-router.post('/:scanId/back-image', scanUploadRateLimiter, upload.single('image'), scanController.uploadBackImage);
-router.post('/:scanId/analyze', scanController.analyzeScan);
+router.post('/:scanId/front-image', requireScanStartBalance, scanUploadRateLimiter, upload.single('image'), scanController.uploadFrontImage);
+router.post('/:scanId/back-image', requireScanStartBalance, scanUploadRateLimiter, upload.single('image'), scanController.uploadBackImage);
+router.post('/:scanId/analyze', requireScanStartBalance, scanController.analyzeScan);
 
 router.get('/:scanId/clarification', scanController.getClarification);
 router.post('/:scanId/clarification', validate(clarificationSchema), scanController.submitClarification);

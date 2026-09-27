@@ -40,8 +40,11 @@ async function getOverview(req, res, next) {
 
     let creditWarningLevel = 'NONE';
     const creditBalance = walletEnabled ? Number(wallet.creditBalance || 0) : 0;
+    // The balance a new scan needs to be above; the app's Scan popup uses the
+    // same figure, so the screen and the server refuse at the same point.
+    const minScanBalance = billingConfigService.minScanBalanceOf(cfg);
 
-    if (walletEnabled && creditBalance <= 0) {
+    if (walletEnabled && creditBalance <= minScanBalance) {
       creditWarningLevel = 'BLOCKED';
     } else if (walletEnabled && creditBalance <= Number(cfg.criticalCreditThreshold || 10)) {
       creditWarningLevel = 'CRITICAL';
@@ -82,6 +85,7 @@ async function getOverview(req, res, next) {
       creditBalance: walletEnabled ? creditBalance : 0,
       lowCreditThreshold: Number(cfg.lowCreditThreshold || 20),
       criticalCreditThreshold: Number(cfg.criticalCreditThreshold || 10),
+      minScanBalance,
       creditWarningLevel,
       todayScans: walletEnabled ? monthSummary.todayScans : 0,
       monthScans: walletEnabled ? monthSummary.monthScans : 0,

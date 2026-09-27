@@ -13,7 +13,16 @@ const DEFAULT_BILLING_CONFIG = {
   trialDays: 7,
   lowCreditThreshold: 20,
   criticalCreditThreshold: 10,
+  minScanBalance: 0.74,
 };
+
+/** The balance a new scan must be above, as the config gives it; 0.74 otherwise. */
+const DEFAULT_MIN_SCAN_BALANCE = DEFAULT_BILLING_CONFIG.minScanBalance;
+function minScanBalanceOf(config) {
+  const value = config?.minScanBalance;
+  const configured = value === null || value === '' ? NaN : Number(value);
+  return Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_MIN_SCAN_BALANCE;
+}
 
 async function ensureConfig() {
   let config = await BillingConfig.findOne({ scope: 'GLOBAL' });
@@ -81,4 +90,6 @@ module.exports = {
   ensureConfig,
   getEffectiveConfig,
   updateConfig,
+  minScanBalanceOf,
+  DEFAULT_MIN_SCAN_BALANCE,
 };

@@ -64,6 +64,15 @@ const billingConfigSchema = new mongoose.Schema(
       default: 10,
       min: 0,
     },
+    // The least a wallet must hold, above this, for a new scan to start. A
+    // scan is billed only once it is done and only if the wallet covers the
+    // whole charge (about 0.68), so a balance at or under this could run a
+    // scan the wallet then cannot pay for.
+    minScanBalance: {
+      type: Number,
+      default: 0.74,
+      min: 0,
+    },
     webhookSecret: {
       type: String,
       default: '',
