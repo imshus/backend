@@ -16,12 +16,32 @@ const CACHE_TTL_MS = 30_000;
 const SOURCES = {
   JMD_PATIL: 'jmd_patil',
   MEGA_BULLION: 'mega_bullion',
+  SHRI_SAI: 'shri_sai',
+  SHRI_GANESH: 'shri_ganesh',
+};
+
+/** What each house is called on screen, so the app and the server agree. */
+const SOURCE_NAMES = {
+  jmd_patil: 'JMD Patil',
+  mega_bullion: 'Mega Bullion',
+  shri_sai: 'Shri Sai Jewels',
+  shri_ganesh: 'Shri Ganesh Bullion',
 };
 
 let cache = { rows: null, fetchedAt: 0 };
 
+/**
+ * A figure off the feed, or null when the house has not published it. The
+ * feed sends `null` for an unpublished bhaw; Number(null) is 0, which
+ * counted a silent house as live with a bhaw of nothing and priced its
+ * followers at bare MCX. Reads the way the app's bhawApi does, commas
+ * stripped, so both sides see the same house as live.
+ */
 const toFiniteNumber = (value) => {
-  const num = Number(value);
+  if (value === null || value === undefined) return null;
+  const text = String(value).replace(/,/g, '').trim();
+  if (text === '') return null;
+  const num = Number(text);
   return Number.isFinite(num) ? num : null;
 };
 
@@ -70,7 +90,20 @@ const getBhawForSource = async (source) => {
     return null;
   }
 
-  return { cashBhaw, rtgsBhaw, name: row.name || source };
+  return { cashBhaw, rtgsBhaw, name: row.name || SOURCE_NAMES[wanted] || source };
+};
+
+/**
+ * What the followed house's figures stand on right now, as one string: its
+ * MCX line and both bhaw sides, or 'off' while it is not live. A cached
+ * rate is served only while this still reads the same, so a move on the
+ * board reaches scans as it reaches the screens, on weekends included.
+ */
+const feedStamp = async (source) => {
+  const bhaw = await getBhawForSource(source);
+  if (!bhaw) return 'off';
+  const line = await houseMcxSell(source);
+  return `${line}|${bhaw.cashBhaw}|${bhaw.rtgsBhaw}`;
 };
 
 /** Back-compat helper used before both vendors were served from this feed. */
@@ -179,6 +212,8 @@ const startKeepWarm = () => {
 
 module.exports = {
   SOURCES,
+  SOURCE_NAMES,
+  feedStamp,
   getBhawForSource,
   getJmdBhaw,
   boardMcxSell,

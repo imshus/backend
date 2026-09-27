@@ -269,6 +269,29 @@ const claimInvoiceToken = async (publicToken, businessId) => {
   });
 };
 
+// Every invalidation of a business's rates moves this on. A compute that
+// began before an invalidation and finished after it used to write the
+// older settings into the cache for the day; it now writes only while the
+// generation it read is still the current one.
+const genKey = (businessId) => `gold_rates_gen:${String(businessId).split(':')[0]}`;
+
+const getGoldRatesGeneration = async (businessId) => {
+  return runStoreOp(async (backend) => {
+    if (backend === 'memory') return Number(memoryStore.get(genKey(businessId)) || 0);
+    return Number((await redis.get(genKey(businessId))) || 0);
+  });
+};
+
+const bumpGoldRatesGeneration = async (businessId) => {
+  return runStoreOp(async (backend) => {
+    if (backend === 'memory') {
+      memoryStore.set(genKey(businessId), String(Number(memoryStore.get(genKey(businessId)) || 0) + 1));
+      return;
+    }
+    await redis.incr(genKey(businessId));
+  });
+};
+
 const setGoldRatesCache = async (businessId, data) => {
   return runStoreOp(async (backend) => {
     if (backend === 'memory') {
@@ -295,6 +318,7 @@ const getGoldRatesCache = async (businessId) => {
 // invalidates all of them.
 const invalidateGoldRatesCache = async (businessId) => {
   const prefix = goldKey(businessId);
+  await bumpGoldRatesGeneration(businessId);
   return runStoreOp(async (backend) => {
     if (backend === 'memory') {
       for (const key of [...memoryStore.keys()]) {
@@ -506,6 +530,8 @@ module.exports = {
   claimInvoiceToken,
   setGoldRatesCache,
   getGoldRatesCache,
+  getGoldRatesGeneration,
+  bumpGoldRatesGeneration,
   invalidateGoldRatesCache,
   invalidateAllGoldRatesCache,
   setMcxCache,

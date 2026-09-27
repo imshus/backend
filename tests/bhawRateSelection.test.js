@@ -53,6 +53,8 @@ stub('./redis.service', {
   getGoldRatesCache: async () => state.cached,
   setGoldRatesCache: async (businessId, data) => { state.cacheWrites.push(data); },
   getSupremeCache: async () => null,
+  getGoldRatesGeneration: async () => 0,
+  bumpGoldRatesGeneration: async () => {},
 });
 stub('../models/supremeChange.model', {
   // Distinctive stored fallback: if these leak into results, the live feed
@@ -139,6 +141,8 @@ test('a cached response from the current build is served as-is', async () => {
     mcxLiveRate: 154000,
     bhawSource: { key: 'jmd_patil', name: 'JMD Patil', live: true },
     supremeChanges: { rtgsChange: 4800, cashChange: -3200 },
+    // The feed as it was when this was computed — and still is.
+    feedStamp: 'null|-3200|4800',
   };
 
   const result = await getLiveGoldRates(BUSINESS_ID);

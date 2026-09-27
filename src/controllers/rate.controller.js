@@ -211,6 +211,9 @@ const getGoldRates = async (req, res) => {
         supremeChanges: data.supremeChanges,
         taxSettings: data.taxSettings,
         rates: data.karatRates,
+        // Which house these stand on, so Home and Gold Rate Settings show
+        // the house scans are priced on.
+        bhawSource: data.bhawSource,
       },
     });
   } catch (error) {

@@ -40,9 +40,15 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // pre-vendor-selection build; serving it would pin stale rates for up to the
   // cache TTL after a deploy, so treat it as a miss and recompute.
   const cachedData = await redisService.getGoldRatesCache(cacheId);
-  if (cachedData && cachedData.bhawSource) {
-    return cachedData;
+  if (cachedData && cachedData.bhawSource && cachedData.feedStamp !== undefined) {
+    // Served only while the followed house's board still reads as it did
+    // when this was computed: a bhaw or MCX-line move is a new rate.
+    const stampNow = await bhawService.feedStamp(cachedData.bhawSource.key);
+    if (stampNow === cachedData.feedStamp) return cachedData;
   }
+  // The generation read before anything else: a save that lands while this
+  // computes bumps it, and the result is then not cached.
+  const generation = await redisService.getGoldRatesGeneration(businessId);
 
   // 2-6. Independent reads, fetched together. They used to run one after
   // another, so a cache miss (every MCX tick clears the cache for every
@@ -109,10 +115,10 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // is fetched by name. Only if that vendor is unavailable do we keep the
   // stored supreme changes as a fallback.
   //
-  // Only the two feed houses can be followed. Anything else in the record —
-  // a name written by an older build — falls back to the boolean rather than
-  // being asked of a feed that has never heard of it.
-  const FEED_SOURCES = [bhawService.SOURCES.JMD_PATIL, bhawService.SOURCES.MEGA_BULLION];
+  // Every house on the feed can be followed. Anything else in the record —
+  // a name the shop added — falls back to the boolean rather than being
+  // asked of a feed that has never heard of it.
+  const FEED_SOURCES = Object.values(bhawService.SOURCES);
   const storedSource = String(bullionSetting?.selected || '').trim();
   const selectedBhawSource = FEED_SOURCES.includes(storedSource)
     ? storedSource
@@ -129,9 +135,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   }
   const bhawSource = {
     key: selectedBhawSource,
-    name:
-      vendorBhaw?.name
-      || (selectedBhawSource === bhawService.SOURCES.JMD_PATIL ? 'JMD Patil' : 'Mega Bullion'),
+    name: vendorBhaw?.name || bhawService.SOURCE_NAMES[selectedBhawSource] || selectedBhawSource,
     live: Boolean(vendorBhaw),
   };
 
@@ -278,12 +282,15 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       // contract's MCX.
       pricingMcxLiveRate: houseMcx ?? mcxLiveRate
     },
-    karatRates: computedKaratRates
+    karatRates: computedKaratRates,
+    feedStamp: vendorBhaw ? `${houseMcx}|${vendorBhaw.cashBhaw}|${vendorBhaw.rtgsBhaw}` : 'off'
   };
 
   // 9. Cache best-effort. API response must not fail if cache backend is degraded.
   try {
-    await redisService.setGoldRatesCache(cacheId, responseData);
+    if ((await redisService.getGoldRatesGeneration(businessId)) === generation) {
+      await redisService.setGoldRatesCache(cacheId, responseData);
+    }
   } catch (cacheError) {
     console.warn('[Gold Rates] Failed to cache computed rates. Serving fresh response:', cacheError.message);
   }

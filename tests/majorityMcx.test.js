@@ -64,6 +64,8 @@ stub('./redis.service', {
   getGoldRatesCache: async () => null,
   setGoldRatesCache: async () => {},
   getSupremeCache: async () => null,
+  getGoldRatesGeneration: async () => 0,
+  bumpGoldRatesGeneration: async () => {},
 });
 stub('../models/supremeChange.model', {
   findOne: () => ({ sort: async () => ({ rtgsChange: 111, cashChange: -111 }) }),
