@@ -158,6 +158,29 @@ test('Shri Sai and Shri Ganesh can be followed on the server', async () => {
   assert.equal(ganesh.bhawSource.name, 'Shri Ganesh Bullion');
 });
 
+test('a Tax box saved at 0 prices Rate 2 at the board figure itself, not the default 3', async () => {
+  reset('jmd_patil');
+  const taxModel = require('../src/models/goldTaxSetting.model');
+  const original = taxModel.findOne;
+  taxModel.findOne = async () => ({
+    mcxChange: { operation: '+', amount: 0 },
+    rtgsChangeBy: 0,
+    cashChangeBy: 0,
+    scannerCalculationUse: 'rtgs',
+    rtgsTaxPercent: 0,
+    rtgsVariant: 'plain',
+  });
+  try {
+    const r = await getLiveGoldRates(BIZ);
+    const board = JMD_LINE + 2127;
+    assert.equal(r.taxSettings.rtgsRate2FinalRate, board, 'saved 0 means 0: the board RTGS untouched');
+    assert.equal(r.taxSettings.rtgsFinalRate, board, 'Rate 2 ticked, so that is what a scan charges');
+    assert.equal(r.taxSettings.rtgsTaxPercent, 0);
+  } finally {
+    taxModel.findOne = original;
+  }
+});
+
 test('a cached rate is served while the board reads the same, dropped once it moves', async () => {
   reset('jmd_patil');
   state.cached = {

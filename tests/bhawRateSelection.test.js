@@ -95,7 +95,7 @@ test('selecting JMD Patil applies its live cash and rtgs bhaw to the MCX rate', 
   assert.equal(result.supremeChanges.rtgsChange, 4800);
   // final = MCX + vendor bhaw + business change
   assert.equal(result.taxSettings.cashFinalRate, MCX_LIVE - 3200 - 100);
-  // Rate 1 = board + 3%; the fixture ticks Rate 2 = board less its Tax box (a saved 0 reads as 3).
+  // Rate 1 = board + 3%; the fixture ticks Rate 2 = board less its Tax box (never saved, so the default 3).
   assert.equal(result.taxSettings.rtgsRate1FinalRate, Math.round((MCX_LIVE + 4800 + 200) * 1.03));
   assert.equal(result.taxSettings.rtgsFinalRate, Math.round((MCX_LIVE + 4800 + 200) * 0.97));
 });

@@ -173,13 +173,12 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // screens show a blank for it instead.
   const rtgsBaseRate = pricingMcxRate + supremeRtgsChange + businessRtgsChange;
   const rtgsRate1FinalRate = Math.round(rtgsBaseRate * (1 + RTGS_TAX_PERCENT / 100));
-  // Rate 2 is Rate 1 less the percent in its Tax box. A shop that has
-  // never typed one gets 3, so Rate 2 is never Rate 1 by default. Every
-  // shop from before this box carries a saved 0 that nobody typed, so a
-  // 0 reads as "never set" too; a shop wanting no discount cannot set 0,
-  // but that is Rate 1, which it can tick instead.
+  // Rate 2 is the board figure less the percent in its Tax box. A saved
+  // number is what the shop chose, 0 included — 0 means the board figure
+  // itself, at the shop's asking. Only a field that was never saved reads
+  // as the default 3.
   const savedTaxPercent = Number(taxSettings.rtgsTaxPercent);
-  const rtgsTaxPercent = Number.isFinite(savedTaxPercent) && savedTaxPercent > 0
+  const rtgsTaxPercent = taxSettings.rtgsTaxPercent != null && Number.isFinite(savedTaxPercent)
     ? savedTaxPercent
     : RTGS_RATE2_DEFAULT_TAX_PERCENT;
   // Rate 2 (without tax) is the board figure itself, nothing on it, less
