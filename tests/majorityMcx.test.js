@@ -134,7 +134,7 @@ test('a JMD shop: MCX shows the market figure, RTGS/Cash stay on JMD\'s own line
   assert.equal(result.taxSettings.mcxFinalRate, NEAR_MONTH);
   // JMD's bhaw is quoted over its own (December) line, so the rate JMD
   // charges — and the one scans price on — is built there.
-  assert.equal(result.taxSettings.rtgsFinalRate, JMD_DEC + 1900 + 200);
+  assert.equal(result.taxSettings.rtgsFinalRate, Math.round((JMD_DEC + 1900 + 200) * 1.03));
   assert.equal(result.taxSettings.cashFinalRate, JMD_DEC - 3000 - 100);
   // And the app is told which MCX that was, for when its own feed is out.
   assert.equal(result.taxSettings.pricingMcxLiveRate, JMD_DEC);

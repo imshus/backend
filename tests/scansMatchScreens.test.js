@@ -112,9 +112,11 @@ test('JMD follower: Retail and the ticked RTGS as Gold Rate Settings shows them'
   assert.equal(r.taxSettings.pricingMcxLiveRate, JMD_LINE);
   // Retail = house line + mcxChange + cash bhaw + cashChangeBy
   assert.equal(r.taxSettings.cashFinalRate, JMD_LINE + 500 - 3073 - 100);
-  // RTGS Rate 1 = house line + mcxChange + rtgs bhaw + rtgsChangeBy; Rate 2 = 3% off
-  assert.equal(r.taxSettings.rtgsRate1FinalRate, JMD_LINE + 500 + 2127 + 200);
-  assert.equal(r.taxSettings.rtgsFinalRate, Math.round((JMD_LINE + 500 + 2127 + 200) * 0.97));
+  // RTGS Rate 1 = (house line + mcxChange + rtgs bhaw + rtgsChangeBy) + 3% tax;
+  // Rate 2 = Rate 1 less the typed 3%.
+  const rate1 = Math.round((JMD_LINE + 500 + 2127 + 200) * 1.03);
+  assert.equal(r.taxSettings.rtgsRate1FinalRate, rate1);
+  assert.equal(r.taxSettings.rtgsFinalRate, Math.round(rate1 * 0.97));
   assert.equal(r.feedStamp, `${JMD_LINE}|-3073|2127`);
 });
 
@@ -126,7 +128,7 @@ test('a silent house is priced on the stored change over the market MCX, and say
   assert.equal(r.bhawSource.name, 'Mega Bullion');
   assert.equal(r.taxSettings.pricingMcxLiveRate, MCX);
   assert.equal(r.taxSettings.cashFinalRate, MCX + 500 - 111 - 100);
-  assert.equal(r.taxSettings.rtgsRate1FinalRate, MCX + 500 + 111 + 200);
+  assert.equal(r.taxSettings.rtgsRate1FinalRate, Math.round((MCX + 500 + 111 + 200) * 1.03));
   assert.equal(r.feedStamp, 'off');
 });
 
