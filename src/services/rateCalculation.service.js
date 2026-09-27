@@ -29,8 +29,8 @@ const normalizeMcxChange = (mcxChange) => {
 
 /** The tax RTGS Rate 1 carries, the "(Including tax 3%)" on its card. */
 const RTGS_TAX_PERCENT = 3;
-/** The discount RTGS Rate 2 carries off Rate 1: a fixed 3%, at the shop's asking. */
-const RTGS_RATE2_DISCOUNT_PERCENT = 3;
+/** What RTGS Rate 2's Tax box holds until the shop types otherwise: 3%. */
+const RTGS_RATE2_DEFAULT_TAX_PERCENT = 3;
 
 const getLiveGoldRates = async (businessId, scope = null) => {
   if (!businessId) throw new Error('Business ID is required');
@@ -173,12 +173,18 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // screens show a blank for it instead.
   const rtgsBaseRate = pricingMcxRate + supremeRtgsChange + businessRtgsChange;
   const rtgsRate1FinalRate = Math.round(rtgsBaseRate * (1 + RTGS_TAX_PERCENT / 100));
-  // Rate 2 is Rate 1 less a fixed 3% — not a percent the shop types. The
-  // saved rtgsTaxPercent is still returned, for older builds' display.
-  const rtgsTaxPercent = Number.isFinite(Number(taxSettings.rtgsTaxPercent))
-    ? Number(taxSettings.rtgsTaxPercent)
-    : 0;
-  const rtgsRate2FinalRate = Math.round(rtgsRate1FinalRate * (1 - RTGS_RATE2_DISCOUNT_PERCENT / 100));
+  // Rate 2 is Rate 1 less the percent in its Tax box. A shop that has
+  // never typed one gets 3, so Rate 2 is never Rate 1 by default. Every
+  // shop from before this box carries a saved 0 that nobody typed, so a
+  // 0 reads as "never set" too; a shop wanting no discount cannot set 0,
+  // but that is Rate 1, which it can tick instead.
+  const savedTaxPercent = Number(taxSettings.rtgsTaxPercent);
+  const rtgsTaxPercent = Number.isFinite(savedTaxPercent) && savedTaxPercent > 0
+    ? savedTaxPercent
+    : RTGS_RATE2_DEFAULT_TAX_PERCENT;
+  // Rate 2 (without tax) is the board figure itself, nothing on it, less
+  // the percent in its Tax box — not Rate 1 discounted.
+  const rtgsRate2FinalRate = Math.round(rtgsBaseRate * (1 - rtgsTaxPercent / 100));
   const rtgsVariant = taxSettings.rtgsVariant === 'taxed' ? 'taxed' : 'plain';
   const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
   const cashFinalRate = pricingMcxRate + supremeCashChange + businessCashChange;
