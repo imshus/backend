@@ -7,6 +7,7 @@ const DashboardMetrics = require('../models/dashboardMetrics.model');
 const BullionSource = require('../models/bullionSource.model');
 const bhawService = require('./bhaw.service');
 const { findScopedSetting } = require('./userScope.service');
+const { RUNNING_COMMIT } = require('../utils/runningCommit');
 
 const toNumber = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -49,7 +50,16 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // pre-vendor-selection build; serving it would pin stale rates for up to the
   // cache TTL after a deploy, so treat it as a miss and recompute.
   const cachedData = await redisService.getGoldRatesCache(cacheId);
-  if (cachedData && cachedData.bhawSource && cachedData.feedStamp !== undefined) {
+  // Served only by the deployment that worked it out: a deploy that changes
+  // the rules (a saved 0 once read as 3) must not keep answering with the
+  // last one's figures until the board happens to move, which at night was
+  // hours.
+  if (
+    cachedData
+    && cachedData.bhawSource
+    && cachedData.feedStamp !== undefined
+    && cachedData.build === RUNNING_COMMIT
+  ) {
     // Served only while the followed house's board still reads as it did
     // when this was computed: a bhaw or MCX-line move is a new rate.
     const stampNow = await bhawService.feedStamp(cachedData.bhawSource.key);
@@ -309,7 +319,8 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       pricingMcxLiveRate: houseMcx ?? mcxLiveRate
     },
     karatRates: computedKaratRates,
-    feedStamp: vendorBhaw ? `${houseMcx}|${vendorBhaw.cashBhaw}|${vendorBhaw.rtgsBhaw}` : 'off'
+    feedStamp: vendorBhaw ? `${houseMcx}|${vendorBhaw.cashBhaw}|${vendorBhaw.rtgsBhaw}` : 'off',
+    build: RUNNING_COMMIT
   };
 
   // 9. Cache best-effort. API response must not fail if cache backend is degraded.

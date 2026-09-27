@@ -48,16 +48,7 @@ app.get('/explorer.js', (req, res) => {
 
 // The running commit, read once at startup, so a deploy can be verified
 // from outside without a login: `curl /api/v1/health` names it.
-const runningCommit = (() => {
-  try {
-    return require('child_process')
-      .execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
-      .toString()
-      .trim();
-  } catch {
-    return 'unknown';
-  }
-})();
+const { RUNNING_COMMIT: runningCommit } = require('./utils/runningCommit');
 
 // Public, unauthenticated: the few settings the app reads before or without a
 // login. The Pratham AI address lives here so a move of that server needs a

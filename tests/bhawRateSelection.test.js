@@ -75,6 +75,7 @@ require.cache[axiosResolved] = {
 };
 
 const { getLiveGoldRates } = require(SERVICE);
+const { RUNNING_COMMIT } = require(path.join(SERVICE_DIR, '..', 'utils', 'runningCommit.js'));
 
 const BUSINESS_ID = '507f1f77bcf86cd799439011';
 
@@ -145,6 +146,8 @@ test('a cached response from the current build is served as-is', async () => {
     supremeChanges: { rtgsChange: 4800, cashChange: -3200 },
     // The feed as it was when this was computed — and still is.
     feedStamp: 'null|-3200|4800',
+    // Worked out by this same deployment.
+    build: RUNNING_COMMIT,
   };
 
   const result = await getLiveGoldRates(BUSINESS_ID);

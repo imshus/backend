@@ -5,6 +5,7 @@ const connectDB = require('./config/db');
 const { initMcxScheduler } = require('./services/mcxScheduler.service');
 const { startKeepWarm: startBhawKeepWarm } = require('./services/bhaw.service');
 const { ensureUserScopedIndexes } = require('./services/userScope.service');
+const { resetOldRtgsTaxDefault } = require('./services/rtgsTaxDefaultReset.service');
 const DiamondRate = require('./models/diamondRate.model');
 const PaymentTransaction = require('./models/paymentTransaction.model');
 
@@ -116,6 +117,14 @@ connectDB().then(async () => {
     await ensureUserScopedIndexes();
   } catch (error) {
     console.warn('[DB] Failed to sync startup indexes:', error.message);
+  }
+
+  // RTGS Rate 2's Tax box: the old default 3 comes off the records that
+  // still carry it, once. A failure is logged and retried on the next start.
+  try {
+    await resetOldRtgsTaxDefault();
+  } catch (error) {
+    console.warn('[RTGS_TAX_RESET] not done this start:', error.message);
   }
 
   // Initialize the background polling scheduler for MCX rates

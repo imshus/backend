@@ -92,6 +92,7 @@ require.cache[axiosResolved] = {
 };
 
 const bhawService = require(path.join(SERVICE_DIR, 'bhaw.service.js'));
+const { RUNNING_COMMIT } = require(path.join(SERVICE_DIR, '..', 'utils', 'runningCommit.js'));
 const { getLiveGoldRates } = require(SERVICE);
 const BIZ = '507f1f77bcf86cd799439011';
 const reset = (selected) => { state.selected = selected; state.cached = null; state.writes = []; };
@@ -185,7 +186,7 @@ test('a cached rate is served while the board reads the same, dropped once it mo
   reset('jmd_patil');
   state.cached = {
     mcxLiveRate: 1, bhawSource: { key: 'jmd_patil', name: 'JMD Patil', live: true },
-    feedStamp: `${JMD_LINE}|-3073|2127`,
+    feedStamp: `${JMD_LINE}|-3073|2127`, build: RUNNING_COMMIT,
   };
   assert.equal((await getLiveGoldRates(BIZ)).mcxLiveRate, 1, 'same board: served');
   assert.equal(state.writes.length, 0);
@@ -193,6 +194,21 @@ test('a cached rate is served while the board reads the same, dropped once it mo
   state.cached = { ...state.cached, feedStamp: `${JMD_LINE}|-3000|2127` };
   assert.equal((await getLiveGoldRates(BIZ)).mcxLiveRate, MCX, 'bhaw moved: recomputed');
   assert.equal(state.writes.length, 1);
+});
+
+test('a cached rate from another deployment is worked out again, not served', async () => {
+  reset('jmd_patil');
+  const board = { bhawSource: { key: 'jmd_patil', name: 'JMD Patil', live: true }, feedStamp: `${JMD_LINE}|-3073|2127` };
+  // Written by the deployment before this one (its rules read a saved 0 as
+  // 3), and by one too old to stamp its build at all.
+  for (const stale of [{ ...board, mcxLiveRate: 1, build: 'an-older-commit' }, { ...board, mcxLiveRate: 1 }]) {
+    state.cached = stale;
+    state.writes = [];
+    const r = await getLiveGoldRates(BIZ);
+    assert.equal(r.mcxLiveRate, MCX, 'recomputed under the rules of this deployment');
+    assert.equal(r.build, RUNNING_COMMIT);
+    assert.equal(state.writes.length, 1, 'and cached again, stamped with this build');
+  }
 });
 
 test('a save landing mid-compute keeps that compute out of the cache', async () => {
