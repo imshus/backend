@@ -135,8 +135,10 @@ test('a JMD shop: MCX shows the market figure, RTGS/Cash stay on JMD\'s own line
   assert.equal(result.taxSettings.mcxFinalRate, JMD_DEC);
   // JMD's bhaw is quoted over its own (December) line, so the rate JMD
   // charges — and the one scans price on — is built there.
-  // Rate 2 ticked by default: the board figure itself (Tax box never saved, so 0).
-  assert.equal(result.taxSettings.rtgsFinalRate, JMD_DEC + 1900 + 200);
+  // Rate 1 ticked by default: the board figure with its 3% tax on top.
+  assert.equal(result.taxSettings.rtgsFinalRate, Math.round((JMD_DEC + 1900 + 200) * 1.03));
+  // Rate 2 (without tax), not ticked: the board figure itself (Tax box never saved, so 0).
+  assert.equal(result.taxSettings.rtgsRate2FinalRate, JMD_DEC + 1900 + 200);
   assert.equal(result.taxSettings.cashFinalRate, JMD_DEC - 3000 - 100);
   // And the app is told which MCX that was, for when its own feed is out.
   assert.equal(result.taxSettings.pricingMcxLiveRate, JMD_DEC);

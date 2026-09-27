@@ -41,13 +41,12 @@ const goldTaxSettingSchema = new mongoose.Schema({
     enum: ['rtgs', 'cash'],
     default: 'rtgs'
   },
-  // The shop's RTGS rate comes in two forms. RTGS Rate 1 is the base as it
-  // comes from MCX, bhaw and the shop's change, nothing on it. RTGS Rate 2
-  // carries whatever percent the shop enters here — none to begin with, so
-  // a shop from before this setting, which is on Rate 2, prices exactly as
-  // it always had. `rtgsVariant` says which one the app prices on.
-  // Rate 2's Tax box: 0 until the shop types otherwise — Rate 2 (without
-  // tax) is the board figure itself unless the shop takes something off.
+  // The shop's RTGS rate comes in two forms. RTGS Rate 1 is the board
+  // figure (MCX, bhaw and the shop's change) with its 3% tax on top. RTGS
+  // Rate 2 (without tax) is the board figure less whatever percent the shop
+  // types in its Tax box — 0 until it does, so the board figure itself.
+  // `rtgsVariant` says which one the app prices on: Rate 1 unless the shop
+  // ticked Rate 2, so a record from before the tick existed is on Rate 1.
   rtgsTaxPercent: {
     type: Number,
     default: 0
@@ -55,7 +54,7 @@ const goldTaxSettingSchema = new mongoose.Schema({
   rtgsVariant: {
     type: String,
     enum: ['taxed', 'plain'],
-    default: 'plain'
+    default: 'taxed'
   }
 }, {
   timestamps: true,

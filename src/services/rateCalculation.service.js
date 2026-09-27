@@ -193,7 +193,9 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // Rate 2 (without tax) is the board figure itself, nothing on it, less
   // the percent in its Tax box — not Rate 1 discounted.
   const rtgsRate2FinalRate = Math.round(rtgsBaseRate * (1 - rtgsTaxPercent / 100));
-  const rtgsVariant = taxSettings.rtgsVariant === 'taxed' ? 'taxed' : 'plain';
+  // Rate 1 is ticked unless the shop ticked Rate 2; a record from before
+  // the tick existed is on Rate 1 too.
+  const rtgsVariant = taxSettings.rtgsVariant === 'plain' ? 'plain' : 'taxed';
   const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
   const cashFinalRate = pricingMcxRate + supremeCashChange + businessCashChange;
 
