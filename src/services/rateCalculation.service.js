@@ -28,8 +28,6 @@ const normalizeMcxChange = (mcxChange) => {
   return { operation, amount, signed };
 };
 
-/** The tax RTGS Rate 1 carries, the "(Including tax 3%)" on its card. */
-const RTGS_TAX_PERCENT = 3;
 /**
  * What RTGS Rate 2's Tax box holds until the shop types otherwise: 0, at
  * the shop's asking — Rate 2 (without tax) is the board figure itself
@@ -184,15 +182,14 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const shownMcxRate = houseMcx ?? mcxLiveRate;
   const mcxFinalRate = shownMcxRate + businessMcxChange;
   const pricingMcxRate = shownMcxRate + businessMcxChange;
-  // RTGS Rate 1 is the house's board RTGS (its line + its bhaw) plus the
-  // shop's change, with RTGS_TAX_PERCENT on top — the "(Including tax 3%)"
-  // the card has always said. Rate 2 is Rate 1 LESS the percent the shop
-  // entered, so the two are one figure. The one the shop selected is the
-  // RTGS rate everything downstream prices on. A scan must have a number,
-  // so a house with no bhaw still gets the stored fallback here; the
-  // screens show a blank for it instead.
+  // RTGS Rate 1 is the house's board RTGS (its line + its bhaw) as Dashboard
+  // Settings shows it, plus the shop's change, with no tax on it (it carried
+  // 3% until the shop asked for the board figure itself). The one the shop
+  // selected is the RTGS rate everything downstream prices on. A scan must
+  // have a number, so a house with no bhaw still gets the stored fallback
+  // here; the screens show a blank for it instead.
   const rtgsBaseRate = pricingMcxRate + supremeRtgsChange + businessRtgsChange;
-  const rtgsRate1FinalRate = Math.round(rtgsBaseRate * (1 + RTGS_TAX_PERCENT / 100));
+  const rtgsRate1FinalRate = Math.round(rtgsBaseRate);
   // Rate 2 is the board figure less the percent in its Tax box. A saved
   // number is what the shop chose; a field never saved reads as the
   // default 0, the board figure itself.
@@ -203,7 +200,8 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // Rate 2 (without tax) is the board figure itself, nothing on it, less
   // the percent in its Tax box — not Rate 1 discounted.
   const rtgsRate2FinalRate = Math.round(rtgsBaseRate * (1 - rtgsTaxPercent / 100));
-  const rtgsVariant = taxSettings.rtgsVariant === 'taxed' ? 'taxed' : 'plain';
+  // Rate 1 is ticked unless the shop ticked Rate 2.
+  const rtgsVariant = taxSettings.rtgsVariant === 'plain' ? 'plain' : 'taxed';
   const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
   const cashFinalRate = pricingMcxRate + supremeCashChange + businessCashChange;
 

@@ -264,7 +264,7 @@ const updateGoldTaxSettings = async (req, res) => {
       const percent = Number(rtgsTaxPercent);
       updateData.rtgsTaxPercent = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
     }
-    if (rtgsVariant !== undefined) updateData.rtgsVariant = rtgsVariant === 'taxed' ? 'taxed' : 'plain';
+    if (rtgsVariant !== undefined) updateData.rtgsVariant = rtgsVariant === 'plain' ? 'plain' : 'taxed';
 
     // The owner writes the shop's adjustments; an employee writes their own.
     const taxSettings = await upsertScopedSetting(GoldTaxSetting, settingsScope(req.user), updateData);

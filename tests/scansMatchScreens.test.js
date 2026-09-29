@@ -113,8 +113,8 @@ test('Shri Sai follower: RTGS off its own board, Retail on the stored fallback',
   assert.equal(r.bhawSource.live, true);
   assert.equal(r.taxSettings.pricingMcxLiveRate, MCX, 'its own line, 150720');
   // RTGS Rate 1 = (line + mcxChange + its RTGS bhaw + rtgsChangeBy) + 3%:
-  // (150720 + 500 + 4450 + 200) * 1.03 — the board RTGS 155170 + changes + tax.
-  assert.equal(r.taxSettings.rtgsRate1FinalRate, Math.round((MCX + 500 + 4450 + 200) * 1.03));
+  // 150720 + 500 + 4450 + 200 — the board RTGS 155170 plus the changes, no tax.
+  assert.equal(r.taxSettings.rtgsRate1FinalRate, MCX + 500 + 4450 + 200);
   // Retail: no cash side, so the stored fallback (-111) for that side only.
   assert.equal(r.taxSettings.cashFinalRate, MCX + 500 - 111 - 100);
   assert.equal(r.feedStamp, `${MCX}|null|4450`);
@@ -131,7 +131,7 @@ test('JMD follower: Retail and the ticked RTGS as Gold Rate Settings shows them'
   // RTGS Rate 1 = (house line + mcxChange + rtgs bhaw + rtgsChangeBy) + 3% tax;
   // Rate 2 (without tax) = the board figure less the Tax box (3 here).
   const board = JMD_LINE + 500 + 2127 + 200;
-  assert.equal(r.taxSettings.rtgsRate1FinalRate, Math.round(board * 1.03));
+  assert.equal(r.taxSettings.rtgsRate1FinalRate, board, 'Rate 1 is the board figure, no tax');
   assert.equal(r.taxSettings.rtgsFinalRate, Math.round(board * 0.97));
   assert.equal(r.feedStamp, `${JMD_LINE}|-3073|2127`);
 });
@@ -144,7 +144,7 @@ test('a silent house is priced on the stored change over the market MCX, and say
   assert.equal(r.bhawSource.name, 'Mega Bullion');
   assert.equal(r.taxSettings.pricingMcxLiveRate, MCX);
   assert.equal(r.taxSettings.cashFinalRate, MCX + 500 - 111 - 100);
-  assert.equal(r.taxSettings.rtgsRate1FinalRate, Math.round((MCX + 500 + 111 + 200) * 1.03));
+  assert.equal(r.taxSettings.rtgsRate1FinalRate, MCX + 500 + 111 + 200);
   assert.equal(r.feedStamp, 'off');
 });
 
