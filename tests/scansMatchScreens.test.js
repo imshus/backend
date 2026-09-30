@@ -130,11 +130,12 @@ test('JMD follower: Retail and the ticked RTGS as Gold Rate Settings shows them'
   assert.equal(r.taxSettings.cashFinalRate, JMD_LINE + 500 - 3073 - 100);
   // RTGS Rate 1 = house line + mcxChange + rtgs bhaw + rtgsChangeBy, no tax.
   // Rate 2 (without tax) = the house's Gold Future MCX as fetched (153273,
-  // before the shop's +500) / 1.03, less the Tax box (3 here); it is ticked.
+  // before the shop's +500) divided by 1 + the Tax box (3 here, so 1.03);
+  // it is ticked.
   const board = JMD_LINE + 500 + 2127 + 200;
   assert.equal(r.taxSettings.rtgsRate1FinalRate, board, 'Rate 1 is the board figure, no tax');
-  assert.equal(r.taxSettings.rtgsRate2FinalRate, Math.round((JMD_LINE / 1.03) * 0.97));
-  assert.equal(r.taxSettings.rtgsFinalRate, Math.round((JMD_LINE / 1.03) * 0.97));
+  assert.equal(r.taxSettings.rtgsRate2FinalRate, Math.round(JMD_LINE / 1.03));
+  assert.equal(r.taxSettings.rtgsFinalRate, Math.round(JMD_LINE / 1.03));
   assert.equal(r.feedStamp, `${JMD_LINE}|-3073|2127`);
 });
 
@@ -161,7 +162,7 @@ test('Shri Sai and Shri Ganesh can be followed on the server', async () => {
   assert.equal(ganesh.bhawSource.name, 'Shri Ganesh Bullion');
 });
 
-test('a Tax box saved at 0 prices Rate 2 at the MCX figure / 1.03 itself, nothing more off', async () => {
+test('a Tax box saved at 0 prices Rate 2 at the MCX figure itself; 4 divides it by 1.04', async () => {
   reset('jmd_patil');
   const taxModel = require('../src/models/goldTaxSetting.model');
   const original = taxModel.findOne;
@@ -175,10 +176,21 @@ test('a Tax box saved at 0 prices Rate 2 at the MCX figure / 1.03 itself, nothin
   });
   try {
     const r = await getLiveGoldRates(BIZ);
-    const rate2 = Math.round(JMD_LINE / 1.03);
-    assert.equal(r.taxSettings.rtgsRate2FinalRate, rate2, 'saved 0 means 0: MCX / 1.03, nothing more off');
-    assert.equal(r.taxSettings.rtgsFinalRate, rate2, 'Rate 2 ticked, so that is what a scan charges');
+    assert.equal(r.taxSettings.rtgsRate2FinalRate, JMD_LINE, 'saved 0 means 0: the MCX figure as it is');
+    assert.equal(r.taxSettings.rtgsFinalRate, JMD_LINE, 'Rate 2 ticked, so that is what a scan charges');
     assert.equal(r.taxSettings.rtgsTaxPercent, 0);
+
+    taxModel.findOne = async () => ({
+      mcxChange: { operation: '+', amount: 0 },
+      rtgsChangeBy: 0,
+      cashChangeBy: 0,
+      scannerCalculationUse: 'rtgs',
+      rtgsTaxPercent: 4,
+      rtgsVariant: 'plain',
+    });
+    state.cached = null;
+    const four = await getLiveGoldRates(BIZ);
+    assert.equal(four.taxSettings.rtgsRate2FinalRate, Math.round(JMD_LINE / 1.04), '4 in the box divides by 1.04');
   } finally {
     taxModel.findOne = original;
   }
