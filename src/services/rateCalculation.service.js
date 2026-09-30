@@ -197,12 +197,11 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const rtgsTaxPercent = taxSettings.rtgsTaxPercent != null && Number.isFinite(savedTaxPercent)
     ? savedTaxPercent
     : RTGS_RATE2_DEFAULT_TAX_PERCENT;
-  // Rate 2 (without tax) is the house's Gold Future MCX as fetched (before
-  // the shop's own MCX change) with the Tax box's percent taken out of it:
-  // divided by 1 + percent/100, so 3 divides by 1.03 and 4 by 1.04, at the
-  // shop's asking; 0 leaves the MCX figure as it is. One rounding, at the
-  // end, as the app does it.
-  const rtgsRate2FinalRate = Math.round(shownMcxRate / (1 + rtgsTaxPercent / 100));
+  // Rate 2 (without tax) is Rate 1's figure (the board RTGS plus the shop's
+  // change) with the Tax box's percent taken out of it: divided by
+  // 1 + percent/100, so 3 divides by 1.03 and 4 by 1.04, at the shop's
+  // asking; 0 leaves it as Rate 1. One rounding, at the end, as the app does.
+  const rtgsRate2FinalRate = Math.round(rtgsBaseRate / (1 + rtgsTaxPercent / 100));
   // Rate 1 is ticked unless the shop ticked Rate 2.
   const rtgsVariant = taxSettings.rtgsVariant === 'plain' ? 'plain' : 'taxed';
   const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
