@@ -32,4 +32,24 @@ function resolveWastage({ manualPercent, wastageRow, itemRow } = {}) {
   return { percent, code: wastageRow ? String(wastageRow.code || '') : '' };
 }
 
-module.exports = { resolveWastage };
+/** Codes compared on their letters and digits alone: "W 8", "w-8" and "W8" are one code. */
+const codeKey = (value) => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+/**
+ * The Masters -> Wastage row any of the tag's identifiers names, trying them
+ * in order (the item number the reader chose first, then each number it set
+ * aside), so a wastage code printed beside an SR NO is still found. Null
+ * when none is a saved wastage code.
+ */
+function findWastageRow(rows, identifiers) {
+  const list = Array.isArray(rows) ? rows : [];
+  for (const identifier of Array.isArray(identifiers) ? identifiers : []) {
+    const key = codeKey(identifier);
+    if (!key) continue;
+    const row = list.find((candidate) => codeKey(candidate?.code) === key);
+    if (row) return row;
+  }
+  return null;
+}
+
+module.exports = { resolveWastage, findWastageRow };

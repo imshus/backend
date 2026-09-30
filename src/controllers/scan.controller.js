@@ -5,6 +5,7 @@ const openaiService = require('../services/openai.service');
 const { computeMrp, deriveInputFromReading } = require('../services/mrpCalculation.service');
 const { sendSuccess } = require('../utils/apiResponse');
 const { toSessionContext } = require('../utils/scanAccess');
+const { tagIdentifiersOf } = require('../utils/tagIdentifiers');
 
 const createScan = async (req, res, next) => {
   try {
@@ -112,6 +113,10 @@ const analyzeScan = async (req, res, next) => {
         rawText: updated.analysisResult.rawText,
         structuredData: updated.analysisResult.structuredData,
         unknownFields: [], // Force empty to bypass frontend clarification screen
+        // Every identifier the reader found, main one first, so the app can
+        // match its Item Code master against an item code set aside (a tag
+        // with SR NO and an item code was matched on the SR NO alone).
+        tagIdentifiers: tagIdentifiersOf(updated.analysisResult),
         overallConfidence: updated.analysisResult.overallConfidence,
         billing: updated.billing || { billed: false },
         pricing,

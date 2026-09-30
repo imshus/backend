@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { resolveWastage } = require('../src/services/wastageResolution.service');
+const { resolveWastage, findWastageRow } = require('../src/services/wastageResolution.service');
 
 test('a number in the Wastage master is the wastage code, at its percent', () => {
   const result = resolveWastage({ wastageRow: { code: 'W12', percent: 8 }, itemRow: null });
@@ -45,4 +45,17 @@ test('a Wastage code without a figure falls back to the item, and in none there 
   );
   assert.deepEqual(resolveWastage({ wastageRow: null, itemRow: null }), { percent: 0, code: '' });
   assert.deepEqual(resolveWastage(), { percent: 0, code: '' });
+});
+
+test('a wastage code printed anywhere on the tag is found, main number first', () => {
+  const rows = [{ code: 'W8', percent: 8 }, { code: 'W12', percent: 12 }];
+  // The reader chose SR NO 261440 as the number; W12 was set aside.
+  assert.equal(findWastageRow(rows, ['261440', 'W12'])?.code, 'W12');
+  // Spacing, dashes and case do not matter.
+  assert.equal(findWastageRow(rows, ['w-8'])?.code, 'W8');
+  // Two codes on a tag: the one read first wins.
+  assert.equal(findWastageRow(rows, ['W8', 'W12'])?.code, 'W8');
+  assert.equal(findWastageRow(rows, ['261440']), null);
+  assert.equal(findWastageRow([], ['W8']), null);
+  assert.equal(findWastageRow(rows, []), null);
 });

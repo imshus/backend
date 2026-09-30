@@ -3,7 +3,8 @@ const redisService = require('./redis.service');
 const LabourRate = require('../models/labourRate.model');
 const ItemCode = require('../models/itemCode.model');
 const WastageCode = require('../models/wastageCode.model');
-const { resolveWastage } = require('./wastageResolution.service');
+const { resolveWastage, findWastageRow } = require('./wastageResolution.service');
+const { tagIdentifiersOf } = require('../utils/tagIdentifiers');
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
@@ -101,6 +102,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     calculationMode,
     itemCode,
     wastagePercent,
+    tagIdentifiers,
   } = input || {};
 
   const businessId = user.businessId;
@@ -118,10 +120,14 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   const itemCodePromise = itemCode
     ? findScopedRows(ItemCode, settingsScope(user), { code: String(itemCode).trim() })
     : Promise.resolve([]);
-  // The same number looked up in Masters -> Wastage: a code there is the
-  // scan's wastage code, and its percent is the wastage charged.
-  const wastageCodePromise = itemCode
-    ? findScopedRows(WastageCode, settingsScope(user), { code: String(itemCode).trim().toUpperCase() })
+  // Every identifier on the tag looked up in Masters -> Wastage (the item
+  // number first, then each number the reader set aside): a code there is
+  // the scan's wastage code, and its percent is the wastage charged.
+  const wastageCandidates = [itemCode, ...(Array.isArray(tagIdentifiers) ? tagIdentifiers : [])]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  const wastageCodePromise = wastageCandidates.length
+    ? findScopedRows(WastageCode, settingsScope(user))
     : Promise.resolve([]);
   const [liveRatesData, globalLabourDoc, scanResolution, employee, itemRows, wastageRows] = await Promise.all([
     rateCalculationService.getLiveGoldRates(businessId, settingsScope(user)),
@@ -277,7 +283,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   // gold and nothing is lost off them — and at the 24K rate, the same rate
   // the gold line is priced at rather than the rate after karat purity.
   const itemRow = Array.isArray(itemRows) && itemRows.length > 0 ? itemRows[0] : null;
-  const wastageRow = Array.isArray(wastageRows) && wastageRows.length > 0 ? wastageRows[0] : null;
+  const wastageRow = findWastageRow(wastageRows, wastageCandidates);
   const wastage = resolveWastage({ manualPercent: wastagePercent, wastageRow, itemRow });
   const resolvedWastagePercent = wastage.percent;
   const wastageWeightGrams =
@@ -480,6 +486,12 @@ async function deriveInputFromReading({ user, structuredData, scan }) {
     diamonds,
     colorstones,
     otherCharges: 0,
+    // So the price worked out with the reading finds a Masters -> Wastage
+    // code printed anywhere on the tag, as the app's own pricing does.
+    tagIdentifiers: tagIdentifiersOf({
+      structuredData: data,
+      unknownFields: scan?.analysisResult?.unknownFields,
+    }),
     calculationMode:
       scan?.calculationMode || (taxSettings?.scannerCalculationUse === 'cash' ? 'cash' : 'rtgs'),
   };
