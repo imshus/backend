@@ -146,6 +146,17 @@ const paymentTransactionSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // MRPscan's invoice for this payment, emailed once to the shop's billing
+    // email; set before sending, so the verify call and the webhook cannot
+    // both send it.
+    invoiceEmailedTo: {
+      type: String,
+      default: '',
+    },
+    invoiceEmailedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

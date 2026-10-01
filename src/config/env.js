@@ -75,6 +75,12 @@ const envVarsSchema = joi.object({
   SMTP_USER: joi.string().allow('').default(''),
   SMTP_PASS: joi.string().allow('').default(''),
   SMTP_FROM: joi.string().allow('').default(''),
+  // MRPscan's own details on the invoice emailed after a licence or credit
+  // payment. Without INVOICE_SELLER_GSTIN it goes out as a Payment Receipt.
+  INVOICE_SELLER_NAME: joi.string().allow('').default('Amitaash IT Solutions Private Limited'),
+  INVOICE_SELLER_ADDRESS: joi.string().allow('').default(''),
+  INVOICE_SELLER_GSTIN: joi.string().allow('').default(''),
+  INVOICE_SELLER_EMAIL: joi.string().allow('').default(''),
 })
   .unknown();
 
@@ -172,5 +178,11 @@ module.exports = {
     user: envVars.SMTP_USER,
     pass: envVars.SMTP_PASS,
     from: envVars.SMTP_FROM,
+  },
+  invoiceSeller: {
+    name: envVars.INVOICE_SELLER_NAME,
+    address: envVars.INVOICE_SELLER_ADDRESS,
+    gstin: envVars.INVOICE_SELLER_GSTIN.trim().toUpperCase(),
+    email: envVars.INVOICE_SELLER_EMAIL || envVars.SMTP_FROM,
   },
 };

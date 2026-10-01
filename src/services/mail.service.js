@@ -40,7 +40,7 @@ const displayName = (value) => String(value || '').replace(/["<>\r\n]+/g, ' ').r
  * The message nodemailer sends, kept apart from sending so its shape can be
  * checked without a server.
  */
-const buildMessage = ({ to, subject, text, attachments = [], fromName = '' }) => {
+const buildMessage = ({ to, subject, text, html, attachments = [], fromName = '' }) => {
   const name = displayName(fromName);
   const address = String(smtp().from || '').trim();
   return {
@@ -48,6 +48,7 @@ const buildMessage = ({ to, subject, text, attachments = [], fromName = '' }) =>
     to,
     subject,
     text,
+    ...(html ? { html } : {}),
     attachments,
   };
 };

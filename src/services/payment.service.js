@@ -9,6 +9,7 @@ const walletService = require('./wallet.service');
 const creditService = require('./credit.service');
 const billingConfigService = require('./billingConfig.service');
 const razorpayService = require('./razorpay.service');
+const paymentInvoiceService = require('./paymentInvoice.service');
 const { getStatsKeys } = require('./statistics.service');
 const config = require('../config/env');
 
@@ -349,6 +350,16 @@ async function applyPaymentEffects({ txn, paymentPayload = {}, source = 'VERIFY_
     amount: txn.amount,
     businessId: String(txn.businessId),
     source,
+  });
+
+  // MRPscan's invoice to the shop's billing email, after the reply: the
+  // payment has succeeded either way, and a mail server must not slow it.
+  setImmediate(() => {
+    paymentInvoiceService.sendPaymentInvoice(txn._id).then((result) => {
+      if (result.sent) console.info('[PAYMENT_INVOICE_EMAILED]', { orderId: txn.orderId, to: result.to });
+    }).catch((err) => {
+      console.error('[PAYMENT_INVOICE_EMAIL_FAILED]', { orderId: txn.orderId, detail: String(err?.message || err).slice(0, 300) });
+    });
   });
 
   return { txn, wallet, idempotent: false };
