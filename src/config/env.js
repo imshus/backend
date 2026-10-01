@@ -65,7 +65,16 @@ const envVarsSchema = joi.object({
   // a URL under it, so it must be the public address, not localhost.
   PUBLIC_BASE_URL: joi.string().uri().default('https://amitaash.com'),
   INVOICE_PDF_CACHE_TTL_SECONDS: joi.number().integer().min(60).max(2592000).default(604800),
-  INVOICE_PDF_CACHE_MAX_MB: joi.number().min(1).max(50).default(15)
+  INVOICE_PDF_CACHE_MAX_MB: joi.number().min(1).max(50).default(15),
+  // Invoice email. Without SMTP_HOST and SMTP_FROM the app keeps using the
+  // phone's own mail app. Port 465 is TLS from the start; 587 upgrades with
+  // STARTTLS. SMTP_FROM must be an address the SMTP account may send as.
+  SMTP_HOST: joi.string().allow('').default(''),
+  SMTP_PORT: joi.number().integer().min(1).max(65535).default(465),
+  SMTP_SECURE: joi.boolean().optional(),
+  SMTP_USER: joi.string().allow('').default(''),
+  SMTP_PASS: joi.string().allow('').default(''),
+  SMTP_FROM: joi.string().allow('').default(''),
 })
   .unknown();
 
@@ -155,5 +164,13 @@ module.exports = {
   invoicePdfCache: {
     ttlSeconds: envVars.INVOICE_PDF_CACHE_TTL_SECONDS,
     maxBytes: envVars.INVOICE_PDF_CACHE_MAX_MB * 1024 * 1024,
+  },
+  smtp: {
+    host: envVars.SMTP_HOST,
+    port: envVars.SMTP_PORT,
+    secure: envVars.SMTP_SECURE ?? envVars.SMTP_PORT === 465,
+    user: envVars.SMTP_USER,
+    pass: envVars.SMTP_PASS,
+    from: envVars.SMTP_FROM,
   },
 };

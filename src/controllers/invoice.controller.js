@@ -19,6 +19,7 @@ function reservationOwner(businessId, user) {
 const { ownWorkFilter } = require('../services/userScope.service');
 const { generateInvoicePdf, getDownloadUrl } = require('../services/pdfmonkey.service');
 const einvoiceService = require('../services/einvoice.service');
+const mailService = require('../services/mail.service');
 const redisService = require('../services/redis.service');
 const config = require('../config/env');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
@@ -67,6 +68,35 @@ const fetchInvoicePdf = async (downloadUrl) => {
     throw new Error('Invoice provider returned a non-PDF response');
   }
 
+  return pdfBuffer;
+};
+
+/**
+ * The rendered PDF of an invoice whose pdfStatus is success, downloaded from
+ * a freshly signed PDFMonkey link (or the stored one, which may still be
+ * valid for a recent invoice) and written to the Redis copy the QR code is
+ * served from. Null when there is no link at all; throws when the download
+ * fails.
+ */
+const downloadStoredPdf = async (invoice, publicToken) => {
+  let downloadUrl = invoice.pdfUrl;
+  if (invoice.pdfMonkeyDocId) {
+    try {
+      downloadUrl = await getDownloadUrl(invoice.pdfMonkeyDocId);
+    } catch (urlErr) {
+      console.warn('[Invoice] Could not refresh download URL:', urlErr.message);
+    }
+  }
+  if (!downloadUrl) return null;
+
+  const pdfBuffer = await fetchInvoicePdf(downloadUrl);
+  if (publicToken) {
+    try {
+      await redisService.setInvoicePdfCache(publicToken, invoice.invoiceNumber, pdfBuffer);
+    } catch (cacheErr) {
+      console.warn('[Invoice] Redis PDF cache write failed:', cacheErr.message);
+    }
+  }
   return pdfBuffer;
 };
 
@@ -821,32 +851,15 @@ const getPublicInvoice = async (req, res, next) => {
       return sendError(res, 'This invoice is still being prepared', 409);
     }
 
-    // Prefer a freshly signed URL; fall back to the stored one, which may
-    // still be valid for a recently generated invoice.
-    let downloadUrl = invoice.pdfUrl;
-    if (invoice.pdfMonkeyDocId) {
-      try {
-        downloadUrl = await getDownloadUrl(invoice.pdfMonkeyDocId);
-      } catch (urlErr) {
-        console.warn('[Invoice] Could not refresh download URL:', urlErr.message);
-      }
-    }
-    if (!downloadUrl) {
-      return sendError(res, 'Invoice PDF is unavailable', 404);
-    }
-
     let pdfBuffer;
     try {
-      pdfBuffer = await fetchInvoicePdf(downloadUrl);
+      pdfBuffer = await downloadStoredPdf(invoice, token);
     } catch (pdfErr) {
       console.error('[Invoice] PDF fetch failed:', pdfErr.message);
       return sendError(res, 'Invoice PDF is unavailable', 502);
     }
-
-    try {
-      await redisService.setInvoicePdfCache(token, invoice.invoiceNumber, pdfBuffer);
-    } catch (cacheErr) {
-      console.warn('[Invoice] Redis PDF cache write failed:', cacheErr.message);
+    if (!pdfBuffer) {
+      return sendError(res, 'Invoice PDF is unavailable', 404);
     }
 
     return sendInvoicePdf(res, invoice.invoiceNumber, pdfBuffer, req.query);
@@ -912,6 +925,117 @@ const getInvoice = async (req, res, next) => {
   }
 };
 
+// One address, no spaces or header characters. The address is the one saved
+// on the invoice, so this only refuses what no mail server would take.
+const EMAIL_PATTERN = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
+
+/**
+ * POST /api/v1/invoices/:id/email
+ *
+ * Emails the invoice PDF over the SMTP account in .env, to the customer
+ * email saved on the invoice and to no one else: the route cannot be pointed
+ * at another address, so it cannot be used to mail strangers. 503 while SMTP
+ * is not set up, which the app answers by opening the phone's mail app.
+ */
+const emailInvoice = async (req, res, next) => {
+  try {
+    const businessId = await resolveBusinessIdFromUser(req.user);
+    if (!businessId) {
+      return sendError(res, 'Unauthorized', 401);
+    }
+    const invoice = await Invoice.findOne({ _id: req.params.id, businessId, ...ownWorkFilter(req.user) })
+      .select('invoiceNumber invoiceDate companyName customerName customerEmail grandTotal pdfStatus pdfUrl pdfMonkeyDocId publicToken')
+      .lean();
+    if (!invoice) {
+      return sendError(res, 'Invoice not found', 404);
+    }
+
+    const to = String(invoice.customerEmail || '').trim();
+    if (!EMAIL_PATTERN.test(to)) {
+      return sendError(res, 'Add the customer\'s email address to send this invoice.', 400);
+    }
+    if (!mailService.isConfigured()) {
+      return sendError(res, 'Invoice email is not set up on the server.', 503);
+    }
+
+    // The app hands over its own copy of the PDF at once while this one
+    // renders in the background, so an Email tapped straight after generating
+    // waits here for the render rather than being turned away.
+    const waitMs = config.invoiceEmailPdfWaitMs ?? 25_000;
+    const waitUntil = Date.now() + waitMs;
+    while (!['success', 'failure'].includes(invoice.pdfStatus) && Date.now() < waitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(10, Math.min(750, waitMs / 5))));
+      const fresh = await Invoice.findById(invoice._id).select('pdfStatus pdfUrl pdfMonkeyDocId').lean();
+      if (!fresh) break;
+      Object.assign(invoice, fresh);
+    }
+    if (invoice.pdfStatus === 'failure') {
+      return sendError(res, 'This invoice could not be rendered', 502);
+    }
+    if (invoice.pdfStatus !== 'success') {
+      return sendError(res, 'This invoice is still being prepared', 409);
+    }
+
+    let pdfBuffer = null;
+    if (invoice.publicToken) {
+      try {
+        pdfBuffer = (await redisService.getInvoicePdfCache(invoice.publicToken))?.pdfBuffer || null;
+      } catch (cacheErr) {
+        console.warn('[Invoice] Redis PDF cache read failed:', cacheErr.message);
+      }
+    }
+    if (!pdfBuffer) {
+      try {
+        pdfBuffer = await downloadStoredPdf(invoice, invoice.publicToken);
+      } catch (pdfErr) {
+        console.error('[Invoice] PDF fetch failed:', pdfErr.message);
+        return sendError(res, 'Invoice PDF is unavailable', 502);
+      }
+      if (!pdfBuffer) {
+        return sendError(res, 'Invoice PDF is unavailable', 404);
+      }
+    }
+
+    const shop = String(invoice.companyName || '').trim();
+    try {
+      await mailService.sendMail({
+        to,
+        subject: `Invoice ${invoice.invoiceNumber}${shop ? ` from ${shop}` : ''}`,
+        text: [
+          `Dear ${String(invoice.customerName || '').trim() || 'Customer'},`,
+          '',
+          `Please find attached invoice ${invoice.invoiceNumber} dated ${invoice.invoiceDate} `
+            + `for ₹ ${formatInr(invoice.grandTotal)}.`,
+          '',
+          'Thank you for your business.',
+          shop,
+        ].join('\n').trim(),
+        fromName: shop,
+        attachments: [{
+          filename: safeInvoiceFilename(invoice.invoiceNumber),
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        }],
+      });
+    } catch (mailErr) {
+      console.error('[INVOICE_EMAIL_FAILED]', {
+        invoiceNumber: invoice.invoiceNumber,
+        detail: String(mailErr?.message || mailErr).slice(0, 300),
+      });
+      return sendError(res, 'The email could not be sent. Please try again.', 502);
+    }
+
+    try {
+      await Invoice.findByIdAndUpdate(invoice._id, { emailedTo: to, emailedAt: new Date() });
+    } catch (markErr) {
+      console.warn('[Invoice] Could not record the email:', markErr.message);
+    }
+    return sendSuccess(res, { sentTo: to });
+  } catch (err) {
+    next(err);
+  }
+};
+
 /**
  * GET /api/v1/invoices/preview/next-number
  * Returns the provisional next invoice number for the UI preview.
@@ -940,4 +1064,5 @@ module.exports = {
   getInvoice,
   getNextInvoiceNumber,
   getPublicInvoice,
+  emailInvoice,
 };

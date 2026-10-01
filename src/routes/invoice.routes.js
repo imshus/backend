@@ -2,6 +2,16 @@ const express = require('express');
 const router = express.Router();
 const invoiceController = require('../controllers/invoice.controller');
 const { authenticateJWT } = require('../middleware/auth.middleware');
+const { perUserLimiter } = require('../middleware/rateLimiter');
+
+// Each send goes out from the shop's SMTP account; sixty an hour is far
+// beyond a counter and a firm cap on a script resending one invoice.
+const invoiceEmailLimiter = perUserLimiter({
+  name: 'invoice_email',
+  limit: 60,
+  windowSeconds: 3600,
+  message: 'Too many invoice emails this hour. Please try again later.',
+});
 
 // GET /api/v1/invoices/p/:token – the address printed as a QR code on the
 // invoice. Declared before the JWT guard because whoever holds the paper
@@ -30,5 +40,8 @@ router.get('/', invoiceController.getInvoices);
 
 // GET  /api/v1/invoices/:id        – get single invoice
 router.get('/:id', invoiceController.getInvoice);
+
+// POST /api/v1/invoices/:id/email  – email the PDF to the saved customer email (SMTP)
+router.post('/:id/email', invoiceEmailLimiter, invoiceController.emailInvoice);
 
 module.exports = router;

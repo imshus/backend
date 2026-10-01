@@ -78,6 +78,10 @@ const invoiceSchema = new mongoose.Schema({
   eInvoiceError: { type: String, default: '' },
   eInvoiceAt: { type: Date, default: null },
 
+  // The last time the PDF was emailed over SMTP, and to whom.
+  emailedTo: { type: String, default: '' },
+  emailedAt: { type: Date, default: null },
+
   // Unguessable id encoded into the invoice QR code. Anyone holding the
   // printed invoice can fetch the PDF with it, so it is random rather than
   // derived from the invoice number, and it is never reused.
