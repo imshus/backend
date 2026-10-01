@@ -7,13 +7,11 @@ const envVarsSchema = joi.object({
   NODE_ENV: joi.string().valid('production', 'development', 'test').required(),
   PORT: joi.number().default(3000),
   REDIS_URL: joi.string().required().description('Redis url'),
-  GEMINI_API_KEY: joi.string().required().description('Gemini API Key'),
   MONGODB_URI: joi.string().required().description('MongoDB URI'),
   JWT_ACCESS_SECRET: joi.string().required().description('JWT Access Secret'),
   JWT_REFRESH_SECRET: joi.string().required().description('JWT Refresh Secret'),
   MSG91_AUTH_KEY: joi.string().required().description('MSG91 Auth Key'),
   MSG91_TEMPLATE_ID: joi.string().required().description('MSG91 Template ID'),
-  RESEND_API_KEY: joi.string().allow('').optional().description('Resend API Key'),
   OPENAI_API_KEY: joi.string().required().description('OpenAI API Key'),
   OPENAI_SERVICE_TIER: joi.string().valid('auto', 'default', 'flex', 'scale', 'priority').optional()
     .description('OpenAI service tier; priority ~1.3s faster at ~2x token cost'),
@@ -92,9 +90,6 @@ module.exports = {
   redis: {
     url: envVars.REDIS_URL,
   },
-  gemini: {
-    apiKey: envVars.GEMINI_API_KEY,
-  },
   openai: {
     apiKey: envVars.OPENAI_API_KEY,
     serviceTier: envVars.OPENAI_SERVICE_TIER || null,
@@ -115,9 +110,6 @@ module.exports = {
   msg91: {
     authKey: envVars.MSG91_AUTH_KEY,
     templateId: envVars.MSG91_TEMPLATE_ID,
-  },
-  resend: {
-    apiKey: envVars.RESEND_API_KEY,
   },
   sandbox: {
     apiKey: envVars.SANDBOX_API_KEY,

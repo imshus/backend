@@ -5,7 +5,6 @@ const jwt = require('jsonwebtoken');
 // Keep this test independent from developer or production credentials.
 process.env.NODE_ENV = 'test';
 process.env.REDIS_URL = 'redis://127.0.0.1:6379';
-process.env.GEMINI_API_KEY = 'test';
 process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/test';
 process.env.JWT_ACCESS_SECRET = 'test-access-secret';
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret';
