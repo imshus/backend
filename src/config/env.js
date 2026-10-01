@@ -15,8 +15,9 @@ const envVarsSchema = joi.object({
   OPENAI_API_KEY: joi.string().required().description('OpenAI API Key'),
   OPENAI_SERVICE_TIER: joi.string().valid('auto', 'default', 'flex', 'scale', 'priority').optional()
     .description('OpenAI service tier; priority ~1.3s faster at ~2x token cost'),
-  OPENAI_REASONING_EFFORT: joi.string().valid('minimal', 'low', 'medium', 'high').optional()
-    .description('Reasoning effort for gpt-5.x'),
+  // GPT-6 Luna's levels; "minimal" (GPT-5) is still accepted and read as "none".
+  OPENAI_REASONING_EFFORT: joi.string().valid('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max').optional()
+    .description('Reasoning effort for gpt-6-luna'),
   RAZORPAY_KEY_ID: joi.string().allow('').optional().description('Razorpay Key ID'),
   RAZORPAY_KEY_SECRET: joi.string().allow('').optional().description('Razorpay Key Secret'),
   RAZORPAY_WEBHOOK_SECRET: joi.string().allow('').optional().description('Razorpay Webhook Secret'),
@@ -108,7 +109,7 @@ module.exports = {
   openai: {
     apiKey: envVars.OPENAI_API_KEY,
     serviceTier: envVars.OPENAI_SERVICE_TIER || null,
-    reasoningEffort: envVars.OPENAI_REASONING_EFFORT || 'minimal',
+    reasoningEffort: envVars.OPENAI_REASONING_EFFORT || 'low',
   },
   razorpay: {
     keyId: envVars.RAZORPAY_KEY_ID,

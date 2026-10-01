@@ -690,11 +690,17 @@ const prepareRead = (parsedData) => {
 
 // Model selection and speed knobs. process.env first so scripts/latency_test.js
 // --model/--tier/--effort still override the .env config.
-const resolveModelSettings = () => ({
-  model: process.env.OPENAI_MODEL || 'gpt-6-luna',
-  serviceTier: process.env.OPENAI_SERVICE_TIER || config.openai.serviceTier,
-  reasoningEffort: process.env.OPENAI_REASONING_EFFORT || config.openai.reasoningEffort,
-});
+// GPT-6 Luna takes none | low | medium | high | xhigh | max. An .env still
+// set to GPT-5's "minimal" is read as "none", its nearest: sent as it is,
+// the refusal would drop the effort from every call in the process.
+const resolveModelSettings = () => {
+  const effort = process.env.OPENAI_REASONING_EFFORT || config.openai.reasoningEffort;
+  return {
+    model: process.env.OPENAI_MODEL || 'gpt-6-luna',
+    serviceTier: process.env.OPENAI_SERVICE_TIER || config.openai.serviceTier,
+    reasoningEffort: effort === 'minimal' ? 'none' : effort,
+  };
+};
 
 // Reasoning tokens count against max_completion_tokens. The JSON answer is
 // under a thousand tokens; the rest is headroom so a low or medium effort
@@ -1307,8 +1313,10 @@ const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_00
     timeoutMs,
     // Locating a white card is not a reasoning task, and this call sits in
     // front of every capture. It ran at the deployment's default effort —
-    // the reader's — which was most of a wait the shop called huge.
-    reasoningEffort: 'minimal',
+    // the reader's — which was most of a wait the shop called huge. "none":
+    // GPT-6 Luna refuses the old "minimal", and a refusal would drop the
+    // effort from every later call in the process.
+    reasoningEffort: 'none',
     // Its own model and tier, from the environment: a lighter model may
     // place a card as well as the reader's, and the priority tier answers
     // sooner. Neither can be judged from here, so both can be changed

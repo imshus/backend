@@ -95,7 +95,7 @@ stub('../services/mail.service', {
 stub('../config/env', {
   publicBaseUrl: 'https://amitaash.com',
   invoicePdfCache: { maxBytes: 15 * 1024 * 1024 },
-  invoiceEmailPdfWaitMs: 40,
+  invoiceEmailPdfWaitMs: 1000,
 });
 stub('../utils/apiResponse', {
   sendSuccess: (res, data, status = 200) => res.finish(status, data),
