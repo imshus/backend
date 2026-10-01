@@ -1,6 +1,7 @@
 const express = require('express');
 const authController = require('../controllers/auth.controller');
 const { validate } = require('../middleware/validation.middleware');
+const { logGstVerifyOutcome } = require('../middleware/gstFailureLog.middleware');
 const {
   gstVerifySchema,
   gstConfirmSchema,
@@ -32,9 +33,11 @@ const { authenticateJWT } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
-router.post('/business/gst/verify', gstRateLimiter, validate(gstVerifySchema), authController.verifyGst);
+// Both GST checks log a number that cannot be verified, with the name and
+// mobile sent alongside (gst_verification_failures).
+router.post('/business/gst/verify', gstRateLimiter, logGstVerifyOutcome, validate(gstVerifySchema), authController.verifyGst);
 router.post('/check-availability', accountLookupLimiter, validate(checkAvailabilitySchema), authController.checkAvailability);
-router.post('/business/gst/confirm', validate(gstConfirmSchema), authController.confirmGst);
+router.post('/business/gst/confirm', logGstVerifyOutcome, validate(gstConfirmSchema), authController.confirmGst);
 router.post('/business/contact-details', validate(contactDetailsSchema), authController.submitContactDetails);
 router.post('/register', validate(registerSchema), authController.register);
 router.post('/send-otp', otpSendLimiter, validate(sendOtpSchema), authController.sendOtp);

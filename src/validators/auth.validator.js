@@ -25,15 +25,25 @@ const mpinSchema = Joi.string()
     'any.required': 'Enter your 4-digit MPIN',
   });
 
+// Who is checking: the name and mobile from the sign-up form, sent so a GST
+// number that cannot be verified is kept with them. Optional, and lenient on
+// shape, so a check is never refused over them.
+const gstCheckContact = {
+  fullName: Joi.string().allow('').max(200).optional(),
+  mobile: Joi.string().allow('').max(20).optional(),
+};
+
 const gstVerifySchema = Joi.object({
   gstNumber: Joi.string().pattern(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/).required().messages({
     'string.pattern.base': 'INVALID_GST_NUMBER',
     'any.required': 'GST number is required'
-  })
+  }),
+  ...gstCheckContact,
 });
 
 const gstConfirmSchema = Joi.object({
-  gstNumber: Joi.string().required()
+  gstNumber: Joi.string().required(),
+  ...gstCheckContact,
 });
 
 const contactDetailsSchema = Joi.object({
