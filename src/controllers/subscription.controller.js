@@ -7,6 +7,7 @@ const CreditTransaction = require('../models/creditTransaction.model');
 const billingConfigService = require('../services/billingConfig.service');
 const paymentService = require('../services/payment.service');
 const referralService = require('../services/referral.service');
+const Business = require('../models/business.model');
 
 /** Earn & Invite: this person's own code and how their referrals are doing. */
 async function getReferralOverview(req, res, next) {
@@ -37,6 +38,8 @@ async function getOverview(req, res, next) {
     const wallet = await walletService.ensureWallet(businessId);
     const cfg = await billingConfigService.getEffectiveConfig();
     const monthSummary = await paymentService.getMonthCostSummary({ businessId });
+    // Offered again in the email popup before the next payment.
+    const business = await Business.findById(businessId).select('billingEmail').lean();
 
     let creditWarningLevel = 'NONE';
     const creditBalance = walletEnabled ? Number(wallet.creditBalance || 0) : 0;
@@ -97,6 +100,7 @@ async function getOverview(req, res, next) {
       trialDaysConfigured: Number(cfg.trialDays || 7),
       lastScanCost: walletEnabled ? (wallet.lastScanCost || 0) : 0,
       lastScanAt: walletEnabled ? wallet.lastScanAt : null,
+      billingEmail: business?.billingEmail || '',
     });
   } catch (error) {
     next(error);

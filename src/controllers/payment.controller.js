@@ -1,10 +1,26 @@
 const { sendSuccess } = require('../utils/apiResponse');
+const { isEmail } = require('../utils/email');
+const Business = require('../models/business.model');
 const paymentService = require('../services/payment.service');
+
+/**
+ * The email the shop typed in the popup before paying, kept on the shop so
+ * the next payment offers it again. An app from before the popup sends none,
+ * and pays as it always did; a typed value that is not an address is refused
+ * before any order exists.
+ */
+async function saveBillingEmail(businessId, raw) {
+  const email = String(raw ?? '').trim();
+  if (!email) return;
+  if (!isEmail(email)) throw new Error('BILLING_EMAIL_INVALID');
+  await Business.updateOne({ _id: businessId }, { $set: { billingEmail: email } });
+}
 
 async function createApplicationOrder(req, res, next) {
   try {
     const businessId = req.user.businessId;
     const userId = req.user.userId;
+    await saveBillingEmail(businessId, req.body?.email);
     const order = await paymentService.createOrderForApplicationPurchase({ businessId, userId });
     sendSuccess(res, {
       ...order,
@@ -23,6 +39,7 @@ async function createCreditOrder(req, res, next) {
     const userId = req.user.userId;
     const amount = Number(req.body?.amount || 0);
 
+    await saveBillingEmail(businessId, req.body?.email);
     const order = await paymentService.createOrderForCreditRecharge({
       businessId,
       userId,

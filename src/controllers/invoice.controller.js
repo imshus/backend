@@ -23,6 +23,7 @@ const mailService = require('../services/mail.service');
 const redisService = require('../services/redis.service');
 const config = require('../config/env');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
+const { isEmail } = require('../utils/email');
 
 const MAX_INVOICE_PDF_BYTES = config.invoicePdfCache?.maxBytes || (15 * 1024 * 1024);
 
@@ -925,10 +926,6 @@ const getInvoice = async (req, res, next) => {
   }
 };
 
-// One address, no spaces or header characters. The address is the one saved
-// on the invoice, so this only refuses what no mail server would take.
-const EMAIL_PATTERN = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
-
 /**
  * POST /api/v1/invoices/:id/email
  *
@@ -951,7 +948,7 @@ const emailInvoice = async (req, res, next) => {
     }
 
     const to = String(invoice.customerEmail || '').trim();
-    if (!EMAIL_PATTERN.test(to)) {
+    if (!isEmail(to)) {
       return sendError(res, 'Add the customer\'s email address to send this invoice.', 400);
     }
     if (!mailService.isConfigured()) {

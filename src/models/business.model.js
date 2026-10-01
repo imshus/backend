@@ -60,6 +60,9 @@ const businessSchema = new mongoose.Schema({
   bankAccountNumber: { type: String, default: '' },
   bankIfsc: { type: String, default: '' },
   invoiceTerms: { type: [String], default: [] },
+  // Asked for in a popup before each licence or credit payment, offered
+  // again the next time, and handed to Razorpay for its payment receipt.
+  billingEmail: { type: String, default: '' },
   // ── Referral programme ──────────────────────────────────────────────
   // Codes are personal and live in the referral_codes collection; the
   // referred side is recorded here. Business whose member's code was entered

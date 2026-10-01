@@ -90,6 +90,7 @@ const errorHandler = (err, req, res, next) => {
     'INVALID_APPLICATION_PRICE': { status: 500, msg: 'Application pricing configuration is invalid.' },
     'PAYMENT_VERIFICATION_INPUT_MISSING': { status: 400, msg: 'Payment verification input is incomplete.' },
     'PAYMENT_ORDER_NOT_FOUND': { status: 404, msg: 'Payment order was not found.' },
+    'BILLING_EMAIL_INVALID': { status: 400, msg: 'Please enter a valid email address.' },
     'INVALID_PAYMENT_SIGNATURE': { status: 400, msg: 'Payment signature verification failed.' },
     'PAYMENT_AMOUNT_MISMATCH': { status: 400, msg: 'Payment amount mismatch detected.' },
     'PAYMENT_NOT_CAPTURED': { status: 409, msg: 'Payment is not captured yet. Please retry shortly.' },
