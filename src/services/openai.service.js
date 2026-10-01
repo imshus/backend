@@ -691,7 +691,7 @@ const prepareRead = (parsedData) => {
 // Model selection and speed knobs. process.env first so scripts/latency_test.js
 // --model/--tier/--effort still override the .env config.
 const resolveModelSettings = () => ({
-  model: process.env.OPENAI_MODEL || 'gpt-5.6-luna',
+  model: process.env.OPENAI_MODEL || 'gpt-6-luna',
   serviceTier: process.env.OPENAI_SERVICE_TIER || config.openai.serviceTier,
   reasoningEffort: process.env.OPENAI_REASONING_EFFORT || config.openai.reasoningEffort,
 });
