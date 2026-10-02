@@ -25,8 +25,8 @@ const mpinSchema = Joi.string()
     'any.required': 'Enter your 4-digit MPIN',
   });
 
-// Who is checking: the name and mobile from the sign-up form, sent so a GST
-// number that cannot be verified is kept with them. Optional, and lenient on
+// Who is checking: the name and mobile from the sign-up form, sent so every
+// GST check, passed or failed, is kept with them. Optional, and lenient on
 // shape, so a check is never refused over them.
 const gstCheckContact = {
   fullName: Joi.string().allow('').max(200).optional(),

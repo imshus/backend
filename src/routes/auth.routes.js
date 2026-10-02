@@ -1,7 +1,7 @@
 const express = require('express');
 const authController = require('../controllers/auth.controller');
 const { validate } = require('../middleware/validation.middleware');
-const { logGstVerifyOutcome } = require('../middleware/gstFailureLog.middleware');
+const { logGstCheck } = require('../middleware/gstVerificationLog.middleware');
 const {
   gstVerifySchema,
   gstConfirmSchema,
@@ -33,11 +33,12 @@ const { authenticateJWT } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
-// Both GST checks log a number that cannot be verified, with the name and
-// mobile sent alongside (gst_verification_failures).
-router.post('/business/gst/verify', gstRateLimiter, logGstVerifyOutcome, validate(gstVerifySchema), authController.verifyGst);
+// Every sign-up GST check is logged with the name and mobile sent alongside,
+// passed or failed (gst_verifications): the account is only created on a
+// pass, but a failed attempt is kept too.
+router.post('/business/gst/verify', gstRateLimiter, logGstCheck('verify'), validate(gstVerifySchema), authController.verifyGst);
 router.post('/check-availability', accountLookupLimiter, validate(checkAvailabilitySchema), authController.checkAvailability);
-router.post('/business/gst/confirm', logGstVerifyOutcome, validate(gstConfirmSchema), authController.confirmGst);
+router.post('/business/gst/confirm', logGstCheck('confirm'), validate(gstConfirmSchema), authController.confirmGst);
 router.post('/business/contact-details', validate(contactDetailsSchema), authController.submitContactDetails);
 router.post('/register', validate(registerSchema), authController.register);
 router.post('/send-otp', otpSendLimiter, validate(sendOtpSchema), authController.sendOtp);
