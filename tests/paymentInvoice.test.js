@@ -89,6 +89,12 @@ const stub = (request, exports) => {
 };
 stub('../models/paymentTransaction.model', {
   findById: () => ({ lean: async () => state.txn }),
+  findOne: (filter) => ({
+    lean: async () => {
+      state.findOneFilter = filter;
+      return filter.orderId === state.txn.orderId && filter.businessId === state.txn.businessId ? state.txn : null;
+    },
+  }),
   findOneAndUpdate: (filter, update) => ({
     lean: async () => {
       state.claims += 1;
@@ -101,6 +107,7 @@ stub('../models/paymentTransaction.model', {
 });
 stub('../models/business.model', {
   findById: () => ({ select: () => ({ lean: async () => state.business }) }),
+  updateOne: async (filter, update) => { state.businessUpdates.push(update.$set); },
 });
 stub('./billingConfig.service', { getEffectiveConfig: async () => ({ purchasedBonusCredits: 1000 }) });
 stub('./mail.service', {
@@ -111,7 +118,7 @@ stub('./mail.service', {
   },
 });
 stub('../config/env', { invoiceSeller: { name: 'Amitaash IT Solutions Private Limited', gstin: '', email: 'info@mrpscan.com' } });
-const { sendPaymentInvoice } = require(SERVICE);
+const { sendPaymentInvoice, getPaymentInvoice, emailPaymentInvoice } = require(SERVICE);
 
 const reset = () => Object.assign(state, {
   txn: { ...licenceTxn, _id: 't1', businessId: 'b1', status: 'PAYMENT_SUCCESS', invoiceEmailedAt: null },
@@ -120,6 +127,8 @@ const reset = () => Object.assign(state, {
   sendThrows: false,
   sent: [],
   claims: 0,
+  businessUpdates: [],
+  findOneFilter: null,
 });
 
 test('emails the invoice to the billing email, once', async () => {
@@ -154,4 +163,36 @@ test('a failed send releases the claim so it can be tried again', async () => {
   assert.equal(state.txn.invoiceEmailedAt, null);
   state.sendThrows = false;
   assert.equal((await sendPaymentInvoice('t1')).sent, true);
+});
+
+test('the app shows the invoice for its own paid order only', async () => {
+  reset();
+  const invoice = await getPaymentInvoice({ businessId: 'b1', orderId: 'order_1' });
+  assert.equal(invoice.title, 'Payment Receipt');
+  assert.match(invoice.html, /MRPscan Application Licence/);
+  assert.equal(invoice.billingEmail, 'owner@shop.in');
+  assert.deepEqual(state.findOneFilter, { orderId: 'order_1', businessId: 'b1' });
+  await assert.rejects(() => getPaymentInvoice({ businessId: 'b2', orderId: 'order_1' }), /PAYMENT_ORDER_NOT_FOUND/);
+  state.txn.status = 'ORDER_CREATED';
+  await assert.rejects(() => getPaymentInvoice({ businessId: 'b1', orderId: 'order_1' }), /PAYMENT_INVOICE_NOT_READY/);
+});
+
+test('Email Invoice sends on request, again if asked, to a typed address kept for next time', async () => {
+  reset();
+  state.txn.invoiceEmailedAt = new Date(); // already sent automatically
+  assert.deepEqual(await emailPaymentInvoice({ businessId: 'b1', orderId: 'order_1' }), { sentTo: 'owner@shop.in' });
+  assert.deepEqual(await emailPaymentInvoice({ businessId: 'b1', orderId: 'order_1', email: 'accounts@shop.in' }), { sentTo: 'accounts@shop.in' });
+  assert.equal(state.sent.length, 2);
+  assert.equal(state.sent[1].to, 'accounts@shop.in');
+  assert.deepEqual(state.businessUpdates, [{ billingEmail: 'accounts@shop.in' }]);
+});
+
+test('Email Invoice refuses a bad address and a server without SMTP', async () => {
+  reset();
+  await assert.rejects(() => emailPaymentInvoice({ businessId: 'b1', orderId: 'order_1', email: 'nope' }), /BILLING_EMAIL_INVALID/);
+  state.business.billingEmail = '';
+  await assert.rejects(() => emailPaymentInvoice({ businessId: 'b1', orderId: 'order_1' }), /BILLING_EMAIL_INVALID/);
+  state.configured = false;
+  await assert.rejects(() => emailPaymentInvoice({ businessId: 'b1', orderId: 'order_1', email: 'a@b.co' }), /INVOICE_EMAIL_NOT_CONFIGURED/);
+  assert.equal(state.sent.length, 0);
 });

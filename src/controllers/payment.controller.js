@@ -2,6 +2,7 @@ const { sendSuccess } = require('../utils/apiResponse');
 const { isEmail } = require('../utils/email');
 const Business = require('../models/business.model');
 const paymentService = require('../services/payment.service');
+const paymentInvoiceService = require('../services/paymentInvoice.service');
 
 /**
  * The email the shop typed in the popup before paying, kept on the shop so
@@ -129,7 +130,34 @@ async function getPaymentHistory(req, res, next) {
   }
 }
 
+async function getPaymentInvoice(req, res, next) {
+  try {
+    const invoice = await paymentInvoiceService.getPaymentInvoice({
+      businessId: req.user.businessId,
+      orderId: req.params.orderId,
+    });
+    sendSuccess(res, invoice);
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function emailPaymentInvoice(req, res, next) {
+  try {
+    const result = await paymentInvoiceService.emailPaymentInvoice({
+      businessId: req.user.businessId,
+      orderId: req.params.orderId,
+      email: req.body?.email,
+    });
+    sendSuccess(res, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
+  getPaymentInvoice,
+  emailPaymentInvoice,
   createApplicationOrder,
   createCreditOrder,
   verifyPayment,
