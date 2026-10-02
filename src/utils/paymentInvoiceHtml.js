@@ -57,16 +57,21 @@ const stateOfGstin = (gstin) => {
   return /^\d{2}$/.test(code) ? code : '';
 };
 
-/** The shop's state: its saved state code, else the one its GSTIN starts with. */
+/** The shop's state: the one its billed GSTIN starts with, else its saved state code. */
 const buyerStateOf = (business) => {
+  const fromGstin = stateOfGstin(business?.gstNumber);
+  if (fromGstin) return fromGstin;
   const code = String(business?.stateCode ?? '').trim();
-  return /^\d{1,2}$/.test(code) && Number(code) > 0 ? code.padStart(2, '0') : stateOfGstin(business?.gstNumber);
+  return /^\d{1,2}$/.test(code) && Number(code) > 0 ? code.padStart(2, '0') : '';
 };
 
 /**
- * The GST lines: CGST + SGST when seller and buyer are in one state, IGST
- * across states, a single GST line when either state is unknown, none when
- * nothing was charged (credit recharges carry no GST).
+ * The GST lines, at the shop owner's instruction (2 Oct 2026): a billed
+ * GSTIN in MRPscan's own state (07) gets CGST + SGST, half each; any other
+ * state gets CGST + IGST, half each, i.e. SGST replaced by IGST. They were
+ * told that GST law puts an inter-state sale under IGST alone and chose this
+ * split anyway. A single GST line when either state is unknown; none when
+ * nothing was charged.
  */
 const taxLines = ({ gstAmount, gstPercent, sellerState, buyerState }) => {
   const gst = Number(gstAmount) || 0;
@@ -78,7 +83,13 @@ const taxLines = ({ gstAmount, gstPercent, sellerState, buyerState }) => {
       { label: `SGST @ ${gstPercent / 2}%`, amount: Math.round((gst - half) * 100) / 100 },
     ];
   }
-  if (sellerState && buyerState) return [{ label: `IGST @ ${gstPercent}%`, amount: gst }];
+  if (sellerState && buyerState) {
+    const half = Math.round((gst / 2) * 100) / 100;
+    return [
+      { label: `CGST @ ${gstPercent / 2}%`, amount: half },
+      { label: `IGST @ ${gstPercent / 2}%`, amount: Math.round((gst - half) * 100) / 100 },
+    ];
+  }
   return [{ label: `GST @ ${gstPercent}%`, amount: gst }];
 };
 

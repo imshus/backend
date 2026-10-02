@@ -24,13 +24,15 @@ const licenceTxn = {
 };
 const shop = { tradeName: 'Gupta Jewellers', legalName: 'Gupta Jewellers Pvt. Ltd.', gstNumber: '27AABCG1234F1Z5', stateCode: '27' };
 
-test('same state: CGST + SGST; another state: IGST; unknown: one GST line; none on credits', () => {
+test('same state: CGST + SGST; another state: CGST + IGST; unknown: one GST line; none on credits', () => {
   assert.deepEqual(taxLines({ gstAmount: 2160, gstPercent: 18, sellerState: '27', buyerState: '27' }), [
     { label: 'CGST @ 9%', amount: 1080 },
     { label: 'SGST @ 9%', amount: 1080 },
   ]);
-  assert.deepEqual(taxLines({ gstAmount: 2160, gstPercent: 18, sellerState: '09', buyerState: '27' }), [
-    { label: 'IGST @ 18%', amount: 2160 },
+  // Another state: SGST is replaced by IGST, half each (the owner's rule).
+  assert.deepEqual(taxLines({ gstAmount: 2160, gstPercent: 18, sellerState: '07', buyerState: '27' }), [
+    { label: 'CGST @ 9%', amount: 1080 },
+    { label: 'IGST @ 9%', amount: 1080 },
   ]);
   assert.deepEqual(taxLines({ gstAmount: 2160, gstPercent: 18, sellerState: '', buyerState: '27' }), [
     { label: 'GST @ 18%', amount: 2160 },
