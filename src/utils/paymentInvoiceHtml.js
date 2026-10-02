@@ -97,7 +97,7 @@ const describe = (txn) => {
  * @param {object} args
  * @param {object} args.txn       payment transaction (amount, baseAmount, gstAmount, invoiceNumber, …)
  * @param {object} args.business  the shop: legalName, tradeName, gstNumber, address, stateName, pincode
- * @param {object} args.seller    { name, address, gstin, email }
+ * @param {object} args.seller    { name, address, gstin }
  * @returns {{ subject: string, html: string, text: string, title: string }}
  */
 function buildPaymentInvoice({ txn, business = {}, seller = {} }) {
@@ -171,7 +171,6 @@ function buildPaymentInvoice({ txn, business = {}, seller = {} }) {
         lines: [
           seller.address ? escapeHtml(seller.address) : '',
           seller.gstin ? `GSTIN <b>${escapeHtml(seller.gstin)}</b>` : '',
-          seller.email ? escapeHtml(seller.email) : '',
         ],
       })}</td>
       <td valign="top" width="50%" style="padding-left:10px;border-left:1px solid ${COLORS.border};">${party({
@@ -224,7 +223,7 @@ function buildPaymentInvoice({ txn, business = {}, seller = {} }) {
   <tr><td style="padding:16px 24px 22px;">
     <div style="border-top:1px solid ${COLORS.border};padding-top:14px;font-family:${SANS};font-size:12px;line-height:1.55;color:${COLORS.label};text-align:center;">
       Thank you for choosing MRPscan.<br>
-      This is a computer-generated ${isTaxInvoice ? 'invoice' : 'receipt'} and needs no signature.${seller.email ? `<br>Questions? Write to <a href="mailto:${escapeHtml(seller.email)}" style="color:${COLORS.brand};font-weight:700;text-decoration:none;">${escapeHtml(seller.email)}</a>` : ''}
+      This is a computer-generated ${isTaxInvoice ? 'invoice' : 'receipt'} and needs no signature.
     </div>
   </td></tr>
 

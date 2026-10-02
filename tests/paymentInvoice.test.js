@@ -48,6 +48,9 @@ test('a Tax Invoice only with the seller GSTIN; a Payment Receipt without it', (
   assert.match(withGstin.html, /₹ 14,160\.00/);
   // The licence line carries no "Lifetime access · bonus credits" note.
   assert.doesNotMatch(withGstin.html, /Lifetime access|bonus credits/);
+  // No seller email anywhere on the invoice, at the shop's asking.
+  const withEmail = buildPaymentInvoice({ txn: licenceTxn, business: shop, seller: { gstin: '27ABCDE1234F1Z5', email: 'info@mrpscan.com' } });
+  assert.doesNotMatch(withEmail.html, /info@mrpscan\.com/);
   assert.match(withGstin.subject, /^MRPscan Tax Invoice INV-261002-482915/);
 
   const without = buildPaymentInvoice({ txn: licenceTxn, business: shop, seller: { gstin: '' } });
