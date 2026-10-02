@@ -20,6 +20,8 @@ const config = require('../config/env');
  * credits + 18%.
  */
 const APPLICATION_GST_PERCENT = 18;
+// How long the server waits before emailing an invoice the app has not.
+const PAYMENT_INVOICE_BACKSTOP_MS = 60_000;
 const CREDIT_GST_PERCENT = 18;
 
 function toTwo(value) {
@@ -369,15 +371,18 @@ async function applyPaymentEffects({ txn, paymentPayload = {}, source = 'VERIFY_
     source,
   });
 
-  // MRPscan's invoice to the shop's billing email, after the reply: the
-  // payment has succeeded either way, and a mail server must not slow it.
-  setImmediate(() => {
+  // MRPscan's invoice to the shop's billing email. The app asks for it
+  // straight after paying (so it can show where it went); this is the
+  // backstop for a payment the app never reports, such as one only the
+  // webhook saw. It waits a minute so the app's send goes first, and the
+  // once-only claim keeps the two from both sending.
+  setTimeout(() => {
     paymentInvoiceService.sendPaymentInvoice(txn._id).then((result) => {
       if (result.sent) console.info('[PAYMENT_INVOICE_EMAILED]', { orderId: txn.orderId, to: result.to });
     }).catch((err) => {
       console.error('[PAYMENT_INVOICE_EMAIL_FAILED]', { orderId: txn.orderId, detail: String(err?.message || err).slice(0, 300) });
     });
-  });
+  }, PAYMENT_INVOICE_BACKSTOP_MS).unref?.();
 
   return { txn, wallet, idempotent: false };
 }

@@ -144,6 +144,14 @@ async function getPaymentInvoice(req, res, next) {
 
 async function emailPaymentInvoice(req, res, next) {
   try {
+    // { auto: true }: the app's own send straight after paying, once only.
+    if (req.body?.auto === true) {
+      const sent = await paymentInvoiceService.autoEmailPaymentInvoice({
+        businessId: req.user.businessId,
+        orderId: req.params.orderId,
+      });
+      return sendSuccess(res, sent);
+    }
     const result = await paymentInvoiceService.emailPaymentInvoice({
       businessId: req.user.businessId,
       orderId: req.params.orderId,

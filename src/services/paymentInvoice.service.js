@@ -111,4 +111,26 @@ async function emailPaymentInvoice({ businessId, orderId, email }) {
   return { sentTo: to };
 }
 
-module.exports = { sendPaymentInvoice, getPaymentInvoice, emailPaymentInvoice };
+/**
+ * The automatic email, asked for by the app straight after a payment so it
+ * can say truthfully where the invoice went. Sends at most once per payment
+ * (the same claim as the server's own backstop send); if it has gone already,
+ * says where. Resolves to { sentTo, alreadySent }.
+ */
+async function autoEmailPaymentInvoice({ businessId, orderId }) {
+  const txn = await paidTransaction(businessId, orderId);
+  if (txn.invoiceEmailedAt && txn.invoiceEmailedTo) {
+    return { sentTo: txn.invoiceEmailedTo, alreadySent: true };
+  }
+  const result = await sendPaymentInvoice(txn._id);
+  if (result.sent) return { sentTo: result.to, alreadySent: false };
+  if (result.reason === 'SMTP_NOT_CONFIGURED') throw new Error('INVOICE_EMAIL_NOT_CONFIGURED');
+  if (result.reason === 'NO_BILLING_EMAIL') throw new Error('BILLING_EMAIL_INVALID');
+  if (result.reason === 'ALREADY_SENT') {
+    const fresh = await PaymentTransaction.findById(txn._id).lean();
+    return { sentTo: fresh?.invoiceEmailedTo || '', alreadySent: true };
+  }
+  throw new Error('PAYMENT_INVOICE_NOT_READY');
+}
+
+module.exports = { sendPaymentInvoice, getPaymentInvoice, emailPaymentInvoice, autoEmailPaymentInvoice };

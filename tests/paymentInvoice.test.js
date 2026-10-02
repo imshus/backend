@@ -121,7 +121,7 @@ stub('./mail.service', {
   },
 });
 stub('../config/env', { invoiceSeller: { name: 'Amitaash IT Solutions Private Limited', gstin: '', email: 'info@mrpscan.com' } });
-const { sendPaymentInvoice, getPaymentInvoice, emailPaymentInvoice } = require(SERVICE);
+const { sendPaymentInvoice, getPaymentInvoice, emailPaymentInvoice, autoEmailPaymentInvoice } = require(SERVICE);
 
 const reset = () => Object.assign(state, {
   txn: { ...licenceTxn, _id: 't1', businessId: 'b1', status: 'PAYMENT_SUCCESS', invoiceEmailedAt: null },
@@ -197,5 +197,24 @@ test('Email Invoice refuses a bad address and a server without SMTP', async () =
   await assert.rejects(() => emailPaymentInvoice({ businessId: 'b1', orderId: 'order_1' }), /BILLING_EMAIL_INVALID/);
   state.configured = false;
   await assert.rejects(() => emailPaymentInvoice({ businessId: 'b1', orderId: 'order_1', email: 'a@b.co' }), /INVOICE_EMAIL_NOT_CONFIGURED/);
+  assert.equal(state.sent.length, 0);
+});
+
+test("the app's automatic email after paying sends once and says where it went", async () => {
+  reset();
+  assert.deepEqual(await autoEmailPaymentInvoice({ businessId: 'b1', orderId: 'order_1' }), { sentTo: 'owner@shop.in', alreadySent: false });
+  assert.equal(state.sent.length, 1);
+  // Asked again (or the server's backstop ran first): nothing more is sent.
+  assert.deepEqual(await autoEmailPaymentInvoice({ businessId: 'b1', orderId: 'order_1' }), { sentTo: 'owner@shop.in', alreadySent: true });
+  assert.equal(state.sent.length, 1);
+});
+
+test('the automatic email reports a server without SMTP or a shop without an email', async () => {
+  reset();
+  state.configured = false;
+  await assert.rejects(() => autoEmailPaymentInvoice({ businessId: 'b1', orderId: 'order_1' }), /INVOICE_EMAIL_NOT_CONFIGURED/);
+  reset();
+  state.business.billingEmail = '';
+  await assert.rejects(() => autoEmailPaymentInvoice({ businessId: 'b1', orderId: 'order_1' }), /BILLING_EMAIL_INVALID/);
   assert.equal(state.sent.length, 0);
 });
