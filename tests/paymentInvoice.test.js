@@ -42,11 +42,12 @@ test('same state: CGST + SGST; another state: IGST; unknown: one GST line; none 
 });
 
 test('a Tax Invoice only with the seller GSTIN; a Payment Receipt without it', () => {
-  const withGstin = buildPaymentInvoice({ txn: licenceTxn, business: shop, seller: { gstin: '27ABCDE1234F1Z5' }, bonusCredits: 1000 });
+  const withGstin = buildPaymentInvoice({ txn: licenceTxn, business: shop, seller: { gstin: '27ABCDE1234F1Z5' } });
   assert.equal(withGstin.title, 'Tax Invoice');
   assert.match(withGstin.html, /CGST @ 9%/);
   assert.match(withGstin.html, /₹ 14,160\.00/);
-  assert.match(withGstin.html, /1,000 bonus credits included/);
+  // The licence line carries no "Lifetime access · bonus credits" note.
+  assert.doesNotMatch(withGstin.html, /Lifetime access|bonus credits/);
   assert.match(withGstin.subject, /^MRPscan Tax Invoice INV-261002-482915/);
 
   const without = buildPaymentInvoice({ txn: licenceTxn, business: shop, seller: { gstin: '' } });
@@ -109,7 +110,6 @@ stub('../models/business.model', {
   findById: () => ({ select: () => ({ lean: async () => state.business }) }),
   updateOne: async (filter, update) => { state.businessUpdates.push(update.$set); },
 });
-stub('./billingConfig.service', { getEffectiveConfig: async () => ({ purchasedBonusCredits: 1000 }) });
 stub('./mail.service', {
   isConfigured: () => state.configured,
   sendMail: async (message) => {

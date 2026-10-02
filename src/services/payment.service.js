@@ -15,10 +15,12 @@ const config = require('../config/env');
 
 /**
  * GST charged on top of the licence price (cfg.applicationPrice, the price
- * the card shows next to "Plus GST (18%)"). The licence only: credit
- * recharges are charged as before.
+ * the card shows next to "Plus GST (18%)"), and on top of credit recharges
+ * since 2 Oct 2026: the wallet gets the credits asked for, the charge is
+ * credits + 18%.
  */
 const APPLICATION_GST_PERCENT = 18;
+const CREDIT_GST_PERCENT = 18;
 
 function toTwo(value) {
   return Number(Number(value || 0).toFixed(2));
@@ -145,8 +147,17 @@ async function createOrderForCreditRecharge({ businessId, userId, requestedAmoun
     throw new Error('INVALID_RECHARGE_AMOUNT');
   }
 
-  const amount = parsed;
-  const creditsPurchased = amount;
+  // The credits asked for plus GST on top, worked in whole paise so base +
+  // GST always equals the charge: 500 of credits is charged 590. The wallet
+  // gets the credits; verification and the webhook compare against the
+  // stored amountInPaise, so orders made before GST still verify as made.
+  const creditsPurchased = parsed;
+  const basePaise = toPaise(creditsPurchased);
+  const gstPaise = Math.round((basePaise * CREDIT_GST_PERCENT) / 100);
+  const amountInPaise = basePaise + gstPaise;
+  const amount = amountInPaise / 100;
+  const baseAmount = basePaise / 100;
+  const gstAmount = gstPaise / 100;
   const receipt = buildReceipt('CREDIT_RECHARGE', businessId);
 
   console.info('[PAYMENT_INITIATED]', {
@@ -154,17 +165,20 @@ async function createOrderForCreditRecharge({ businessId, userId, requestedAmoun
     userId: String(userId),
     paymentType: 'CREDIT_RECHARGE',
     amount,
+    gstAmount,
     creditsPurchased,
   });
 
   const order = await razorpayService.createOrder({
-    amountInPaise: toPaise(amount),
+    amountInPaise,
     receipt,
     notes: {
       paymentType: 'CREDIT_RECHARGE',
       businessId: String(businessId),
       initiatedByUserId: String(userId),
       creditsPurchased: String(creditsPurchased),
+      gstAmount: String(gstAmount),
+      gstPercent: String(CREDIT_GST_PERCENT),
     },
   });
 
@@ -183,9 +197,9 @@ async function createOrderForCreditRecharge({ businessId, userId, requestedAmoun
     orderId: order.id,
     receipt,
     amount,
-    baseAmount: amount,
-    gstAmount: 0,
-    amountInPaise: toPaise(amount),
+    baseAmount,
+    gstAmount,
+    amountInPaise,
     currency: order.currency || 'INR',
     creditsPurchased,
     status: 'ORDER_CREATED',
@@ -195,7 +209,10 @@ async function createOrderForCreditRecharge({ businessId, userId, requestedAmoun
   return {
     orderId: order.id,
     amount,
-    amountInPaise: toPaise(amount),
+    baseAmount,
+    gstAmount,
+    gstPercent: CREDIT_GST_PERCENT,
+    amountInPaise,
     currency: order.currency || 'INR',
     creditsPurchased,
     paymentType: 'CREDIT_RECHARGE',

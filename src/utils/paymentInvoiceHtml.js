@@ -83,12 +83,9 @@ const taxLines = ({ gstAmount, gstPercent, sellerState, buyerState }) => {
 };
 
 /** What was bought, as the invoice's one line. */
-const describe = (txn, bonusCredits) => {
+const describe = (txn) => {
   if (txn.paymentType === 'APPLICATION_PURCHASE') {
-    return {
-      title: 'MRPscan Application Licence',
-      note: `Lifetime access${bonusCredits ? ` · ${inr.format(bonusCredits).replace(/\.00$/, '')} bonus credits included` : ''}`,
-    };
+    return { title: 'MRPscan Application Licence', note: '' };
   }
   return {
     title: 'MRPscan Scan Credits',
@@ -101,10 +98,9 @@ const describe = (txn, bonusCredits) => {
  * @param {object} args.txn       payment transaction (amount, baseAmount, gstAmount, invoiceNumber, …)
  * @param {object} args.business  the shop: legalName, tradeName, gstNumber, address, stateName, pincode
  * @param {object} args.seller    { name, address, gstin, email }
- * @param {number} [args.bonusCredits] credits granted with a licence
  * @returns {{ subject: string, html: string, text: string, title: string }}
  */
-function buildPaymentInvoice({ txn, business = {}, seller = {}, bonusCredits = 0 }) {
+function buildPaymentInvoice({ txn, business = {}, seller = {} }) {
   const isTaxInvoice = Boolean(String(seller.gstin || '').trim());
   const title = isTaxInvoice ? 'Tax Invoice' : 'Payment Receipt';
   const amount = Number(txn.amount) || 0;
@@ -117,7 +113,7 @@ function buildPaymentInvoice({ txn, business = {}, seller = {}, bonusCredits = 0
     sellerState: stateOfGstin(seller.gstin),
     buyerState: buyerStateOf(business),
   });
-  const item = describe(txn, bonusCredits);
+  const item = describe(txn);
   const shopName = business.tradeName || business.legalName || txn.organizationTradeName || txn.organizationLegalName || 'Customer';
   const shopLegal = business.legalName && business.legalName !== shopName ? business.legalName : '';
   const shopGstin = business.gstNumber || txn.organizationGstNumber || '';
@@ -199,7 +195,7 @@ function buildPaymentInvoice({ txn, business = {}, seller = {}, bonusCredits = 0
       <tr>
         <td style="padding:14px 16px;border-top:1px solid ${COLORS.border};">
           <div style="font-family:${SANS};font-size:14.5px;font-weight:800;color:${COLORS.text};">${escapeHtml(item.title)}</div>
-          <div style="font-family:${SANS};font-size:12.5px;color:${COLORS.label};margin-top:3px;">${escapeHtml(item.note)}</div>
+          ${item.note ? `<div style="font-family:${SANS};font-size:12.5px;color:${COLORS.label};margin-top:3px;">${escapeHtml(item.note)}</div>` : ''}
         </td>
         <td align="right" valign="top" style="padding:14px 16px;border-top:1px solid ${COLORS.border};font-family:${SANS};font-size:14px;font-weight:700;color:${COLORS.text};white-space:nowrap;">${money(taxable)}</td>
       </tr>
@@ -244,7 +240,7 @@ function buildPaymentInvoice({ txn, business = {}, seller = {}, bonusCredits = 0
     `From: ${seller.name || 'Amitaash IT Solutions Private Limited'}${seller.gstin ? ` (GSTIN ${seller.gstin})` : ''}`,
     `Billed to: ${shopName}${shopGstin ? ` (GSTIN ${shopGstin})` : ''}`,
     '',
-    `${item.title} — ${item.note}: ${money(taxable)}`,
+    `${item.title}${item.note ? ` — ${item.note}` : ''}: ${money(taxable)}`,
     ...lines.map((line) => `${line.label}: ${money(line.amount)}`),
     `Total paid: ${money(amount)}`,
     '',

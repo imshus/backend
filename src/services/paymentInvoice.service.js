@@ -1,6 +1,5 @@
 const PaymentTransaction = require('../models/paymentTransaction.model');
 const Business = require('../models/business.model');
-const billingConfigService = require('./billingConfig.service');
 const mailService = require('./mail.service');
 const config = require('../config/env');
 const { isEmail } = require('../utils/email');
@@ -10,16 +9,7 @@ const BUSINESS_FIELDS = 'legalName tradeName gstNumber address stateCode stateNa
 
 /** MRPscan's invoice for one successful payment: subject, html, text, title. */
 async function invoiceFor(txn, business) {
-  let bonusCredits = 0;
-  if (txn.paymentType === 'APPLICATION_PURCHASE') {
-    try {
-      const cfg = await billingConfigService.getEffectiveConfig();
-      bonusCredits = Number(cfg.purchasedBonusCredits || 0);
-    } catch (_) {
-      bonusCredits = 0;
-    }
-  }
-  return buildPaymentInvoice({ txn, business: business || {}, seller: config.invoiceSeller || {}, bonusCredits });
+  return buildPaymentInvoice({ txn, business: business || {}, seller: config.invoiceSeller || {} });
 }
 
 const sendInvoiceMail = (to, invoice) => mailService.sendMail({

@@ -1,7 +1,8 @@
 /**
  * The licence is charged at its price plus 18% GST: 12,000 + 2,160 = 14,160.
  * The order, the stored payment row and the checkout amount agree to the
- * paisa, and the GST split is recorded. Credit recharges are untouched.
+ * paisa, and the GST split is recorded. Credit recharges get 18% on top
+ * too: the wallet gets the credits asked for, the charge is credits + GST.
  */
 
 const test = require('node:test');
@@ -21,6 +22,8 @@ const original = {
   fetchPayment: razorpayService.fetchPayment,
   getEffectiveConfig: billingConfigService.getEffectiveConfig,
   getLicenseOverview: licenseService.getLicenseOverview,
+  ensureLicense: licenseService.ensureLicense,
+  canRechargeCredits: licenseService.canRechargeCredits,
 };
 
 test.after(() => {
@@ -31,6 +34,8 @@ test.after(() => {
   razorpayService.fetchPayment = original.fetchPayment;
   billingConfigService.getEffectiveConfig = original.getEffectiveConfig;
   licenseService.getLicenseOverview = original.getLicenseOverview;
+  licenseService.ensureLicense = original.ensureLicense;
+  licenseService.canRechargeCredits = original.canRechargeCredits;
 });
 
 /** Stubs every dependency of the licence order; returns what they received. */
@@ -140,4 +145,38 @@ test('a payment of the old 12,000 against a 14,160 order is refused', async () =
     /PAYMENT_AMOUNT_MISMATCH/,
   );
   assert.equal(txn.status, 'VERIFICATION_FAILED');
+});
+
+test('500 of credits is charged 590: the wallet gets 500, GST 90 on top', async () => {
+  const seen = stubOrder({ applicationPrice: 12000 });
+  licenseService.ensureLicense = async () => ({ licenseStatus: 'FREE_TRIAL_LICENSE' });
+  licenseService.canRechargeCredits = () => true;
+  const result = await paymentService.createOrderForCreditRecharge({
+    businessId: '507f1f77bcf86cd799439011',
+    userId: 'u1',
+    requestedAmount: 500,
+  });
+
+  assert.equal(seen.orders[0].amountInPaise, 59000);
+  assert.equal(seen.orders[0].notes.creditsPurchased, '500');
+  assert.equal(seen.orders[0].notes.gstAmount, '90');
+  const row = seen.rows[0];
+  assert.equal(row.creditsPurchased, 500);
+  assert.equal(row.baseAmount, 500);
+  assert.equal(row.gstAmount, 90);
+  assert.equal(row.amount, 590);
+  assert.equal(row.amountInPaise, 59000);
+  assert.equal(result.amountInPaise, 59000);
+  assert.equal(result.creditsPurchased, 500);
+  assert.equal(result.gstPercent, 18);
+});
+
+test('odd credit amounts split to the paisa: 123.45 + 22.22 = 145.67', async () => {
+  const seen = stubOrder({ applicationPrice: 12000 });
+  licenseService.ensureLicense = async () => ({});
+  licenseService.canRechargeCredits = () => true;
+  await paymentService.createOrderForCreditRecharge({ businessId: '507f1f77bcf86cd799439011', userId: 'u1', requestedAmount: 123.45 });
+  const row = seen.rows[0];
+  assert.equal(row.amountInPaise, 12345 + 2222);
+  assert.equal(Math.round((row.baseAmount + row.gstAmount) * 100), row.amountInPaise);
 });

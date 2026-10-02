@@ -78,9 +78,11 @@ const envVarsSchema = joi.object({
   SMTP_FROM: joi.string().allow('').default(''),
   // MRPscan's own details on the invoice emailed after a licence or credit
   // payment. Without INVOICE_SELLER_GSTIN it goes out as a Payment Receipt.
+  // The defaults are the GST registration certificate's (REG-06, 22/09/2026):
+  // public business details printed on every invoice, not secrets.
   INVOICE_SELLER_NAME: joi.string().allow('').default('Amitaash IT Solutions Private Limited'),
-  INVOICE_SELLER_ADDRESS: joi.string().allow('').default(''),
-  INVOICE_SELLER_GSTIN: joi.string().allow('').default(''),
+  INVOICE_SELLER_ADDRESS: joi.string().allow('').default('1st Floor, Plot No. 2, Right Portion, WZ-3, DLF Industrial Area, Moti Nagar, New Delhi, Delhi - 110015'),
+  INVOICE_SELLER_GSTIN: joi.string().allow('').default('07ABGCA3065M1ZG'),
   INVOICE_SELLER_EMAIL: joi.string().allow('').default(''),
 })
   .unknown();
