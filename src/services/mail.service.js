@@ -23,6 +23,9 @@ const getTransport = () => {
       host,
       port,
       secure,
+      // On 587 the connection must upgrade with STARTTLS: refuse to send the
+      // login or the mail over a plain connection if the upgrade is missing.
+      requireTLS: !secure,
       auth: user ? { user, pass } : undefined,
       // A stalled server must not hold the request open; the app waits on it.
       connectionTimeout: 15_000,

@@ -5,7 +5,7 @@
  *   node scripts/send_test_email.js you@example.com
  *
  * Titan (GoDaddy Professional Email): SMTP_HOST=smtp.titan.email,
- * SMTP_PORT=465, SMTP_USER and SMTP_FROM = the full mailbox address,
+ * SMTP_PORT=587 (STARTTLS), SMTP_USER and SMTP_FROM = the full mailbox address,
  * SMTP_PASS = its password. "Enable Titan on other apps" must be on in Titan
  * webmail settings, and two-factor sign-in off for that mailbox.
  */

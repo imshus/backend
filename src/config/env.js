@@ -68,10 +68,11 @@ const envVarsSchema = joi.object({
   INVOICE_PDF_CACHE_TTL_SECONDS: joi.number().integer().min(60).max(2592000).default(604800),
   INVOICE_PDF_CACHE_MAX_MB: joi.number().min(1).max(50).default(15),
   // Invoice email. Without SMTP_HOST and SMTP_FROM the app keeps using the
-  // phone's own mail app. Port 465 is TLS from the start; 587 upgrades with
-  // STARTTLS. SMTP_FROM must be an address the SMTP account may send as.
+  // phone's own mail app. Titan: smtp.titan.email on 587 with STARTTLS
+  // (required, see mail.service) and the mailbox login; 465 would be TLS from
+  // the start. SMTP_FROM must be an address the SMTP account may send as.
   SMTP_HOST: joi.string().allow('').default(''),
-  SMTP_PORT: joi.number().integer().min(1).max(65535).default(465),
+  SMTP_PORT: joi.number().integer().min(1).max(65535).default(587),
   SMTP_SECURE: joi.boolean().optional(),
   SMTP_USER: joi.string().allow('').default(''),
   SMTP_PASS: joi.string().allow('').default(''),
