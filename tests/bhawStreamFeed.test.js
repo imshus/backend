@@ -167,7 +167,7 @@ test('normalise: { sources } is unwrapped and its times kept', () => {
 
 test('normalise: the old bare array is taken as it is, with no times', () => {
   const rows = [{ source: 'jmd_patil', cash_bhaw: '-3000', rtgs_bhaw: '1900' }];
-  assert.deepEqual(bhawService.normalizePayload(rows), { rows, fetchedAt: null, nextFetchAt: null });
+  assert.deepEqual(bhawService.normalizePayload(rows), { rows, down: 0, fetchedAt: null, nextFetchAt: null });
 });
 
 test('normalise: a house with ok: false is dropped; missing ok is kept', () => {
@@ -180,6 +180,7 @@ test('normalise: a house with ok: false is dropped; missing ok is kept', () => {
     ],
   });
   assert.deepEqual(snapshot.rows.map((row) => row.source), ['mega_bullion', 'shri_sai']);
+  assert.equal(snapshot.down, 1, 'one house reported down; the null entry is not a house');
 });
 
 test('normalise: anything else is not a board', () => {
@@ -305,18 +306,59 @@ test('a bare-array board keeps the 30 s TTL', async () => {
   assert.equal(calls.length, 2);
 });
 
-test('a failed read keeps serving the last board', async () => {
+test('a failed read keeps serving the last board, and the next read waits 30 s', async () => {
   const t0 = Date.UTC(2026, 9, 6, 13, 0, 0);
   setClock(t0);
   respond = async () => ({ data: snapshotAt(t0, fourHouses()) });
   assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH);
 
-  setClock(t0 + 10 * 60_000);
+  const t1 = t0 + 10 * 60_000;
+  setClock(t1);
   respond = async () => { throw new Error('connect ECONNREFUSED'); };
   assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH);
+  assert.equal(calls.length, 2);
 
+  setClock(t1 + 29_000);
+  assert.equal(await bhawService.feedStamp('jmd_patil'), `${JMD_DEC}|-3000|1900`);
+  assert.equal(Object.keys(await bhawService.houseMcxLines()).length, 4);
+  assert.equal(calls.length, 2, 'inside the hold-off every lookup is served the last board at once');
+
+  setClock(t1 + 31_000);
   respond = async () => ({ data: { sources: [] } });
-  assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH, 'an empty board does not replace a real one');
+  assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH, 'a snapshot with no houses does not replace a real board');
+  assert.equal(calls.length, 3);
+  assert.equal(await bhawService.houseMcxSell('jmd_patil'), JMD_DEC);
+  assert.equal(calls.length, 3, 'and holds off the next read the same way');
+
+  setClock(t1 + 62_000);
+  respond = async () => ({ data: snapshotAt(t1 + 62_000, [house('mega_bullion', NEAR_MONTH + 700)]) });
+  assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH + 700, 'after the hold-off a good read is the board again');
+  assert.equal(calls.length, 4);
+});
+
+test('every house marked ok: false: nobody is live, not the old board', async () => {
+  const t0 = Date.UTC(2026, 9, 6, 13, 30, 0);
+  setClock(t0);
+  respond = async () => ({ data: snapshotAt(t0, fourHouses()) });
+  assert.equal(await bhawService.feedStamp('jmd_patil'), `${JMD_DEC}|-3000|1900`);
+
+  // Two hours on, the 3-minute server's scraper has lost every house.
+  const t1 = t0 + 2 * 60 * 60_000;
+  setClock(t1);
+  respond = async () => ({
+    data: snapshotAt(t1, fourHouses().map((entry) => ({ ...entry, ok: false, error: 'upstream down' }))),
+  });
+  assert.equal(await bhawService.feedStamp('jmd_patil'), 'off');
+  assert.equal(await bhawService.getBhawForSource('mega_bullion'), null);
+  assert.equal(await bhawService.houseMcxSell('jmd_patil'), null);
+  assert.equal(await bhawService.boardMcxSell(), null, 'the scheduler keeps its last stored MCX, never re-stamped');
+  assert.deepEqual(await bhawService.houseMcxLines(), {});
+  assert.equal(calls.length, 2, 'the all-down snapshot is the board until its next fetch: one read for every lookup');
+
+  setClock(t1 + 180_000 + 91_000);
+  respond = async () => ({ data: snapshotAt(t1 + 180_000, fourHouses()) });
+  assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH, 'the houses come back with the next snapshot');
+  assert.equal(calls.length, 3);
 });
 
 // ---- long-lived subscription ---------------------------------------------------
@@ -424,6 +466,75 @@ test('keep-warm: stop closes the stream and nothing reconnects', async () => {
     assert.equal(stream.destroyed, true);
     assert.equal(timers.pending(2_000).length, 0, 'no reconnect after stop');
     assert.equal(calls.length, 1);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('keep-warm: an all-down snapshot replaces the board; one with no houses does not', async () => {
+  const timers = holdTimers();
+  try {
+    const t0 = Date.UTC(2026, 9, 6, 15, 0, 0);
+    setClock(t0);
+    const stream = new PassThrough();
+    respond = async () => ({ data: stream });
+    bhawService.startKeepWarm();
+    await tick();
+    stream.write(`data: ${JSON.stringify(snapshotAt(t0, fourHouses()))}\n\n`);
+    await tick();
+    assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH);
+
+    setClock(t0 + 180_000);
+    stream.write(`data: ${JSON.stringify(snapshotAt(t0 + 180_000, []))}\n\n`);
+    await tick();
+    assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH, 'no houses at all: the last board stands');
+
+    setClock(t0 + 360_000);
+    const down = fourHouses().map((entry) => ({ ...entry, ok: false }));
+    stream.write(`data: ${JSON.stringify(snapshotAt(t0 + 360_000, down))}\n\n`);
+    await tick();
+    assert.equal(await bhawService.feedStamp('shri_sai'), 'off');
+    assert.equal(await bhawService.boardMcxSell(), null);
+    assert.equal(calls.length, 1, 'all served off the subscription');
+  } finally {
+    bhawService.stopKeepWarm();
+    timers.restore();
+  }
+});
+
+test('a read that times out is not waited on again by the next lookup in the same request', async () => {
+  const timers = holdTimers();
+  try {
+    const t0 = Date.UTC(2026, 9, 6, 16, 0, 0);
+    setClock(t0);
+    respond = async () => ({ data: snapshotAt(t0, fourHouses()) });
+    await bhawService.boardMcxSell();
+
+    // Past the board's freshness the server takes the connection and sends
+    // nothing but pings.
+    const t1 = t0 + 10 * 60_000;
+    setClock(t1);
+    const silent = new PassThrough();
+    silent.write(': ping\n\n');
+    respond = async () => ({ data: silent });
+
+    const stamp = bhawService.feedStamp('jmd_patil');
+    await tick();
+    const deadlines = timers.pending(8_000);
+    assert.equal(deadlines.length, 1, 'one read, with the 8 s deadline');
+    deadlines[0].fn();
+    assert.equal(await stamp, `${JMD_DEC}|-3000|1900`, 'the last board is served');
+    assert.equal(silent.destroyed, true);
+    assert.equal(calls.length, 2, 'feedStamp looks the board up twice and waited on one read');
+
+    // The recompute that follows in the same request asks three more times.
+    await bhawService.prefetch();
+    await bhawService.getBhawForSource('jmd_patil');
+    await bhawService.houseMcxSell('jmd_patil');
+    await bhawService.boardMcxSell();
+    await bhawService.houseMcxLines();
+    assert.equal(calls.length, 2, 'no further read inside the hold-off');
+    assert.equal(timers.pending(8_000).length, 0);
   } finally {
     timers.restore();
   }

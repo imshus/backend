@@ -52,6 +52,9 @@ const emptyCache = () => ({
   freshUntil: 0,
   fetchedAt: null,
   nextFetchAt: null,
+  // After a read that failed or brought nothing to price on, no new read
+  // before this; the last board (or none) is served at once meanwhile.
+  retryAfter: 0,
 });
 
 let cache = emptyCache();
@@ -92,7 +95,8 @@ const threeMinuteStreamUrl = () => {
  * One snapshot's houses and times, or null when the payload is not a board.
  * Takes the stream's { fetched_at, next_fetch_at, sources: [...] } and the
  * old bare array alike. A house marked ok: false (its own board failed) is
- * left out, so it reads exactly like a house that is not live today.
+ * left out, so it reads exactly like a house that is not live today; `down`
+ * counts the houses left out that way.
  */
 const normalizePayload = (payload) => {
   const wrapped = Boolean(payload)
@@ -100,13 +104,25 @@ const normalizePayload = (payload) => {
     && typeof payload === 'object'
     && Array.isArray(payload.sources);
   if (!wrapped && !Array.isArray(payload)) return null;
-  const list = wrapped ? payload.sources : payload;
+  const list = (wrapped ? payload.sources : payload)
+    .filter((entry) => entry && typeof entry === 'object');
+  const rows = list.filter((entry) => entry.ok !== false);
   return {
-    rows: list.filter((entry) => entry && typeof entry === 'object' && entry.ok !== false),
+    rows,
+    down: list.length - rows.length,
     fetchedAt: wrapped ? payload.fetched_at ?? null : null,
     nextFetchAt: wrapped ? payload.next_fetch_at ?? null : null,
   };
 };
+
+/**
+ * Whether a snapshot is a board to price on: at least one house live, or
+ * every house it lists marked down — then that is the board, with nobody
+ * live on it until the next snapshot, never the last board passed off as
+ * current. A snapshot with no houses at all says nothing about the market,
+ * so the last board stands, as it does when a read fails.
+ */
+const isBoard = (snapshot) => Boolean(snapshot) && (snapshot.rows.length > 0 || snapshot.down > 0);
 
 const isStream = (body) => Boolean(body) && typeof body.on === 'function';
 
@@ -129,11 +145,17 @@ const freshUntilOf = (snapshot, now) => {
   return Math.max(nextFetch + NEXT_FETCH_GRACE_MS, now + CACHE_TTL_MS);
 };
 
-/** Makes a snapshot the board, unless an older one arrives after a newer. */
+/**
+ * Makes a snapshot the board, unless an older one arrives after a newer.
+ * Returns whether it did.
+ */
 const store = (snapshot) => {
   const incoming = Date.parse(snapshot.fetchedAt ?? '');
   const held = Date.parse(cache.fetchedAt ?? '');
-  if (cache.rows && Number.isFinite(incoming) && Number.isFinite(held) && incoming < held) return;
+  if (cache.rows && Number.isFinite(incoming) && Number.isFinite(held) && incoming < held) return false;
+  if (!snapshot.rows.length) {
+    console.warn(`[Bhaw] Every house on the 3-minute snapshot ${snapshot.fetchedAt || ''} is marked down; none is live until the next one.`);
+  }
   const now = Date.now();
   cache = {
     rows: snapshot.rows,
@@ -141,7 +163,9 @@ const store = (snapshot) => {
     freshUntil: freshUntilOf(snapshot, now),
     fetchedAt: snapshot.fetchedAt,
     nextFetchAt: snapshot.nextFetchAt,
+    retryAfter: 0,
   };
+  return true;
 };
 
 /**
@@ -210,28 +234,41 @@ const readSnapshot = (url = threeMinuteStreamUrl()) => new Promise((resolve, rej
 
 let pendingRead = null;
 
-/** readSnapshot, shared by every caller that asks while one is in flight. */
-const readShared = () => {
+/** The last board stays (stale rather than a wrong rate); no new read for CACHE_TTL_MS. */
+const holdOff = (reason) => {
+  console.warn('[Bhaw] Failed to fetch bhaw feed:', reason);
+  cache.retryAfter = Date.now() + CACHE_TTL_MS;
+};
+
+/**
+ * One read of the 3-minute stream made the board, shared by every caller
+ * that asks while it is in flight. A read that fails, times out or brings
+ * nothing to price on holds off the next one for CACHE_TTL_MS, so a request
+ * that looks the board up several times (feedStamp, then the recompute)
+ * waits on one read at most. The keep-warm subscription brings the board
+ * back as soon as the stream does.
+ */
+const refresh = () => {
   if (!pendingRead) {
-    pendingRead = readSnapshot().finally(() => {
-      pendingRead = null;
-    });
+    pendingRead = readSnapshot()
+      .then((snapshot) => {
+        if (!isBoard(snapshot)) holdOff('the 3-minute feed sent a snapshot with no houses');
+        else if (!store(snapshot)) holdOff('the 3-minute feed sent an older snapshot than the one held');
+      })
+      .catch((error) => holdOff(error.message))
+      .finally(() => {
+        pendingRead = null;
+      });
   }
   return pendingRead;
 };
 
 const fetchRows = async (force = false) => {
-  if (!force && cache.rows && Date.now() < cache.freshUntil) return cache.rows;
-
-  try {
-    const snapshot = await readShared();
-    if (!snapshot.rows.length) return cache.rows;
-    store(snapshot);
-    return cache.rows;
-  } catch (error) {
-    console.warn('[Bhaw] Failed to fetch bhaw feed:', error.message);
-    return cache.rows; // serve stale rather than dropping to a wrong rate
-  }
+  const now = Date.now();
+  if (!force && cache.rows && now < cache.freshUntil) return cache.rows;
+  if (!force && now < cache.retryAfter) return cache.rows;
+  await refresh();
+  return cache.rows;
 };
 
 /**
@@ -435,7 +472,7 @@ const startKeepWarm = () => {
           // Not a stream (a stubbed client): take the board it handed back
           // and come round again on the backoff.
           const snapshot = normalizePayload(data);
-          if (snapshot?.rows.length) store(snapshot);
+          if (isBoard(snapshot)) store(snapshot);
           close('answered without a stream');
           return;
         }
@@ -443,7 +480,7 @@ const startKeepWarm = () => {
         const parser = createSseParser((event) => {
           if (conn.closed) return;
           const snapshot = normalizePayload(snapshotPayload(event));
-          if (!snapshot || !snapshot.rows.length) return;
+          if (!isBoard(snapshot)) return;
           store(snapshot);
           sub.retryMs = RETRY_FIRST_MS;
           conn.snapshots += 1;
