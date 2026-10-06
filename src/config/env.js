@@ -38,6 +38,12 @@ const envVarsSchema = joi.object({
   MCX_TRADING_START_TIME: joi.string().default('09:00:00').description('Trading session start time in HH:mm:ss'),
   MCX_TRADING_END_TIME: joi.string().default('23:55:00').description('Trading session end time in HH:mm:ss'),
   MCX_POLL_INTERVAL_SECONDS: joi.number().integer().min(1).default(140),
+  // The owner's rate board, two server-sent-event streams (the variable
+  // names keep the owner's spelling). The live one, several updates a
+  // second, is what the app's Home and Settings show; the 3-minute one is
+  // what the server prices scans, invoices and the MCX scheduler on.
+  MCX_LIVE_STEAMING: joi.string().uri().empty('').default('https://jmd.mrpscan.com/api/stream'),
+  MCX_3MINUTE_STREAMING: joi.string().uri().empty('').default('https://jmd.mrpscan.com/api/3min/stream'),
   MAX_UPLOAD_MB: joi.number().min(5).max(200).default(80),
   OCR_MAX_EDGE_PX: joi.number().min(1000).max(8000).default(2400),
   OCR_JPEG_QUALITY: joi.number().min(40).max(95).default(82),
@@ -157,6 +163,10 @@ module.exports = {
     startTime: envVars.MCX_TRADING_START_TIME,
     endTime: envVars.MCX_TRADING_END_TIME,
     pollIntervalSeconds: envVars.MCX_POLL_INTERVAL_SECONDS,
+  },
+  mcx: {
+    liveStreamUrl: envVars.MCX_LIVE_STEAMING,
+    threeMinuteStreamUrl: envVars.MCX_3MINUTE_STREAMING,
   },
   upload: {
     maxUploadMb: envVars.MAX_UPLOAD_MB,

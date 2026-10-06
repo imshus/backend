@@ -129,7 +129,7 @@ connectDB().then(async () => {
 
   // Initialize the background polling scheduler for MCX rates
   await initMcxScheduler();
-  // Keep the vendor bhaw feed warm so rate requests never wait on it.
+  // Hold the 3-minute rate board stream open so rate requests never wait on it.
   startBhawKeepWarm();
 
   app.listen(PORT, HOST, () => {

@@ -315,7 +315,10 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       // change: the followed house's line while its bhaw is live, else the
       // market MCX. The app builds on the same figure while its own board
       // feed is not in, so Home never pairs a house's bhaw with another
-      // contract's MCX.
+      // contract's MCX. Once it is in, the phone's Home and Settings show
+      // the live stream while the server prices on the 3-minute snapshot
+      // with the same arithmetic, so the two can differ by up to three
+      // minutes of market movement.
       pricingMcxLiveRate: houseMcx ?? mcxLiveRate
     },
     karatRates: computedKaratRates,

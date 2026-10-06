@@ -178,10 +178,12 @@ async function fetchAndStoreMcxRate(options = {}) {
       console.log(`[MCX Scheduler] Trading session active. Fetching MCX rate at ${formatIstDateTime(attemptAt)}...`);
     }
 
-    // The board is the only source: the MCX the screens print is the figure
-    // most houses on the feed agree on, so the server's MCX is that same
-    // figure and nothing built on it (the 24K rows, a silent house's
-    // fallback) stands on a number no bullion card shows. metals.dev, once
+    // The board is the only source: the MCX is the figure most houses on the
+    // feed agree on, the rule the screens use, read here off the 3-minute
+    // snapshot (the screens read the live stream, so the two can differ by
+    // up to three minutes of market movement), and nothing built on it (the
+    // 24K rows, a silent house's fallback) stands on a number no bullion
+    // card has shown. metals.dev, once
     // the fallback, was removed on 6 Oct 2026 at the owner's asking (it had
     // stopped answering on 21 Sep). With no MCX line on the board the fetch
     // fails and the last stored rate stands; no rate is made up.
