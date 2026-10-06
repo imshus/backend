@@ -1,4 +1,3 @@
-const axios = require('axios');
 const redisService = require('./redis.service');
 const MCXFetch = require('../models/mcxFetch.model');
 const SupremeChange = require('../models/supremeChange.model');
@@ -179,41 +178,17 @@ async function fetchAndStoreMcxRate(options = {}) {
       console.log(`[MCX Scheduler] Trading session active. Fetching MCX rate at ${formatIstDateTime(attemptAt)}...`);
     }
 
-    // metals.dev first. When it gives nothing — no key, a refused key, a
-    // spent plan, an odd answer — the board's own "Gold Future MCX" stands
-    // in: the figure the app's Home card prints, so the rate table and Home
-    // can never drift apart. metals.dev stopped answering on 21 Sep and the
-    // table sat on that morning's rate for two days while Home moved.
-    // The board first: the MCX the screens print is the figure most houses
-    // on the feed agree on, so the server's MCX is that same figure and
-    // nothing built on it (the 24K rows, a silent house's fallback) stands on
-    // a number no bullion card shows. metals.dev only stands in when the
-    // board has no MCX line at all.
-    let liveRate = await bhawService.boardMcxSell();
-    let source = 'board';
+    // The board is the only source: the MCX the screens print is the figure
+    // most houses on the feed agree on, so the server's MCX is that same
+    // figure and nothing built on it (the 24K rows, a silent house's
+    // fallback) stands on a number no bullion card shows. metals.dev, once
+    // the fallback, was removed on 6 Oct 2026 at the owner's asking (it had
+    // stopped answering on 21 Sep). With no MCX line on the board the fetch
+    // fails and the last stored rate stands; no rate is made up.
+    const liveRate = await bhawService.boardMcxSell();
+    const source = 'board';
     if (liveRate === null) {
-      const apiKey = process.env.METALS_API_KEY;
-      if (!apiKey) {
-        console.error('[MCX Scheduler] METALS_API_KEY is not defined');
-      } else {
-        try {
-          const url = `https://api.metals.dev/v1/metal/authority?api_key=${apiKey}&authority=mcx&currency=INR&unit=10g`;
-          const response = await axios.get(url, { timeout: 10000 });
-          const data = response.data;
-          if (data && data.status === 'success' && data.rates && data.rates.mcx_gold) {
-            liveRate = Math.round(data.rates.mcx_gold);
-            source = 'metals.dev';
-            console.warn(`[MCX Scheduler] The board has no MCX line; using metals.dev: INR ${liveRate}`);
-          } else {
-            console.error('[MCX Scheduler] Invalid response format from Metals API:', data);
-          }
-        } catch (error) {
-          logMetalsFailure(error, phase, attemptAt);
-        }
-      }
-      if (liveRate === null) {
-        return { success: false, reason: 'the board has no MCX line and metals.dev gave no rate' };
-      }
+      return { success: false, reason: 'the board has no MCX line' };
     }
     const oldSnapshot = await redisService.getMcxCacheSnapshot();
     const oldRate = oldSnapshot?.rate ?? null;
@@ -292,31 +267,6 @@ async function fetchAndStoreMcxRate(options = {}) {
     console.error(`[MCX Scheduler] ${context} at ${formatIstDateTime(attemptAt)}:`, error.message);
     return { success: false, reason: error.message };
   }
-}
-
-/**
- * metals.dev refuses a request with a body that says why: the plan does not
- * cover this endpoint, the month's requests are spent, a parameter is no
- * longer accepted. Logging error.message alone made every one of those read
- * the same — "Request failed with status code 400" — and left the reason in
- * the response that was thrown away.
- *
- * The status and body only. Never error.config.url: the API key travels in
- * the query string, and a log is not the place for it.
- */
-function logMetalsFailure(error, phase, attemptAt) {
-  const context = phase === 'startup' ? 'Startup synchronization failed' : 'Fetch failed';
-  const status = error.response?.status ?? null;
-  const raw = error.response?.data;
-  const body = raw === undefined || raw === null
-    ? ''
-    : String(typeof raw === 'string' ? raw : JSON.stringify(raw)).slice(0, 500);
-  console.error(
-    `[MCX Scheduler] ${context} at ${formatIstDateTime(attemptAt)}:`,
-    error.message,
-    status ? `| HTTP ${status}` : '',
-    body ? `| metals.dev said: ${body}` : '| no response body',
-  );
 }
 
 function scheduleNextFetch(reason) {

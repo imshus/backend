@@ -5,6 +5,7 @@ const axios = require('axios');
 const redisService = require('../src/services/redis.service');
 const MCXFetch = require('../src/models/mcxFetch.model');
 const SupremeChange = require('../src/models/supremeChange.model');
+const bhawService = require('../src/services/bhaw.service');
 
 const {
   initMcxScheduler,
@@ -92,26 +93,22 @@ test('startup always performs exactly one immediate synchronization fetch', asyn
   const originalInvalidateAllGoldRatesCache = redisService.invalidateAllGoldRatesCache;
   const originalFindMcxFetch = MCXFetch.findOne;
   const originalFindSupreme = SupremeChange.findOne;
+  const originalBoardMcxSell = bhawService.boardMcxSell;
+  const originalHouseMcxLines = bhawService.houseMcxLines;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
 
   let apiCallCount = 0;
 
   try {
-    axios.get = async (url) => {
-      // The board feed is read too (each house's own MCX line, for cache
-      // invalidation); only metals.dev fetches are the synchronization.
-      if (!String(url).includes('metals.dev')) return { data: [] };
+    // The board is the only MCX source since metals.dev was removed: each
+    // read of its MCX line is one synchronization.
+    axios.get = async () => ({ data: [] });
+    bhawService.boardMcxSell = async () => {
       apiCallCount += 1;
-      return {
-        data: {
-          status: 'success',
-          rates: {
-            mcx_gold: 145320,
-          },
-        },
-      };
+      return 145320;
     };
+    bhawService.houseMcxLines = async () => ({});
 
     redisService.getMcxCacheSnapshot = async () => ({ rate: 145120 });
     redisService.setMcxCache = async () => {};
@@ -142,6 +139,8 @@ test('startup always performs exactly one immediate synchronization fetch', asyn
     redisService.invalidateAllGoldRatesCache = originalInvalidateAllGoldRatesCache;
     MCXFetch.findOne = originalFindMcxFetch;
     SupremeChange.findOne = originalFindSupreme;
+    bhawService.boardMcxSell = originalBoardMcxSell;
+    bhawService.houseMcxLines = originalHouseMcxLines;
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
   }

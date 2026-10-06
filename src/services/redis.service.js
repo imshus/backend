@@ -417,7 +417,7 @@ const setMcxCache = async (data) => {
         rate: data,
         timestamp: new Date().toISOString(),
         lastSuccessfulFetchTime: new Date().toISOString(),
-        source: 'metals.dev',
+        source: 'board',
         currency: 'INR',
         date: null,
       }
@@ -466,7 +466,7 @@ const getMcxCacheSnapshot = async () => {
           rate: parsed,
           timestamp: null,
           lastSuccessfulFetchTime: null,
-          source: 'metals.dev',
+          source: 'board',
           currency: 'INR',
           date: null,
         }
@@ -483,7 +483,7 @@ const getMcxCacheSnapshot = async () => {
         rate: parsed,
         timestamp: null,
         lastSuccessfulFetchTime: null,
-        source: 'metals.dev',
+        source: 'board',
         currency: 'INR',
         date: null,
       }

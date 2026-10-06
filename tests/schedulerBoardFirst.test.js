@@ -1,8 +1,8 @@
 /**
  * The scheduler's MCX is the board's majority figure — the one every
- * bullion card and both screens print — and metals.dev only stands in
- * when the board has no MCX line at all. A silent house's followers used
- * to be priced on metals.dev's figure, a number no card showed.
+ * bullion card and both screens print — and nothing else: metals.dev, once
+ * the fallback, was removed on 6 Oct 2026. With no MCX line on the board
+ * the fetch fails and the last stored rate stands.
  */
 
 const test = require('node:test');
@@ -16,7 +16,6 @@ const bhawService = require('../src/services/bhaw.service');
 const { fetchAndStoreMcxRate } = require('../src/services/mcxScheduler.service');
 
 const BOARD_MAJORITY = 150720;
-const METALS = 150881;
 
 const FEED = [
   { source: 'jmd_patil', name: 'JMD Patil', cash_bhaw: '-3073', rtgs_bhaw: '2127',
@@ -54,17 +53,12 @@ test.after(() => {
 });
 
 /** Everything the scheduler touches, stubbed; returns what it stored. */
-function arm({ board, metals }) {
+function arm({ board }) {
   const seen = { stored: null, metalsCalls: 0 };
-  process.env.METALS_API_KEY = 'test-key';
   bhawService.boardMcxSell = async () => board;
   bhawService.houseMcxLines = async () => ({});
   axios.get = async (url) => {
-    if (String(url).includes('metals.dev')) {
-      seen.metalsCalls += 1;
-      if (metals === null) throw new Error('metals down');
-      return { data: { status: 'success', rates: { mcx_gold: metals } } };
-    }
+    if (String(url).includes('metals.dev')) seen.metalsCalls += 1;
     return { data: FEED };
   };
   redisService.getMcxCacheSnapshot = async () => null;
@@ -76,28 +70,20 @@ function arm({ board, metals }) {
   return seen;
 }
 
-test('the board majority is the MCX, and metals.dev is not even asked', async () => {
-  const seen = arm({ board: BOARD_MAJORITY, metals: METALS });
+test('the board majority is the MCX, and metals.dev is never asked', async () => {
+  const seen = arm({ board: BOARD_MAJORITY });
   const result = await fetchAndStoreMcxRate({ phase: 'scheduled' });
   assert.equal(result.success, true);
   assert.equal(result.liveRate, BOARD_MAJORITY);
   assert.equal(seen.stored.rate, BOARD_MAJORITY);
   assert.equal(seen.stored.source, 'board');
-  assert.equal(seen.metalsCalls, 0, 'metals.dev must not be called while the board answers');
+  assert.equal(seen.metalsCalls, 0, 'metals.dev is gone and must never be called');
 });
 
-test('metals.dev stands in only when the board has no MCX line', async () => {
-  const seen = arm({ board: null, metals: METALS });
-  const result = await fetchAndStoreMcxRate({ phase: 'scheduled' });
-  assert.equal(result.success, true);
-  assert.equal(result.liveRate, METALS);
-  assert.equal(seen.stored.source, 'metals.dev');
-  assert.equal(seen.metalsCalls, 1);
-});
-
-test('no board and no metals.dev is a failed fetch, never a made-up rate', async () => {
-  const seen = arm({ board: null, metals: null });
+test('no MCX line on the board is a failed fetch, never a made-up rate', async () => {
+  const seen = arm({ board: null });
   const result = await fetchAndStoreMcxRate({ phase: 'scheduled' });
   assert.equal(result.success, false);
   assert.equal(seen.stored, null);
+  assert.equal(seen.metalsCalls, 0, 'metals.dev is gone and must never be called');
 });
