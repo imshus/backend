@@ -2,6 +2,7 @@ const { randomUUID: uuidv4 } = require('crypto');
 const redisService = require('./redis.service');
 const { settingsScope } = require('./userScope.service');
 const openaiService = require('./openai.service');
+const { getUserPrompt } = require('../prompts/openai.prompt');
 const ocrPreprocessCache = require('./ocrPreprocess.cache');
 const scanBillingService = require('./scanBilling.service');
 const fs = require('fs');
@@ -85,8 +86,17 @@ const SPECULATIVE_SETTLE_MS = Number(process.env.SPECULATIVE_SETTLE_MS) || 1200;
 const SPECULATIVE_MAX_AGE_MS = 10 * 60 * 1000;
 const speculativeAnalyses = new Map();
 
-const imageSetKey = (scan, scannerSettings = {}) =>
-  `${scan.frontImagePath || ''}|${scan.backImagePath || ''}|${JSON.stringify(scannerSettings || {})}`;
+// What the model's answer depends on: the image files and the prompt text
+// the scan's settings produce. The speculative call runs before the app has
+// sent its settings, and keying on the whole settings object made any
+// setting at all — even one the prompt never reads — throw that answer away
+// and pay for a fresh call on the user's wait. The labour setting is left out
+// because it is a formatting rule, applied to the result on the way out.
+const imageSetKey = (scan, scannerSettings = {}) => {
+  const { labourChargePreference, ...promptSettings } = scannerSettings || {};
+  const prompt = getUserPrompt(scan.jewelleryType, scan.scanType, promptSettings);
+  return `${scan.frontImagePath || ''}|${scan.backImagePath || ''}|${prompt}`;
+};
 
 const dropSpeculative = (scanId) => {
   const entry = speculativeAnalyses.get(scanId);
@@ -172,6 +182,12 @@ const takeSpeculativeResult = async (scanId, scan, scannerSettings) => {
   }
   try {
     const result = await entry.promise;
+    // Read without the app's labour setting; a labour the setting cannot be
+    // applied to by rule is read again with the setting in the prompt.
+    if (!openaiService.applyLabourPreference(result, scannerSettings)) {
+      console.info('[SPECULATIVE_ANALYSIS_SKIPPED]', { scanId, reason: 'labour setting' });
+      return null;
+    }
     console.info('[SPECULATIVE_ANALYSIS_USED]', { scanId });
     return result;
   } catch (error) {

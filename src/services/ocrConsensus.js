@@ -39,6 +39,12 @@ const fieldConfidence = (field) =>
 const canonical = (fieldName, value) => {
   const text = String(value ?? '').trim();
   if (!text) return '';
+  // One karat, however it is written: "18K", "18KT" and "18 kt" are the same
+  // reading, and counting them as a disagreement cost a third model call.
+  if (fieldName === 'karat') {
+    const karat = /^(\d{1,2})\s*(?:K|KT|KARAT|CT|CARAT)?$/i.exec(text);
+    if (karat) return `${Number(karat[1])}K`;
+  }
   if (NUMERIC_FIELDS.has(fieldName)) {
     const cleaned = text.replace(/[^0-9.%]/g, '');
     const number = Number(cleaned.replace(/%/g, ''));

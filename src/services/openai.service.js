@@ -620,6 +620,30 @@ const syncStoneQuality = (parsedData) => {
   }
 };
 
+/**
+ * The scanner's labour setting ("Always Use Percentage" / "Always Use
+ * Amount"), applied to a reading. The prompt asks the model for this too;
+ * doing it here as well makes it hold when the model lapses, and lets a
+ * reading made without the setting — the speculative one, started before the
+ * app has said what its settings are — be used under it. Only a plain figure
+ * is rewritten. Returns whether the reading now honours the setting: false
+ * means the labour is something other than a plain figure and was left as read.
+ */
+const PLAIN_LABOUR = /^\s*(\d[\d,]*(?:\.\d+)?)\s*%?\s*$/;
+
+const applyLabourPreference = (parsedData, scannerSettings) => {
+  const preference = scannerSettings?.labourChargePreference;
+  if (preference !== 'PERCENTAGE' && preference !== 'AMOUNT') return true;
+  const field = parsedData?.structuredData?.labour;
+  if (!field || typeof field !== 'object') return true;
+  const raw = String(field.value ?? '').trim();
+  if (!raw) return true;
+  const match = raw.match(PLAIN_LABOUR);
+  if (!match) return false;
+  field.value = preference === 'PERCENTAGE' ? `${match[1]}%` : match[1];
+  return true;
+};
+
 const emptyField = () => ({ value: '', confidence: 0 });
 
 // The review screen is driven by the stones arrays, but the model sometimes
@@ -1110,6 +1134,7 @@ const analyzeImages = async (
     repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
     reconcileStoneWeightsWithGrossNet(parsedData);
     syncStoneQuality(parsedData);
+    applyLabourPreference(parsedData, scannerSettings);
 
     if (process.env.DEBUG_AI_LOGS === 'true') {
       console.log("=== AI RAW RESPONSE ===");
@@ -1236,6 +1261,11 @@ const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs 
         businessId,
         maxCompletionTokens: PRINT_ROTATION_MAX_COMPLETION_TOKENS,
         timeoutMs,
+        // Every read waits on this answer, so it runs on the priority tier,
+        // as the tag finder does: the same model and the same answer, sooner,
+        // and on a thumbnail the premium is a fraction of a paisa. The
+        // reasoning effort stays the reader's — this is about speed only.
+        serviceTier: process.env.OPENAI_ROTATION_SERVICE_TIER || 'priority',
       },
     );
 
@@ -1362,6 +1392,7 @@ module.exports = {
   prepareImageViews,
   detectTagBox,
   detectPrintRotation,
+  applyLabourPreference,
   // Deterministic pieces, exported for the test suite.
   _internal: {
     normalizeFieldShapes,

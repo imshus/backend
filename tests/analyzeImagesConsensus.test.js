@@ -150,6 +150,8 @@ test('two reads, one disagreement, one adjudication: the tag comes out consisten
     assert.equal(r.body.max_completion_tokens, budget);
     assert.equal(r.body.messages[0].role, 'system');
   }
+  // Every read waits on the orientation answer, so it asks on the priority tier.
+  assert.equal(requests.find((r) => r.kind === 'print-rotation').body.service_tier, 'priority');
   const adjudication = requests.find((r) => r.kind === 'adjudicate');
   // Each reading is normalised before they are compared, so the leading zero
   // read B omitted is already there when the two are put side by side.

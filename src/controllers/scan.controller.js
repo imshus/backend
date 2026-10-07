@@ -2,7 +2,11 @@ const fs = require('fs');
 const sharp = require('sharp');
 const scanService = require('../services/scan.service');
 const openaiService = require('../services/openai.service');
-const { computeMrp, deriveInputFromReading } = require('../services/mrpCalculation.service');
+const {
+  computeMrp,
+  deriveInputFromReading,
+  prefetchPricingReads,
+} = require('../services/mrpCalculation.service');
 const { sendSuccess } = require('../utils/apiResponse');
 const { toSessionContext } = require('../utils/scanAccess');
 const { tagIdentifiersOf } = require('../utils/tagIdentifiers');
@@ -75,6 +79,9 @@ const analyzeScan = async (req, res, next) => {
       userId: String(req.user?.userId || ''),
     });
     const scannerSettings = req.body?.scannerSettings || {};
+    // The price's own reads run while the model reads the tag, instead of
+    // after it, one round after another.
+    const pricingReads = prefetchPricingReads(req.user);
     const updated = await scanService.analyzeScan(
       scanId,
       scannerSettings,
@@ -93,6 +100,7 @@ const analyzeScan = async (req, res, next) => {
         user: req.user,
         structuredData: updated.analysisResult.structuredData,
         scan: updated,
+        prefetched: pricingReads,
       });
       const computed = await computeMrp({
         user: req.user,
@@ -100,6 +108,7 @@ const analyzeScan = async (req, res, next) => {
         scanId: updated.scanId,
         input: pricingInput,
         scan: updated,
+        prefetched: pricingReads,
       });
       pricing = computed.resultData;
     } catch (pricingError) {
