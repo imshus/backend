@@ -9,9 +9,6 @@ router.use(authenticateJWT);
 router.use(attachLicenseContext);
 
 router.get('/overview', requireRole('OWNER', 'ADMIN'), subscriptionController.getOverview);
-// The plan, trial and credits only — what an employee's Settings screen shows.
-// The token's businessId is the shop read; nothing in the request picks one.
-router.get('/summary', requireRole('OWNER', 'ADMIN', 'EMP'), subscriptionController.getSummary);
 // Every signed-in role: employees can open Earn & Invite and share the code.
 router.get('/referral', subscriptionController.getReferralOverview);
 router.get('/scan-billing', requireRole('OWNER', 'ADMIN'), subscriptionController.getScanBillingHistory);

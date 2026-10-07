@@ -8,44 +8,6 @@ const billingConfigService = require('../services/billingConfig.service');
 const paymentService = require('../services/payment.service');
 const referralService = require('../services/referral.service');
 const Business = require('../models/business.model');
-const Employee = require('../models/employee.model');
-const mongoose = require('mongoose');
-
-/**
- * The licence and the wallet as every subscription read sees them, so the
- * owner's Subscription screen and an employee's Settings tile can never tell
- * the same shop two different things. In this order: reading the licence is
- * what ends a lapsed trial and empties its credits, so the wallet is read
- * after it.
- */
-async function readSubscriptionState(businessId) {
-  const licence = await licenseService.getLicenseOverview(businessId);
-  const wallet = await walletService.ensureWallet(businessId);
-  const creditBalance = licence.walletEnabled ? Number(wallet.creditBalance || 0) : 0;
-  return { ...licence, wallet, creditBalance };
-}
-
-/** Where the shop's trial stands, read off the licence the way the app reads it. */
-function trialStatusOf(license) {
-  if (license.licenseStatus === 'FREE_TRIAL_LICENSE') return 'ACTIVE';
-  if (license.trialExpiredAt) return 'EXPIRED';
-  return 'NOT_STARTED';
-}
-
-/**
- * An employee's token lives fifteen minutes; one removed from the shop in
- * that time is refused here, as every permission-guarded route refuses them.
- */
-async function assertActiveEmployeeOf(businessId, employeeId) {
-  const employee = mongoose.isValidObjectId(employeeId)
-    ? await Employee.findById(employeeId).select('isActive businessId').lean()
-    : null;
-  if (!employee || employee.isActive === false || String(employee.businessId) !== String(businessId)) {
-    const error = new Error('UNAUTHORIZED');
-    error.statusCode = 401;
-    throw error;
-  }
-}
 
 /** Earn & Invite: this person's own code and how their referrals are doing. */
 async function getReferralOverview(req, res, next) {
@@ -72,15 +34,15 @@ async function getOverview(req, res, next) {
       paymentHistoryEnabled,
       trialDaysRemaining,
       trialHoursRemaining,
-      wallet,
-      creditBalance,
-    } = await readSubscriptionState(businessId);
+    } = await licenseService.getLicenseOverview(businessId);
+    const wallet = await walletService.ensureWallet(businessId);
     const cfg = await billingConfigService.getEffectiveConfig();
     const monthSummary = await paymentService.getMonthCostSummary({ businessId });
     // Offered again in the email popup before the next payment.
     const business = await Business.findById(businessId).select('billingEmail').lean();
 
     let creditWarningLevel = 'NONE';
+    const creditBalance = walletEnabled ? Number(wallet.creditBalance || 0) : 0;
     // The balance a new scan needs to be above; the app's Scan popup uses the
     // same figure, so the screen and the server refuse at the same point.
     const minScanBalance = billingConfigService.minScanBalanceOf(cfg);
@@ -139,35 +101,6 @@ async function getOverview(req, res, next) {
       lastScanCost: walletEnabled ? (wallet.lastScanCost || 0) : 0,
       lastScanAt: walletEnabled ? wallet.lastScanAt : null,
       billingEmail: business?.billingEmail || '',
-    });
-  } catch (error) {
-    next(error);
-  }
-}
-
-/**
- * What anyone signed in to the shop may see of its subscription: the plan,
- * the trial and the credits, read exactly as the overview reads them. An
- * employee's Settings screen shows this; the overview itself, with prices,
- * order ids and invoice numbers, stays the owner's.
- */
-async function getSummary(req, res, next) {
-  try {
-    const { businessId, userId } = req.user;
-    if (String(req.user.role || '').trim().toUpperCase() === 'EMP') {
-      await assertActiveEmployeeOf(businessId, userId);
-    }
-
-    const { license, trialDaysRemaining, creditBalance } = await readSubscriptionState(businessId);
-
-    sendSuccess(res, {
-      status: license.licenseStatus,
-      trialStatus: trialStatusOf(license),
-      trialDaysRemaining,
-      trialEndDate: license.trialEndDate,
-      applicationPurchased: license.licenseStatus === 'PERMANENT_LICENSE',
-      permanentActivatedAt: license.permanentActivatedAt,
-      creditBalance,
     });
   } catch (error) {
     next(error);
@@ -359,7 +292,6 @@ async function getCreditTransactionHistory(req, res, next) {
 
 module.exports = {
   getOverview,
-  getSummary,
   getReferralOverview,
   startTrial,
   purchaseApplication,
