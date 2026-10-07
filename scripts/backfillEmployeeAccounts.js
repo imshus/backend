@@ -1,7 +1,8 @@
 /**
  * Gives every employee added before sign-in records existed their record in
  * business_users (role EMP): their phone, the shop's GST details copied from
- * the owner's record, and a mirror of their permissions. No MPIN is set — the
+ * the owner's record (healed from the business record first wherever it fell
+ * behind an earlier GSTIN change), and a mirror of their permissions. No MPIN is set — the
  * owner sets one from the app (PUT /employees/:id/mpin) — so until then the
  * phone + MPIN login answers EMPLOYEE_MPIN_NOT_SET, and the old phone +
  * password login keeps working.

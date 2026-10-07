@@ -233,21 +233,38 @@ const updateEmployee = async (req, res) => {
     if (!employee) return res.status(404).json(NOT_FOUND);
 
     const account = await employeeAccounts.findAccountOf(employee);
-    const previousPhone = employee.phone;
+    // What this request may change, to put back if the number turns out to
+    // be someone else's after all.
+    const before = {
+      phone: employee.phone,
+      name: employee.name,
+      email: employee.email,
+      designation: employee.designation,
+      permissions: toPlainPermissions(employee.permissions),
+      isActive: employee.isActive,
+    };
+    // Their own number and their own sign-in record are not a clash.
+    const isTaken = (phone) => employeeAccounts.isPhoneRegistered(phone, {
+      exceptEmployeeId: employee._id,
+      exceptUserId: account?._id,
+    });
+    // An employee who is off holds no number, so another shop may have been
+    // given it since; switching them back on claims it again and is checked
+    // exactly like a new number.
+    const reactivating = body.isActive === true && employee.isActive === false;
     let phoneChanged = false;
 
     if (body.phone !== undefined) {
       const nextPhone = normalizeIndianMobile(body.phone);
-      if (nextPhone !== normalizeIndianMobile(previousPhone)) {
-        // Their own number and their own sign-in record are not a clash.
-        const taken = await employeeAccounts.isPhoneRegistered(nextPhone, {
-          exceptEmployeeId: employee._id,
-          exceptUserId: account?._id,
-        });
-        if (taken) return res.status(409).json(PHONE_TAKEN);
+      if (nextPhone !== normalizeIndianMobile(before.phone)) {
+        if (await isTaken(nextPhone)) return res.status(409).json(PHONE_TAKEN);
         phoneChanged = true;
       }
       employee.phone = nextPhone;
+    }
+    if (reactivating && !phoneChanged) {
+      const phone = normalizeIndianMobile(employee.phone);
+      if (phone && await isTaken(phone)) return res.status(409).json(PHONE_TAKEN);
     }
     if (body.name !== undefined) employee.name = body.name;
     if (body.email !== undefined) employee.email = body.email || undefined;
@@ -262,9 +279,10 @@ const updateEmployee = async (req, res) => {
       await employeeAccounts.syncAccountOf(employee, { account });
     } catch (error) {
       if (error.message !== 'PHONE_ALREADY_REGISTERED') throw error;
-      if (phoneChanged) {
-        // Lost a race for the number: put the old one back, write nothing.
-        employee.phone = previousPhone;
+      if (phoneChanged || reactivating) {
+        // Lost a race for the number (a new one, or the one being claimed
+        // back): put everything back as it was, so nothing is written.
+        Object.assign(employee, before);
         await employee.save();
         return res.status(409).json(PHONE_TAKEN);
       }

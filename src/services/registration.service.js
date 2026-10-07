@@ -12,7 +12,7 @@ const walletService = require('./wallet.service');
 const referralService = require('./referral.service');
 const employeeAccounts = require('./employeeAccount.service');
 const { sealMpin, openMpin } = require('../utils/mpinVault');
-const { storedSpellingsOf } = require('../utils/phone');
+const { storedSpellingsOf, loginLookupOf } = require('../utils/phone');
 
 const isEmployeeAccount = (user) => String(user?.role || '').toUpperCase() === 'EMP';
 
@@ -21,22 +21,27 @@ function normalizePhone(phone) {
 }
 
 /**
- * Accounts created before the user record carried GST details have no address
- * or gstNumber. Copy them across from the business on first sight so existing
- * users heal without a migration run.
+ * The user record carries a copy of its business's GST details (GSTIN, name,
+ * address). Accounts created before it did have none, and a shop whose GSTIN
+ * was changed before the Profile screen also wrote the user records still has
+ * the old number, name and address. Either way the copy is healed from the
+ * business — the same values this login returns — on first sight, without a
+ * migration run, and the shop's employee records follow it as a GSTIN change
+ * does. A blank on the business never clears what the record has.
  */
 async function backfillUserGstDetails(user, business) {
   if (!user || !business) return;
-  const update = {};
-  if (!user.address && business.address) update.address = business.address;
-  if (!user.gstNumber && business.gstNumber) update.gstNumber = business.gstNumber;
-  const resolvedName = business.tradeName || business.legalName;
-  if (!user.businessName && resolvedName) update.businessName = resolvedName;
-  if (!Object.keys(update).length) return;
+  const fromBusiness = employeeAccounts.businessDetailsOf(business);
+  const stale = employeeAccounts.staleShopFields(user, fromBusiness);
+  if (!stale.length) return;
+  const update = Object.fromEntries(stale.map((field) => [field, fromBusiness[field]]));
 
   try {
     await BusinessUser.updateOne({ _id: user._id }, { $set: update });
     Object.assign(user, update);
+    if (!isEmployeeAccount(user)) {
+      await employeeAccounts.syncShopDetailsToEmployees(business._id);
+    }
   } catch (error) {
     console.warn('[Auth] Could not backfill user GST details:', error.message);
   }
@@ -325,15 +330,13 @@ const login = async (mobile, credential) => {
     ? { password: credential }
     : (credential || {});
 
-  const identifier = String(mobile || '').trim();
-  const asPhone = identifier.replace(/\D/g, '').slice(-10);
+  // The same reading of the identifier the attempt counter in front of this
+  // uses (loginAttemptLimiter), so no spelling of a number is a fresh bucket.
   // The sealed copy is selected too, so a login can tell whether the
   // account has one and write it if not — see below. As a projection
   // argument rather than a chained .select(): the same query, and it does
   // not assume a query object where the test fakes return a plain promise.
-  const user = /^[0-9]{10}$/.test(asPhone)
-    ? await BusinessUser.findOne({ phone: asPhone }, '+mpinVault')
-    : await BusinessUser.findOne({ userId: identifier }, '+mpinVault');
+  const user = await BusinessUser.findOne(loginLookupOf(mobile), '+mpinVault');
 
   // An employee's number finds their own sign-in record. They get an
   // employee's session — keyed on the Employee document, role EMP — never an

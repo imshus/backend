@@ -1,4 +1,5 @@
 const redisClient = require('../redis/redisClient');
+const { loginLookupOf } = require('../utils/phone');
 
 const gstRateLimiter = async (req, res, next) => {
   try {
@@ -123,17 +124,16 @@ const accountLookupLimiter = bodyKeyLimiter({
  */
 /**
  * Who a sign-in attempt is for: `mobile` on the owner login, `phone` on the
- * old employee login. A phone number counts as its ten digits however it is
- * written — "+91 98765 43210", "919876543210" and "9876543210" are one
- * bucket, not three — so neither reformatting the number nor switching
- * between the two login endpoints buys more guesses. A User ID counts as
- * typed.
+ * old employee login, read by the very rule the login looks the account up
+ * by (loginLookupOf). Whatever reaches one phone number is one bucket —
+ * "+91 98765 43210", "919876543210", "a9876543210" and "9876543210." are all
+ * 9876543210 to the login, so they are all 9876543210 here — and neither
+ * decorating the number nor switching between the two login endpoints buys
+ * more guesses. A User ID counts as typed.
  */
 const loginIdentifierOf = (req) => {
-  const raw = String(req.body?.mobile ?? req.body?.phone ?? '').trim();
-  const digits = raw.replace(/\D/g, '');
-  if (/^[+\d\s()-]+$/.test(raw) && digits.length >= 10) return digits.slice(-10);
-  return raw;
+  const lookup = loginLookupOf(req.body?.mobile ?? req.body?.phone);
+  return lookup.phone || lookup.userId;
 };
 
 const loginAttemptLimiter = bodyKeyLimiter({

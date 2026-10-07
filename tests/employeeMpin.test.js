@@ -50,7 +50,9 @@ const profileEditService = require('../src/services/profileEdit.service');
 const accountDeletionService = require('../src/services/accountDeletion.service');
 const redisClient = require('../src/redis/redisClient');
 const { openMpin } = require('../src/utils/mpinVault');
+const employeeAccounts = require('../src/services/employeeAccount.service');
 const { loginIdentifierOf } = require('../src/middleware/rateLimiter');
+const { loginLookupOf } = require('../src/utils/phone');
 const { authenticateJWT } = require('../src/middleware/auth.middleware');
 const { requirePermission } = require('../src/middleware/rbac.middleware');
 const errorHandler = require('../src/middleware/errorHandler');
@@ -126,16 +128,16 @@ test.before(async () => {
   // The unique phone index has to exist: it is what a race is decided on.
   await Promise.all([BusinessUser.init(), Employee.init()]);
 
-  // Shop A: the business record's trade name deliberately differs from the
-  // owner record's copy, to show the employee's copy comes from the owner.
+  // Shop A: the owner's record carries the business's GST details, as
+  // registration copies them. (A shop whose copy fell behind is shop C, below.)
   await Business.create({
     _id: shopA.id,
     gstNumber: '27AAAAA0000A1Z5',
     legalName: 'SHREE JEWELLERS PVT LTD',
-    tradeName: 'Business Record Name',
+    tradeName: 'Shree Jewellers',
     businessType: 'Retailer',
     gstStatus: 'Active',
-    address: 'Business record address',
+    address: '12 Zaveri Bazaar, Mumbai 400002',
     isRegistered: true,
   });
   const ownerA = await BusinessUser.create({
@@ -413,6 +415,80 @@ test('an inactive employee is refused, and comes back when switched on', async (
   assert.equal(back.status, 200);
 });
 
+test('switching an employee back on re-checks their number: one taken meanwhile is a 409 and nothing is written', async () => {
+  // Shop B's employee who left before sign-in records existed: off, a
+  // password, no record in business_users — so their number is free...
+  const left = await Employee.findOne({ businessId: shopB.id, phone: '9811100008' });
+  assert.equal(left.isActive, false);
+  assert.equal(await BusinessUser.exists({ employeeId: left._id }), null);
+
+  // ...and shop A is given it.
+  const taken = await api('POST', '/employees', {
+    token: ownerToken(shopA),
+    body: { name: 'New Hire', phone: '9811100008', designation: 'Sales', mpin: '8080', confirmMpin: '8080' },
+  });
+  assert.equal(taken.status, 201, JSON.stringify(taken.body));
+  created.newHire = taken.body.data.employee;
+
+  // Shop B's owner switches the old employee back on, with or without other edits.
+  for (const body of [{ isActive: true }, { isActive: true, name: 'Back Again', permissions: { manageFormulae: true } }]) {
+    const before = await counts();
+    const refused = await api('PUT', `/employees/${left._id}`, { token: ownerToken(shopB), body });
+    assert.equal(refused.status, 409, JSON.stringify(body));
+    assert.deepEqual(refused.body, {
+      success: false,
+      error: 'PHONE_ALREADY_REGISTERED',
+      message: 'This number is already registered',
+    });
+    assert.deepEqual(await counts(), before, 'nothing written');
+    const stored = await Employee.findById(left._id).lean();
+    assert.equal(stored.isActive, false, 'still off');
+    assert.equal(stored.name, 'Left Last Year');
+    assert.deepEqual(stored.permissions, {});
+  }
+  assert.equal(await BusinessUser.exists({ employeeId: left._id }), null);
+
+  // Edits that leave them off are not a claim on the number.
+  const rename = await api('PUT', `/employees/${left._id}`, { token: ownerToken(shopB), body: { name: 'Left Last Year (old)' } });
+  assert.equal(rename.status, 200);
+
+  // A race lost after the check (the number taken between check and write):
+  // everything the request changed is put back, and the answer is the same 409.
+  const realCheck = employeeAccounts.isPhoneRegistered;
+  employeeAccounts.isPhoneRegistered = async () => false;
+  try {
+    const raced = await api('PUT', `/employees/${left._id}`, {
+      token: ownerToken(shopB),
+      body: { isActive: true, name: 'Raced', designation: 'Karigar' },
+    });
+    assert.equal(raced.status, 409);
+    assert.equal(raced.body.error, 'PHONE_ALREADY_REGISTERED');
+  } finally {
+    employeeAccounts.isPhoneRegistered = realCheck;
+  }
+  const afterRace = await Employee.findById(left._id).lean();
+  assert.equal(afterRace.isActive, false);
+  assert.equal(afterRace.name, 'Left Last Year (old)');
+  assert.equal(afterRace.designation, '');
+  assert.equal(await BusinessUser.exists({ employeeId: left._id }), null);
+
+  // A number nobody took meanwhile: back on, with a sign-in record.
+  const free = await Employee.create({
+    businessId: shopB.id,
+    name: 'Seasonal',
+    phone: '9811100007',
+    passwordHash: await bcrypt.hash('oldpass', 10),
+    isActive: false,
+  });
+  const on = await api('PUT', `/employees/${free._id}`, { token: ownerToken(shopB), body: { isActive: true } });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(on.body.data.isActive, true);
+  const account = await BusinessUser.findOne({ employeeId: free._id }).lean();
+  assert.equal(account.phone, '9811100007');
+  assert.equal(account.isActive, true);
+  assert.equal(account.gstNumber, '07BBBBB1111B1Z5');
+});
+
 test('the older two-step add still works, refuses taken numbers, and gives the same session', async () => {
   const token = ownerToken(shopA);
 
@@ -604,6 +680,35 @@ test('sign-in attempts are counted per number on both logins, however it is writ
   assert.equal(sameBucket.status, 429, 'switching endpoint or format buys no extra guesses');
 });
 
+test('decorating a number with letters or symbols buys no extra guesses: the counter reads it as the login does', async () => {
+  const spellings = [
+    'a9822200017', 'b9822200017', '9822200017.', 'x98222-00017', '#9822200017', '9822200017z',
+    'tel:9822200017', '98222 00017!', '(+91)9822200017?', 'abc919822200017', '9822200017abc', 'mpin9822200017',
+    '0-9822200017', 'Q9822200017', '9822200017_', '..9822200017', 'phone=9822200017', '9822200017/',
+    '*9822200017*', 'y 9822200017', 'zz9822200017zz', 'last9822200017',
+  ];
+  // Every one of them is that number to the login, and so to the counter.
+  for (const mobile of spellings) {
+    assert.deepEqual(loginLookupOf(mobile), { phone: '9822200017' }, mobile);
+    assert.equal(loginIdentifierOf({ body: { mobile } }), '9822200017', mobile);
+  }
+
+  for (const mobile of spellings.slice(0, 20)) {
+    const attempt = await api('POST', '/auth/login', { body: { mobile, mpin: '0000' } });
+    assert.equal(attempt.status, 401, mobile);
+  }
+  for (const mobile of spellings.slice(20)) {
+    const limited = await api('POST', '/auth/login', { body: { mobile, mpin: '0000' } });
+    assert.equal(limited.status, 429, `${mobile}: the 21st attempt on the number is refused`);
+  }
+  const plain = await api('POST', '/auth/employee/login', { body: { phone: '9822200017', password: 'x' } });
+  assert.equal(plain.status, 429, 'and so is the same number on the other login');
+
+  // A login decorated this way reaches the account, which is why it must count.
+  const session = await registrationService.login('ravi:9811100001', { mpin: '2468' });
+  assert.equal(session.role, 'EMP');
+});
+
 test('editing an employee\'s number re-checks it, excluding themselves', async () => {
   const token = ownerToken(shopA);
   const id = created.ravi._id;
@@ -661,6 +766,81 @@ test('a change to the owner\'s GSTIN reaches every employee record of the shop',
   // The other shop's records are not touched.
   const otherShop = await BusinessUser.findById(shopB.ownerId).lean();
   assert.equal(otherShop.gstNumber, '07BBBBB1111B1Z5');
+});
+
+test('an owner record left on an old GSTIN is healed before the employee copies it, and logins heal what fell behind', async () => {
+  // Shop C changed its GSTIN before the Profile screen also wrote the user
+  // records: the business is on the new GSTIN, the owner's copy on the old one.
+  const shopC = { id: new mongoose.Types.ObjectId() };
+  const CURRENT = { gstNumber: '24CCCCC3333C1Z5', businessName: 'Current Trade Name', address: '4 Ring Road, Surat 395002' };
+  const OLD = { gstNumber: '24OOOOO0000O1Z5', businessName: 'Old Trade Name', address: 'Old address, Surat' };
+  await Business.create({
+    _id: shopC.id,
+    gstNumber: CURRENT.gstNumber,
+    legalName: 'CURRENT LEGAL NAME',
+    tradeName: CURRENT.businessName,
+    businessType: 'Retailer',
+    gstStatus: 'Active',
+    address: CURRENT.address,
+    isRegistered: true,
+  });
+  const ownerC = await BusinessUser.create({
+    businessId: shopC.id,
+    phone: '9000000003',
+    ...OLD,
+    mpinHash: await bcrypt.hash('3333', 10),
+    passwordHash: await bcrypt.hash('3333', 10),
+    role: 'OWNER',
+  });
+  shopC.ownerId = ownerC._id;
+  await OrganizationLicense.create({
+    businessId: shopC.id, ownerUserId: ownerC._id, ownerPhone: '9000000003', licenseStatus: 'PERMANENT_LICENSE',
+  });
+  const shopDetails = (doc) => ({ gstNumber: doc.gstNumber, businessName: doc.businessName, address: doc.address });
+
+  const add = await api('POST', '/employees', {
+    token: ownerToken(shopC),
+    body: { name: 'Surat Staff', phone: '9833300001', designation: 'Sales', mpin: '4545', confirmMpin: '4545' },
+  });
+  assert.equal(add.status, 201, JSON.stringify(add.body));
+  const employeeId = add.body.data.employee._id;
+
+  // The employee's record carries the shop's current details, and the owner's
+  // record was brought up to date on the way.
+  const account = await BusinessUser.findOne({ employeeId }).lean();
+  assert.deepEqual(shopDetails(account), CURRENT);
+  assert.deepEqual(shopDetails(await BusinessUser.findById(ownerC._id).lean()), CURRENT);
+
+  // Both logins say the same about the shop.
+  const employeeLogin = await api('POST', '/auth/login', { body: { mobile: '9833300001', mpin: '4545' } });
+  assert.equal(employeeLogin.status, 200, JSON.stringify(employeeLogin.body));
+  const ownerLogin = await api('POST', '/auth/login', { body: { mobile: '9000000003', mpin: '3333' } });
+  assert.equal(ownerLogin.status, 200);
+  assert.deepEqual(shopDetails(employeeLogin.body.data), CURRENT);
+  assert.deepEqual(shopDetails(ownerLogin.body.data), CURRENT);
+
+  // Every record of the shop falls behind again: the owner's next login heals
+  // their own record and every employee record of the shop.
+  await BusinessUser.updateMany({ businessId: shopC.id }, { $set: OLD });
+  assert.equal((await api('POST', '/auth/login', { body: { mobile: '9000000003', mpin: '3333' } })).status, 200);
+  assert.deepEqual(shopDetails(await BusinessUser.findById(ownerC._id).lean()), CURRENT);
+  assert.deepEqual(shopDetails(await BusinessUser.findOne({ employeeId }).lean()), CURRENT);
+
+  // Only the employee's copy behind: their own login heals it and says the current details.
+  await BusinessUser.updateOne({ employeeId }, { $set: OLD });
+  const again = await api('POST', '/auth/login', { body: { mobile: '9833300001', mpin: '4545' } });
+  assert.equal(again.status, 200);
+  assert.deepEqual(shopDetails(again.body.data), CURRENT);
+  assert.deepEqual(shopDetails(await BusinessUser.findOne({ employeeId }).lean()), CURRENT);
+
+  // A blank on the business never clears what the owner's record has.
+  await Business.updateOne({ _id: shopC.id }, { $set: { address: '' } });
+  assert.equal((await employeeAccounts.shopDetailsOf(shopC.id)).address, CURRENT.address);
+  assert.equal((await BusinessUser.findById(ownerC._id).lean()).address, CURRENT.address);
+
+  // Shop A and B records were never touched by any of this.
+  assert.equal((await BusinessUser.findById(shopA.ownerId).lean()).gstNumber, '27ZZZZZ9999Z1Z5');
+  assert.equal((await BusinessUser.findById(shopB.ownerId).lean()).gstNumber, '07BBBBB1111B1Z5');
 });
 
 test('deleting an employee deletes their sign-in record and frees the number', async () => {

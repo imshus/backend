@@ -57,9 +57,38 @@ async function isPhoneRegistered(phone, { exceptEmployeeId = null, exceptUserId 
 }
 
 /**
- * The shop's GST number, name and address as the owner's record carries them.
- * The business record fills any blank: an owner from before the user record
- * held these has none until their next sign-in copies them across.
+ * The GST details as the business record holds them — the GSTIN, the name the
+ * app shows for the shop, the address — in the user records' field names.
+ */
+function businessDetailsOf(business) {
+  const clean = (value) => String(value ?? '').trim();
+  return {
+    gstNumber: clean(business?.gstNumber),
+    businessName: clean(business?.tradeName || business?.legalName),
+    address: clean(business?.address),
+  };
+}
+
+/** The user-record fields whose copy differs from what the business holds. */
+function staleShopFields(user, fromBusiness) {
+  return SHOP_DETAIL_FIELDS.filter(
+    (field) => fromBusiness[field] && String(user?.[field] ?? '').trim() !== fromBusiness[field],
+  );
+}
+
+/**
+ * The shop's GST number, name and address as the owner's record carries them,
+ * once that record is brought up to date.
+ *
+ * The owner's record is a copy of the business record, taken at registration,
+ * and the business record is where a later GSTIN change lands — and what the
+ * owner's own login and profile show. A GSTIN changed before the Profile
+ * screen also wrote the user records left the owner's copy on the old number,
+ * name and address, so before anything is copied from it, every field the
+ * business holds a different value for is healed on the owner's record (and
+ * the shop's employee records with it, as a GSTIN change does). A blank on the
+ * business keeps what the owner's record has; an owner from before the user
+ * record held these at all is filled from the business.
  */
 async function shopDetailsOf(businessId) {
   const [owner, business] = await Promise.all([
@@ -69,11 +98,20 @@ async function shopDetailsOf(businessId) {
       .lean(),
     Business.findById(businessId).select('gstNumber legalName tradeName address').lean(),
   ]);
-  return {
-    gstNumber: owner?.gstNumber || business?.gstNumber || '',
-    businessName: owner?.businessName || business?.tradeName || business?.legalName || '',
-    address: owner?.address || business?.address || '',
-  };
+  const fromBusiness = businessDetailsOf(business);
+  const shop = Object.fromEntries(SHOP_DETAIL_FIELDS.map(
+    (field) => [field, fromBusiness[field] || String(owner?.[field] ?? '').trim()],
+  ));
+
+  const stale = owner ? staleShopFields(owner, fromBusiness) : [];
+  if (stale.length) {
+    const healed = Object.fromEntries(stale.map((field) => [field, fromBusiness[field]]));
+    // The same writes a GSTIN change on the Profile screen makes: the shop's
+    // own records take the business's values, its employees the whole copy.
+    await BusinessUser.updateMany({ businessId, role: { $ne: EMP } }, { $set: healed });
+    await BusinessUser.updateMany({ businessId, role: EMP }, { $set: shop });
+  }
+  return shop;
 }
 
 /** Copies the owner's GST details onto every employee record of the shop. */
@@ -228,10 +266,14 @@ async function presentEmployee(employee) {
 /**
  * The session an employee gets, from either login: a token keyed on the
  * Employee document's id with role EMP and a copy of the permissions, and the
- * same payload the owner's login returns, with the shop's GST details.
+ * same payload the owner's login returns, with the shop's GST details as they
+ * are now (`shop`, when the caller already read them).
  */
-async function employeeSession(employee, account = null) {
-  const business = await Business.findById(employee.businessId);
+async function employeeSession(employee, account = null, shop = null) {
+  const [business, details] = await Promise.all([
+    Business.findById(employee.businessId),
+    shop || shopDetailsOf(employee.businessId),
+  ]);
   const permissions = toPlainPermissions(employee.permissions);
   const tokens = authService.generateTokens(
     String(employee.businessId),
@@ -250,10 +292,10 @@ async function employeeSession(employee, account = null) {
     designation: employee.designation || '',
     role: EMP,
     permissions,
-    businessName: account?.businessName || (business ? (business.tradeName || business.legalName) : undefined),
-    gstNumber: account?.gstNumber || business?.gstNumber || undefined,
+    businessName: details.businessName || undefined,
+    gstNumber: details.gstNumber || undefined,
     businessType: business ? (business.companyType || business.businessType) : undefined,
-    address: account?.address || business?.address || undefined,
+    address: details.address || undefined,
     phone: account?.phone || normalizeIndianMobile(employee.phone) || '',
   };
 }
@@ -284,18 +326,26 @@ async function signInWithMpin(account, mpin) {
   // As for the owner: an MPIN hashed before the sealed copy existed gets one
   // the first time it is proved right.
   if (!account.mpinVault) accountUpdate.mpinVault = sealMpin(String(mpin));
+  // And as the owner's login does for theirs: a copy of the shop's GST
+  // details that has fallen behind is brought up to date.
+  const shop = await shopDetailsOf(employee.businessId);
+  for (const field of SHOP_DETAIL_FIELDS) {
+    if (String(account[field] ?? '') !== shop[field]) accountUpdate[field] = shop[field];
+  }
   await Promise.all([
-    BusinessUser.updateOne({ _id: account._id }, { $set: accountUpdate }),
+    BusinessUser.updateOne({ _id: account._id, role: EMP }, { $set: accountUpdate }),
     Employee.updateOne({ _id: employee._id }, { $set: { lastLoginAt: now } }),
   ]);
 
-  return employeeSession(employee, account);
+  return employeeSession(employee, account, shop);
 }
 
 module.exports = {
   EMP,
   SHOP_DETAIL_FIELDS,
   isPhoneRegistered,
+  businessDetailsOf,
+  staleShopFields,
   shopDetailsOf,
   syncShopDetailsToEmployees,
   findAccountOf,

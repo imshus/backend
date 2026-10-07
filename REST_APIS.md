@@ -233,7 +233,7 @@ and nothing is written.
 - OWNER: the roster; EMP: only themselves. Each item adds `hasMpin`; never a hash.
 7.3 GET /api/v1/employees/check-phone?phone= (OWNER) → `{ available }`
 7.4 PUT /api/v1/employees/:id (OWNER)
-- `{ name?, phone?, email?, designation?, permissions?, isActive? }`; a new phone is re-checked excluding the employee.
+- `{ name?, phone?, email?, designation?, permissions?, isActive? }`; a new phone is re-checked excluding the employee, and so is the current one when `isActive:true` switches a switched-off employee back on (a switched-off employee holds no number). Taken → `409 PHONE_ALREADY_REGISTERED`, nothing written.
 7.5 PUT /api/v1/employees/:id/mpin (OWNER) `{ mpin, confirmMpin }` → `{ success:true }`
 7.6 GET /api/v1/employees/:id/mpin (OWNER) → `{ mpin: '1234' | null }` from the sealed copy
 7.7 DELETE /api/v1/employees/:id (OWNER) — also deletes the sign-in record.
@@ -243,7 +243,11 @@ owner: role `EMP`, `userId` = the Employee id, `permissions` in the payload and
 token. No MPIN yet → `409 EMPLOYEE_MPIN_NOT_SET`; switched off →
 `403 EMPLOYEE_INACTIVE` (after a correct MPIN). OTP-only login and the owner's
 forgot/set-MPIN flows refuse an employee's number (`EMPLOYEE_MPIN_REQUIRED`,
-`EMPLOYEE_MPIN_MANAGED_BY_OWNER`).
+`EMPLOYEE_MPIN_MANAGED_BY_OWNER`). Sign-in attempts are counted 20 an hour per
+account, keyed exactly as the login reads `mobile`: anything holding ten or
+more digits is the number its last ten spell, however it is decorated.
+The shop's GST details in either login's payload are the business record's
+current ones; a user record whose copy fell behind is healed on that login.
 
 
 Notes & file references

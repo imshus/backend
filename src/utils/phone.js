@@ -19,4 +19,17 @@ function storedSpellingsOf(tenDigits) {
   return [tenDigits, `91${tenDigits}`, `+91${tenDigits}`, `0${tenDigits}`, `+91 ${tenDigits}`];
 }
 
-module.exports = { normalizeIndianMobile, storedSpellingsOf };
+/**
+ * Which account a sign-in identifier names, exactly as the login looks it up:
+ * a value holding at least ten digits is the phone number its last ten digits
+ * spell, whatever else is typed around them; anything else is a User ID, as
+ * typed. The login and its attempt counter both use this, so every spelling
+ * that reaches one account is counted against that one account.
+ */
+function loginLookupOf(value) {
+  const identifier = String(value ?? '').trim();
+  const phone = identifier.replace(/\D/g, '').slice(-10);
+  return /^[0-9]{10}$/.test(phone) ? { phone } : { userId: identifier };
+}
+
+module.exports = { normalizeIndianMobile, storedSpellingsOf, loginLookupOf };
