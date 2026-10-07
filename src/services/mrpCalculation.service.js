@@ -81,12 +81,39 @@ const resolveScanForCalculation = async (requestedScanId, session) => {
 };
 
 /**
+ * The reads a price needs that do not depend on what the tag says, started
+ * before the reading exists. /analyze starts them beside the model call, so
+ * the price that follows the reading waits on none of them. The live rates
+ * are only warmed here: computeMrp still asks for them afterwards, which is
+ * then a cache hit, so the price uses the board as it stands at that moment.
+ * A read that fails here fails the price exactly as it would have, when the
+ * price awaits it.
+ */
+function prefetchPricingReads(user) {
+  const scope = settingsScope(user);
+  const reads = {
+    diamondRows: findScopedRows(DiamondRate, scope),
+    colorstoneRows: findScopedRows(ColorstoneRate, scope),
+    taxSettings: findScopedSetting(GoldTaxSetting, scope),
+    labour: findScopedSetting(LabourRate, scope),
+    employee: user?.role === 'EMP'
+      ? Employee.findById(user.userId).select('permissions').exec()
+      : Promise.resolve(null),
+    wastageRows: findScopedRows(WastageCode, scope),
+    liveRatesWarm: rateCalculationService.getLiveGoldRates(user?.businessId, scope),
+  };
+  // Nothing may count as unhandled while the model is still answering.
+  for (const read of Object.values(reads)) read.catch(() => {});
+  return reads;
+}
+
+/**
  * Computes the MRP for one set of inputs. `scan` may be passed in when the
  * caller already holds the session (the analysis does), which skips the
- * lookup. Throws an error with statusCode 403 for an employee without a
- * roster record.
+ * lookup. `prefetched` is what prefetchPricingReads started. Throws an error
+ * with statusCode 403 for an employee without a roster record.
  */
-async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan = null }) {
+async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan = null, prefetched = null }) {
   const {
     jewelleryType,
     netWt,
@@ -110,9 +137,10 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   // These reads are independent. Running them together keeps the preview
   // calculation bounded by the slowest lookup instead of their combined
   // latency.
-  const employeePromise = user?.role === 'EMP'
-    ? Employee.findById(user.userId).select('permissions')
-    : Promise.resolve(null);
+  const employeePromise = prefetched?.employee
+    || (user?.role === 'EMP'
+      ? Employee.findById(user.userId).select('permissions')
+      : Promise.resolve(null));
   // The wastage a shop charges belongs to the item, not to the scan: it is
   // kept against the item code in Masters and matched here by the code the
   // tag printed. A figure sent with the request overrides it, for a scan
@@ -127,13 +155,20 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     .map((value) => String(value ?? '').trim())
     .filter(Boolean);
   const wastageCodePromise = wastageCandidates.length
-    ? findScopedRows(WastageCode, settingsScope(user))
+    ? prefetched?.wastageRows || findScopedRows(WastageCode, settingsScope(user))
     : Promise.resolve([]);
+  // Once the warm-up has settled, this is a cache hit that still checks the
+  // board has not moved since.
+  const liveRatesPromise = prefetched?.liveRatesWarm
+    ? prefetched.liveRatesWarm
+      .catch(() => {})
+      .then(() => rateCalculationService.getLiveGoldRates(businessId, settingsScope(user)))
+    : rateCalculationService.getLiveGoldRates(businessId, settingsScope(user));
   const [liveRatesData, globalLabourDoc, scanResolution, employee, itemRows, wastageRows] = await Promise.all([
-    rateCalculationService.getLiveGoldRates(businessId, settingsScope(user)),
+    liveRatesPromise,
     // The calculating account's own labour charge when saved, else the
     // shop's; a stored NONE row means explicitly no labour charge.
-    findScopedSetting(LabourRate, settingsScope(user)),
+    prefetched?.labour || findScopedSetting(LabourRate, settingsScope(user)),
     knownScan
       ? Promise.resolve({ resolvedScanId: scanId, scan: knownScan })
       : resolveScanForCalculation(scanId, sessionContext),
@@ -436,13 +471,13 @@ const stoneField = (stone, key) => {
  * scan session. Mirrors what the app derives on its side for the first
  * price, so the two agree in the normal case.
  */
-async function deriveInputFromReading({ user, structuredData, scan }) {
+async function deriveInputFromReading({ user, structuredData, scan, prefetched = null }) {
   const data = structuredData || {};
   const scope = settingsScope(user);
   const [diamondRows, colorstoneRows, taxSettings] = await Promise.all([
-    findScopedRows(DiamondRate, scope),
-    findScopedRows(ColorstoneRate, scope),
-    findScopedSetting(GoldTaxSetting, scope),
+    prefetched?.diamondRows || findScopedRows(DiamondRate, scope),
+    prefetched?.colorstoneRows || findScopedRows(ColorstoneRate, scope),
+    prefetched?.taxSettings || findScopedSetting(GoldTaxSetting, scope),
   ]);
   const diamondRowsPlain = diamondRows.map((row) => (typeof row.toObject === 'function' ? row.toObject() : row));
 
@@ -500,6 +535,7 @@ async function deriveInputFromReading({ user, structuredData, scan }) {
 module.exports = {
   computeMrp,
   deriveInputFromReading,
+  prefetchPricingReads,
   resolveKaratFromReading,
   resolveScanForCalculation,
   toNumber,

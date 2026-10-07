@@ -47,6 +47,14 @@ test('numeric fields compare by value and grades compare without case or separat
   assert.equal(canonical('rate', '8,400'), '8400');
 });
 
+test('one karat written two ways is one reading, not a question for a third call', () => {
+  const { disagreements } = compareReads(read({ karat: field('18KT') }), read({ karat: field('18 k') }));
+  assert.deepEqual(disagreements, []);
+  assert.equal(canonical('karat', '22'), '22K');
+  // A different karat is still a disagreement.
+  assert.equal(compareReads(read({ karat: field('18K') }), read({ karat: field('14K') })).disagreements.length, 1);
+});
+
 test('a contested value stays in place at low confidence and is listed', () => {
   const a = read({ diamonds: [{ weight: field('5.54', 90) }] });
   const b = read({ diamonds: [{ weight: field('0.54', 90) }] });

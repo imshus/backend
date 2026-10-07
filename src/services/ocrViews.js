@@ -66,6 +66,26 @@ const ROTATED_ORIENTATIONS = new Set([5, 6, 7, 8]);
 const ROTATION_PROBE_EDGE_PX = 640;
 
 
+/**
+ * The orientation question, asked on a thumbnail cut straight from the file.
+ * JPEG shrink-on-load makes that a few tens of milliseconds, so the question
+ * is on its way before the full decode has finished rather than after it.
+ */
+const askPrintRotation = async (filePath, detectRotation, scanContext) => {
+  const probe = await sharp(filePath, { failOn: 'none', limitInputPixels: MAX_INPUT_PIXELS })
+    .rotate()
+    .resize({
+      width: ROTATION_PROBE_EDGE_PX,
+      height: ROTATION_PROBE_EDGE_PX,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .flatten({ background: '#ffffff' })
+    .jpeg({ quality: 70, mozjpeg: true })
+    .toBuffer();
+  return (await detectRotation(probe.toString('base64'), scanContext || {})) || 0;
+};
+
 const regionPixels = (region, width, height) => {
   const left = Math.round(region.left * width);
   const top = Math.round(region.top * height);
@@ -110,6 +130,19 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
   const longEdge = Math.max(uprightWidth, uprightHeight);
   const needsResize = longEdge > maxEdgePx;
 
+  // Which way up the print is. The question is a model call of a second or
+  // more, and it used to be asked only after the full decode, with every
+  // encode below waiting on its answer. It now goes out first and the upright
+  // views are encoded while it is answered: most tags arrive upright, and for
+  // them the answer only confirms views that are already made. A turned tag
+  // still gets views cut from the turned pixels, exactly as before.
+  const detector = orientationFix ? detectRotation : null;
+  const rotationAnswer = detector
+    ? askPrintRotation(filePath, detector, scanContext)
+    : Promise.resolve(0);
+  // Awaited below; until then a failure must not count as unhandled.
+  rotationAnswer.catch(() => {});
+
   // One decode, at the larger of the two ceilings, so both the whole image and
   // the parts come out of the same pass.
   const workEdgePx = Math.max(maxEdgePx, PART_SOURCE_MAX_EDGE_PX);
@@ -131,118 +164,113 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
     return size.channels === 4 ? image.flatten({ background: '#ffffff' }) : image;
   };
 
-  // Which way up the print is, then the whole working image turned that far,
-  // once. Everything below cuts from the turned pixels, so a tag held the
-  // other way round produces exactly the views an upright one would.
-  const detector = orientationFix ? detectRotation : null;
-  let printRotation = 0;
-  if (detector) {
-    const probe = await asImage(decoded.data, decoded.info)
-      .resize({
-        width: ROTATION_PROBE_EDGE_PX,
-        height: ROTATION_PROBE_EDGE_PX,
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .jpeg({ quality: 70, mozjpeg: true })
-      .toBuffer();
-    printRotation = (await detector(probe.toString('base64'), scanContext || {})) || 0;
-  }
+  /** The whole image and both part layouts, cut from one set of upright pixels. */
+  const encodeViews = async (data, info, { turned }) => {
+    const work = () => asImage(data, info);
 
-  let data = decoded.data;
-  let info = decoded.info;
+    // The whole image: the original bytes when they are already what the model
+    // should see, otherwise one encode of the upright, capped pixels.
+    let full;
+    let passthrough = false;
+    let fullWidth = Math.min(info.width, needsResize ? maxEdgePx : info.width);
+    let fullHeight = info.height;
+    if (
+      metadata.format === 'jpeg' &&
+      (metadata.orientation === undefined || metadata.orientation === 1) &&
+      !needsResize &&
+      // The file on disk is still the way it arrived, so it cannot stand in for
+      // an image that had to be turned.
+      !turned
+    ) {
+      const { size } = await fs.promises.stat(filePath);
+      if (size <= PASSTHROUGH_MAX_BYTES) {
+        full = await fs.promises.readFile(filePath);
+        passthrough = true;
+        fullWidth = uprightWidth;
+        fullHeight = uprightHeight;
+      }
+    }
+    if (!full) {
+      const encoded = await work()
+        .resize({ width: maxEdgePx, height: maxEdgePx, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: jpegQuality, mozjpeg: true })
+        .toBuffer({ resolveWithObject: true });
+      full = encoded.data;
+      fullWidth = encoded.info.width;
+      fullHeight = encoded.info.height;
+    }
+
+    const boxFor = (region) => regionPixels(region, info.width, info.height);
+
+    const encodePart = async (region) => {
+      const box = boxFor(region);
+      // Sent at most at the model's own budget: more pixels than that are
+      // discarded on arrival and only cost upload time.
+      const scale = Math.sqrt(MODEL_IMAGE_BUDGET_PX / (box.width * box.height));
+      let part = work().extract(box);
+      if (scale < 1) {
+        part = part.resize({
+          width: Math.max(1, Math.round(box.width * scale)),
+          height: Math.max(1, Math.round(box.height * scale)),
+          fit: 'inside',
+        });
+      }
+      const encoded = await part
+        .jpeg({ quality: PART_JPEG_QUALITY, mozjpeg: true })
+        .toBuffer({ resolveWithObject: true });
+      return {
+        name: region.name,
+        base64: encoded.data.toString('base64'),
+        width: encoded.info.width,
+        height: encoded.info.height,
+      };
+    };
+
+    // A layout is worth cutting only while its parts still carry more pixels
+    // than the model keeps; below that they are the same print re-encoded.
+    const worthCutting = (layout) =>
+      layout.every((region) => {
+        const box = boxFor(region);
+        return box.width * box.height >= MODEL_IMAGE_BUDGET_PX;
+      });
+
+    let quarters = [];
+    let thirds = [];
+    const thirdLayout = info.width >= info.height ? THIRDS_ALONG_WIDTH : THIRDS_ALONG_HEIGHT;
+    if (multiView && Math.max(info.width, info.height) >= MIN_SOURCE_EDGE_PX) {
+      [quarters, thirds] = await Promise.all([
+        worthCutting(QUARTERS) ? Promise.all(QUARTERS.map(encodePart)) : [],
+        worthCutting(thirdLayout) ? Promise.all(thirdLayout.map(encodePart)) : [],
+      ]);
+      if (quarters.length === 0 && thirds.length === 0) {
+        console.warn('[OCR_PARTS_TOO_SMALL]', {
+          width: info.width,
+          height: info.height,
+          note: 'the photo itself carries too few pixels for a magnified part to add any',
+        });
+      }
+    }
+    return { info, full, passthrough, fullWidth, fullHeight, quarters, thirds };
+  };
+
+  const uprightViews = encodeViews(decoded.data, decoded.info, { turned: false });
+  uprightViews.catch(() => {});
+
+  // The whole working image turned as far as the answer says, once.
+  // Everything is then cut from the turned pixels, so a tag held the other way
+  // round produces exactly the views an upright one would.
+  const printRotation = (await rotationAnswer) || 0;
+  let views;
   if (printRotation) {
     const turned = await asImage(decoded.data, decoded.info)
       .rotate(printRotation)
       .raw()
       .toBuffer({ resolveWithObject: true });
-    data = turned.data;
-    info = turned.info;
+    views = await encodeViews(turned.data, turned.info, { turned: true });
+  } else {
+    views = await uprightViews;
   }
-  const work = () => asImage(data, info);
-
-  // The whole image: the original bytes when they are already what the model
-  // should see, otherwise one encode of the upright, capped pixels.
-  let full;
-  let passthrough = false;
-  let fullWidth = Math.min(info.width, needsResize ? maxEdgePx : info.width);
-  let fullHeight = info.height;
-  if (
-    metadata.format === 'jpeg' &&
-    (metadata.orientation === undefined || metadata.orientation === 1) &&
-    !needsResize &&
-    // The file on disk is still the way it arrived, so it cannot stand in for
-    // an image that had to be turned.
-    !printRotation
-  ) {
-    const { size } = await fs.promises.stat(filePath);
-    if (size <= PASSTHROUGH_MAX_BYTES) {
-      full = await fs.promises.readFile(filePath);
-      passthrough = true;
-      fullWidth = uprightWidth;
-      fullHeight = uprightHeight;
-    }
-  }
-  if (!full) {
-    const encoded = await work()
-      .resize({ width: maxEdgePx, height: maxEdgePx, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: jpegQuality, mozjpeg: true })
-      .toBuffer({ resolveWithObject: true });
-    full = encoded.data;
-    fullWidth = encoded.info.width;
-    fullHeight = encoded.info.height;
-  }
-
-  const boxFor = (region) => regionPixels(region, info.width, info.height);
-
-  const encodePart = async (region) => {
-    const box = boxFor(region);
-    // Sent at most at the model's own budget: more pixels than that are
-    // discarded on arrival and only cost upload time.
-    const scale = Math.sqrt(MODEL_IMAGE_BUDGET_PX / (box.width * box.height));
-    let part = work().extract(box);
-    if (scale < 1) {
-      part = part.resize({
-        width: Math.max(1, Math.round(box.width * scale)),
-        height: Math.max(1, Math.round(box.height * scale)),
-        fit: 'inside',
-      });
-    }
-    const encoded = await part
-      .jpeg({ quality: PART_JPEG_QUALITY, mozjpeg: true })
-      .toBuffer({ resolveWithObject: true });
-    return {
-      name: region.name,
-      base64: encoded.data.toString('base64'),
-      width: encoded.info.width,
-      height: encoded.info.height,
-    };
-  };
-
-  // A layout is worth cutting only while its parts still carry more pixels
-  // than the model keeps; below that they are the same print re-encoded.
-  const worthCutting = (layout) =>
-    layout.every((region) => {
-      const box = boxFor(region);
-      return box.width * box.height >= MODEL_IMAGE_BUDGET_PX;
-    });
-
-  let quarters = [];
-  let thirds = [];
-  const thirdLayout = info.width >= info.height ? THIRDS_ALONG_WIDTH : THIRDS_ALONG_HEIGHT;
-  if (multiView && Math.max(info.width, info.height) >= MIN_SOURCE_EDGE_PX) {
-    [quarters, thirds] = await Promise.all([
-      worthCutting(QUARTERS) ? Promise.all(QUARTERS.map(encodePart)) : [],
-      worthCutting(thirdLayout) ? Promise.all(thirdLayout.map(encodePart)) : [],
-    ]);
-    if (quarters.length === 0 && thirds.length === 0) {
-      console.warn('[OCR_PARTS_TOO_SMALL]', {
-        width: info.width,
-        height: info.height,
-        note: 'the photo itself carries too few pixels for a magnified part to add any',
-      });
-    }
-  }
+  const { info, full, passthrough, fullWidth, fullHeight, quarters, thirds } = views;
 
   console.info('[OCR_IMAGE_VIEWS]', {
     filePath,
