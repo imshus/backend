@@ -10,7 +10,11 @@ const authService = require('./auth.service');
 const licenseService = require('./license.service');
 const walletService = require('./wallet.service');
 const referralService = require('./referral.service');
+const employeeAccounts = require('./employeeAccount.service');
 const { sealMpin, openMpin } = require('../utils/mpinVault');
+const { storedSpellingsOf } = require('../utils/phone');
+
+const isEmployeeAccount = (user) => String(user?.role || '').toUpperCase() === 'EMP';
 
 function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '').slice(-10);
@@ -331,6 +335,13 @@ const login = async (mobile, credential) => {
     ? await BusinessUser.findOne({ phone: asPhone }, '+mpinVault')
     : await BusinessUser.findOne({ userId: identifier }, '+mpinVault');
 
+  // An employee's number finds their own sign-in record. They get an
+  // employee's session — keyed on the Employee document, role EMP — never an
+  // owner's, and only with the MPIN their owner set.
+  if (isEmployeeAccount(user)) {
+    return employeeAccounts.signInWithMpin(user, mpin);
+  }
+
   if (!user || !user.isActive) {
     throw new Error('INVALID_PHONE_CREDENTIALS');
   }
@@ -409,6 +420,12 @@ const loginWithOtp = async (mobile, otp) => {
 
   const normalizedPhone = normalizePhone(mobile);
   const user = await BusinessUser.findOne({ phone: normalizedPhone });
+  // A code proves the phone, and an employee's phone was typed by their
+  // owner, never proved: whoever holds a mistyped number would walk in. The
+  // MPIN the owner hands over is what admits an employee.
+  if (isEmployeeAccount(user)) {
+    throw new Error('EMPLOYEE_MPIN_REQUIRED');
+  }
   if (!user || !user.isActive) {
     throw new Error('INVALID_PHONE_CREDENTIALS');
   }
@@ -423,8 +440,19 @@ const loginWithOtp = async (mobile, otp) => {
   return buildLoginPayload(user, business, tokens);
 };
 
+/**
+ * Forgot / set MPIN is the owner's own recovery. An employee's MPIN is set by
+ * their owner (PUT /employees/:id/mpin) and read back by them, so these flows
+ * refuse an employee's record with a code the app can show as it is — before
+ * any code is texted.
+ */
+const refuseEmployeeRecovery = (user) => {
+  if (isEmployeeAccount(user)) throw new Error('EMPLOYEE_MPIN_MANAGED_BY_OWNER');
+};
+
 const requestPasswordReset = async (identifier) => {
   const user = await BusinessUser.findOne(buildBusinessUserQuery(identifier));
+  refuseEmployeeRecovery(user);
   if (!user || !user.isActive) {
     throw new Error('ACCOUNT_NOT_FOUND');
   }
@@ -444,6 +472,7 @@ const requestPasswordReset = async (identifier) => {
 
 const verifyPasswordResetOtp = async (identifier, otp) => {
   const user = await BusinessUser.findOne(buildBusinessUserQuery(identifier));
+  refuseEmployeeRecovery(user);
   if (!user || !user.isActive) {
     throw new Error('ACCOUNT_NOT_FOUND');
   }
@@ -475,6 +504,9 @@ const resetForgottenPassword = async (resetToken, newPassword, newMpin) => {
   const payload = authService.verifyPasswordResetToken(resetToken);
   const user = await BusinessUser.findById(payload.userId)
     .select('+passwordResetNonceHash +passwordResetExpiresAt');
+  // No reset token is ever minted for an employee's record (the OTP step
+  // refuses it); this holds even if one were.
+  refuseEmployeeRecovery(user);
 
   const storedNonceHash = user?.passwordResetNonceHash;
   const resetExpiresAt = user?.passwordResetExpiresAt
@@ -528,6 +560,7 @@ const revealStoredMpin = async (resetToken) => {
   const payload = authService.verifyPasswordResetToken(resetToken);
   const user = await BusinessUser.findById(payload.userId)
     .select('+passwordResetNonceHash +passwordResetExpiresAt +mpinVault');
+  refuseEmployeeRecovery(user);
 
   const storedNonceHash = user?.passwordResetNonceHash;
   const resetExpiresAt = user?.passwordResetExpiresAt
@@ -615,19 +648,21 @@ const loginEmployee = async ({ phone }, password) => {
   const Employee = require('../models/employee.model');
   const normalizedPhone = phone ? String(phone).replace(/\D/g, '').slice(-10) : null;
 
-  const query = normalizedPhone ? { phone: normalizedPhone } : null;
+  const query = normalizedPhone ? { phone: { $in: storedSpellingsOf(normalizedPhone) } } : null;
 
   if (!query) {
     throw new Error('INVALID_EMPLOYEE_CREDENTIALS');
   }
 
-  // Employee phones are not unique across shops (the field carries no unique
-  // index), so the password decides which record is meant rather than
-  // whichever the database returns first.
+  // Employee phones were not unique across shops before adding one checked
+  // the number, so the password decides which record is meant rather than
+  // whichever the database returns first. An employee added with an MPIN has
+  // no password at all and simply never matches here — a 401, not a crash.
   const candidates = await Employee.find({ ...query, isActive: true });
   let user = null;
   for (const candidate of candidates) {
-    if (await bcrypt.compare(password, candidate.passwordHash)) {
+    if (!candidate.passwordHash) continue;
+    if (await bcrypt.compare(String(password || ''), candidate.passwordHash)) {
       user = candidate;
       break;
     }
@@ -639,16 +674,19 @@ const loginEmployee = async ({ phone }, password) => {
   user.lastLoginAt = new Date();
   await user.save();
 
-  const tokens = authService.generateTokens(user.businessId.toString(), user._id.toString(), 'EMP');
+  // An employee from before sign-in records existed gets one now, so their
+  // number is known to the login and sign-up screens and the owner can give
+  // them an MPIN. Never in the way of signing in: a number that is already
+  // another account's simply leaves them without one.
+  let account = null;
+  try {
+    account = await employeeAccounts.syncAccountOf(user);
+  } catch (error) {
+    console.warn('[Auth] Could not bring the employee sign-in record up to date:', error.message);
+  }
 
-  return {
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
-    businessId: user.businessId.toString(),
-    userId: user._id.toString(),
-    role: 'EMP',
-    permissions: user.permissions
-  };
+  // The same session the phone + MPIN login issues.
+  return employeeAccounts.employeeSession(user, account);
 };
 
 const changePassword = async (userId, role, currentPassword, newPassword) => {
@@ -660,11 +698,17 @@ const changePassword = async (userId, role, currentPassword, newPassword) => {
     user = await BusinessUser.findById(userId);
   }
 
-  if (!user || !user.isActive) {
+  // An employee's sign-in record is never reached through an owner's token.
+  if (!user || !user.isActive || (role !== 'EMP' && isEmployeeAccount(user))) {
     throw new Error('USER_NOT_FOUND');
   }
 
-  const isMatch = await bcrypt.compare(currentPassword, user.passwordHash);
+  // An employee added with an MPIN has no password to change.
+  if (!user.passwordHash) {
+    throw new Error('PASSWORD_NOT_SET');
+  }
+
+  const isMatch = await bcrypt.compare(String(currentPassword || ''), user.passwordHash);
   if (!isMatch) {
     throw new Error('INCORRECT_CURRENT_PASSWORD');
   }

@@ -66,6 +66,16 @@ const errorHandler = (err, req, res, next) => {
     'INVALID_PHONE_CREDENTIALS': { status: 401, msg: 'Invalid phone number or password.' },
     'NO_USER_ID_SET': { status: 404, msg: 'No User ID is set on this account. Sign in with your phone number and set one.' },
     'INVALID_EMPLOYEE_CREDENTIALS': { status: 401, msg: 'Invalid Employee ID or password.' },
+    // Employees sign in with the phone and the MPIN their shop owner sets.
+    // Never MPIN_NOT_SET for them: the app reads that as "create your own".
+    'EMPLOYEE_MPIN_NOT_SET': { status: 409, msg: 'Ask your shop owner to set your MPIN' },
+    'EMPLOYEE_INACTIVE': { status: 403, msg: 'Your shop owner has turned off your access. Please ask them to turn it back on.' },
+    'EMPLOYEE_MPIN_MANAGED_BY_OWNER': { status: 403, msg: 'Your MPIN is set by your shop owner. Ask them to reset it for you.' },
+    'EMPLOYEE_MPIN_REQUIRED': { status: 403, msg: 'Sign in with your phone number and the MPIN your shop owner gave you.' },
+    'EMPLOYEE_PHONE_REQUIRED': { status: 400, msg: 'Add a mobile number for this employee first.' },
+    'PASSWORD_NOT_SET': { status: 401, msg: 'This account signs in with an MPIN and has no password to change.' },
+    'INCORRECT_CURRENT_PASSWORD': { status: 401, msg: 'Your current password is not correct.' },
+    'USER_NOT_FOUND': { status: 404, msg: 'This account could not be found.' },
     'OCR_IMAGE_PROCESSING_FAILED': {
       status: 422,
       msg: 'Could not process the uploaded image for OCR. Please try a clearer image or another format.',

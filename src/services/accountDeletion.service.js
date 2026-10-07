@@ -76,8 +76,11 @@ async function deleteAccount({ businessId, userId, role }) {
 
   // If employee account deletion
   if (normalizedRole === 'EMP') {
+    // An employee's token carries the Employee document's id; their sign-in
+    // record (role EMP) is found through its link back to it.
     await Promise.all([
-      BusinessUser.deleteOne({ _id: userId }),
+      BusinessUser.deleteOne({ _id: userId, role: 'EMP' }),
+      BusinessUser.deleteMany({ employeeId: userId, role: 'EMP' }),
       Employee.deleteOne({ _id: userId }),
       Wishlist.deleteMany({ userId }),
       ScanBilling.deleteMany({ userId }),

@@ -73,6 +73,8 @@ const checkAvailability = async (req, res, next) => {
     ]);
 
     sendSuccess(res, {
+      // An employee's number counts: they sign in through this same screen,
+      // and sign-up must not hand their number to a new shop.
       phoneTaken: Boolean(phoneUser),
       userIdTaken: Boolean(userIdUser),
       // Whether that account has an MPIN yet. The login screen reads this to
@@ -81,7 +83,13 @@ const checkAvailability = async (req, res, next) => {
       // has nothing to have forgotten. The document is already loaded here,
       // and this route is already rate-limited per number, so the answer
       // costs nothing new and reveals nothing new.
-      phoneHasMpin: Boolean(phoneUser?.mpinHash),
+      //
+      // Always true for an employee: their MPIN is the owner's to set, so the
+      // app must never send them to create one. It goes on to the code and
+      // the MPIN, and a login without one answers EMPLOYEE_MPIN_NOT_SET.
+      phoneHasMpin: String(phoneUser?.role || '').toUpperCase() === 'EMP'
+        ? true
+        : Boolean(phoneUser?.mpinHash),
     });
   } catch (err) {
     next(err);

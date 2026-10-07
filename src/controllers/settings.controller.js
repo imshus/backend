@@ -224,10 +224,17 @@ const getBusinessProfile = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Business not found' });
     }
 
-    // The signed-in user's own contact details, not the business owner's.
-    const user = req.user.userId
-      ? await BusinessUser.findById(req.user.userId).select('phone userId fullName').lean()
-      : null;
+    // The signed-in user's own contact details, not the business owner's. An
+    // employee's token carries their Employee id; their own sign-in record is
+    // found through its link back to it.
+    const isEmployee = String(req.user.role || '').toUpperCase() === 'EMP';
+    const user = !req.user.userId
+      ? null
+      : isEmployee
+        ? await BusinessUser.findOne({ employeeId: req.user.userId, role: 'EMP', businessId })
+          .select('phone userId fullName')
+          .lean()
+        : await BusinessUser.findById(req.user.userId).select('phone userId fullName').lean();
 
     return res.status(200).json({
       success: true,

@@ -50,8 +50,9 @@ This file lists all REST API routes provided by the backend (grouped and numbere
 
 1.9 POST /api/v1/employee/login
 - Auth: none
-- Middleware: `validate(employeeLoginSchema)`
+- Middleware: `loginAttemptLimiter` (same per-number bucket as the owner login), `validate(employeeLoginSchema)`
 - Controller: `authController.loginEmployee`
+- Description: the older phone + password employee login; issues the same session as the phone + MPIN login.
 
 1.10 GET /api/v1/employee/permissions
 - Auth: JWT required (`authenticateJWT`)
@@ -214,14 +215,35 @@ All wishlist routes require JWT.
 
 7. Employee management (OWNER only)
 
-7.1 POST /api/v1/employees
-- Controller: `employeeController.createEmployee` (OWNER)
+Every employee also has a sign-in record in `business_users` (role `EMP`,
+`employeeId` linking back) holding their phone, the MPIN the owner sets (bcrypt
+hash + sealed copy, `utils/mpinVault`), the shop's `gstNumber` / `businessName`
+/ `address` copied from the owner's record, and a mirror of `permissions`. The
+Employee document stays the source of truth; the record follows it on create,
+edit, on/off, MPIN change and delete (`services/employeeAccount.service.js`).
+A phone number held by any `business_users` record (any role, any shop) or any
+active Employee is refused everywhere below with
+`409 { success:false, error:'PHONE_ALREADY_REGISTERED', message:'This number is already registered' }`
+and nothing is written.
+
+7.1 POST /api/v1/employees (OWNER)
+- Body: `{ name, phone, email?, designation, mpin, confirmMpin, permissions? }` → `201 { success:true, data:{ employee } }`.
+- Older builds: no mpin/password stores the 1-hour Redis draft; `{ password }` finishes it (body fields win over the draft).
 7.2 GET /api/v1/employees
-- Controller: `employeeController.getEmployees` (OWNER)
-7.3 PUT /api/v1/employees/:id
-- Controller: `employeeController.updateEmployee` (OWNER)
-7.4 DELETE /api/v1/employees/:id
-- Controller: `employeeController.deleteEmployee` (OWNER)
+- OWNER: the roster; EMP: only themselves. Each item adds `hasMpin`; never a hash.
+7.3 GET /api/v1/employees/check-phone?phone= (OWNER) → `{ available }`
+7.4 PUT /api/v1/employees/:id (OWNER)
+- `{ name?, phone?, email?, designation?, permissions?, isActive? }`; a new phone is re-checked excluding the employee.
+7.5 PUT /api/v1/employees/:id/mpin (OWNER) `{ mpin, confirmMpin }` → `{ success:true }`
+7.6 GET /api/v1/employees/:id/mpin (OWNER) → `{ mpin: '1234' | null }` from the sealed copy
+7.7 DELETE /api/v1/employees/:id (OWNER) — also deletes the sign-in record.
+
+Employees sign in through POST /api/v1/auth/login `{ mobile, mpin }` like the
+owner: role `EMP`, `userId` = the Employee id, `permissions` in the payload and
+token. No MPIN yet → `409 EMPLOYEE_MPIN_NOT_SET`; switched off →
+`403 EMPLOYEE_INACTIVE` (after a correct MPIN). OTP-only login and the owner's
+forgot/set-MPIN flows refuse an employee's number (`EMPLOYEE_MPIN_REQUIRED`,
+`EMPLOYEE_MPIN_MANAGED_BY_OWNER`).
 
 
 Notes & file references

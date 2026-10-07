@@ -121,12 +121,37 @@ const accountLookupLimiter = bodyKeyLimiter({
  * Keyed on the number, not the IP: a shop's staff share one connection, and
  * whoever is guessing does not.
  */
+/**
+ * Who a sign-in attempt is for: `mobile` on the owner login, `phone` on the
+ * old employee login. A phone number counts as its ten digits however it is
+ * written — "+91 98765 43210", "919876543210" and "9876543210" are one
+ * bucket, not three — so neither reformatting the number nor switching
+ * between the two login endpoints buys more guesses. A User ID counts as
+ * typed.
+ */
+const loginIdentifierOf = (req) => {
+  const raw = String(req.body?.mobile ?? req.body?.phone ?? '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (/^[+\d\s()-]+$/.test(raw) && digits.length >= 10) return digits.slice(-10);
+  return raw;
+};
+
 const loginAttemptLimiter = bodyKeyLimiter({
   name: 'login_attempt',
   limit: 20,
   windowSeconds: 3600,
   message: 'Too many sign-in attempts for this number. Please try again in an hour.',
-  pick: (req) => req.body?.mobile || mobileOf(req),
+  pick: loginIdentifierOf,
+});
+
+// "Is this number free?" for the owner adding an employee. A shop adds a
+// handful of people; this keeps the check from being walked through the
+// number space by one signed-in account.
+const employeePhoneCheckLimiter = perUserLimiter({
+  name: 'employee_phone_check',
+  limit: 120,
+  windowSeconds: 3600,
+  message: 'Too many number checks this hour. Please try again later.',
 });
 
 // One gallery pick is one detection; 120 an hour is far beyond a person
@@ -168,4 +193,6 @@ module.exports = {
   otpVerifyLimiter,
   accountLookupLimiter,
   loginAttemptLimiter,
+  loginIdentifierOf,
+  employeePhoneCheckLimiter,
 };

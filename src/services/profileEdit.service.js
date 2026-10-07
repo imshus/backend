@@ -9,6 +9,7 @@ const BusinessUser = require('../models/businessUser.model');
 const OrganizationLicense = require('../models/organizationLicense.model');
 const otpService = require('./otp.service');
 const gstService = require('./gst.service');
+const employeeAccounts = require('./employeeAccount.service');
 
 /**
  * Changing the two things a shop is identified by: its phone number and its
@@ -206,6 +207,21 @@ const applyProfileChanges = async (session, { editToken, phone, otp, gstNumber }
     business.stateName = gstDetails.stateName || business.stateName;
     business.pincode = gstDetails.pincode || business.pincode;
     await business.save();
+
+    // The user records carry a copy of the GST details: the owner's from the
+    // business, the employees' from the owner's, so the whole shop moves to
+    // the new GSTIN together instead of keeping the old one on its records.
+    await BusinessUser.updateMany(
+      { businessId: business._id, role: { $ne: 'EMP' } },
+      {
+        $set: {
+          gstNumber: business.gstNumber || '',
+          businessName: business.tradeName || business.legalName || '',
+          address: business.address || '',
+        },
+      },
+    );
+    await employeeAccounts.syncShopDetailsToEmployees(business._id);
   }
 
   if (phoneChanged) {

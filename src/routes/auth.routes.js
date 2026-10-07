@@ -64,7 +64,9 @@ router.post('/business/create-password', validate(createPasswordSchema), authCon
 // ID) rather than per IP, which is what a shop's own connection shares.
 router.post('/business/login', loginAttemptLimiter, validate(loginSchema), authController.login);
 router.post('/login', loginAttemptLimiter, validate(loginSchema), authController.login);
-router.post('/employee/login', validate(employeeLoginSchema), authController.loginEmployee);
+// The old employee login (phone + password), kept for builds that still use
+// it. Counted in the same per-number bucket as the owner login above.
+router.post('/employee/login', loginAttemptLimiter, validate(employeeLoginSchema), authController.loginEmployee);
 router.get('/employee/permissions', authenticateJWT, authController.getEmployeePermissions);
 router.post('/change-password', authenticateJWT, validate(changePasswordSchema), authController.changePassword);
 router.post('/refresh', authController.refreshToken);
