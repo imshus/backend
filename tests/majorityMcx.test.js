@@ -18,24 +18,45 @@ const SERVICE_DIR = path.dirname(SERVICE);
 
 const JMD_DEC = 154261;
 const NEAR_MONTH = 151920;
+// What JMD charges: its own (December) MCX sell plus a fixed premium.
+const JMD_CASH_SELL = JMD_DEC - 3000;
+const JMD_RTGS_SELL = JMD_DEC + 1900;
 
-// The live feed's shape, as seen on 25 Sep 2026 (explicit nulls included).
+// The live feed's shape, as seen on 25 Sep 2026 (explicit nulls included):
+// each house's three rows, and the tracker's diffs (side sell less the MCX
+// buy, so above the premium by the MCX spread: 52 on JMD's December line).
 const FEED = [
   {
-    source: 'jmd_patil', name: 'JMD Patil', cash_bhaw: '-3000', rtgs_bhaw: '1900',
-    rows: [{ label: 'Gold Future MCX', buy: '154209', sell: String(JMD_DEC) }],
+    source: 'jmd_patil', name: 'JMD Patil', cash_bhaw: String(JMD_CASH_SELL - 154209), rtgs_bhaw: String(JMD_RTGS_SELL - 154209),
+    rows: [
+      { label: 'Gold Future MCX', buy: '154209', sell: String(JMD_DEC) },
+      { label: '99.50 Gold Cash', buy: String(JMD_CASH_SELL - 1000), sell: String(JMD_CASH_SELL) },
+      { label: '99.50 Gold RTGS', buy: String(JMD_RTGS_SELL - 1500), sell: String(JMD_RTGS_SELL) },
+    ],
   },
   {
     source: 'mega_bullion', name: 'Mega Bullion', cash_bhaw: null, rtgs_bhaw: null,
-    rows: [{ label: 'Gold Future MCX', buy: '151902', sell: String(NEAR_MONTH) }],
+    rows: [
+      { label: 'Gold Future MCX', buy: '151902', sell: String(NEAR_MONTH) },
+      { label: '99.50 Gold Cash', buy: null, sell: null },
+      { label: '99.50 Gold RTGS', buy: null, sell: null },
+    ],
   },
   {
-    source: 'shri_sai', name: 'Shri Sai Jewels', cash_bhaw: null, rtgs_bhaw: '4270',
-    rows: [{ label: 'Gold Future MCX', buy: '151902', sell: String(NEAR_MONTH) }],
+    source: 'shri_sai', name: 'Shri Sai Jewels', cash_bhaw: null, rtgs_bhaw: String(NEAR_MONTH + 4270 - 151902),
+    rows: [
+      { label: 'Gold Future MCX', buy: '151902', sell: String(NEAR_MONTH) },
+      { label: '99.50 Gold Cash', buy: null, sell: null },
+      { label: '99.50 Gold RTGS', buy: '-', sell: String(NEAR_MONTH + 4270) },
+    ],
   },
   {
     source: 'shri_ganesh', name: 'Shri Ganesh Bullion', cash_bhaw: null, rtgs_bhaw: null,
-    rows: [{ label: 'Gold Future MCX', buy: '151902', sell: String(NEAR_MONTH) }],
+    rows: [
+      { label: 'Gold Future MCX', buy: '151902', sell: String(NEAR_MONTH) },
+      { label: '99.50 Gold Cash', buy: null, sell: null },
+      { label: '99.50 Gold RTGS', buy: null, sell: null },
+    ],
   },
 ];
 
@@ -133,11 +154,14 @@ test('a JMD shop: MCX shows the market figure, RTGS/Cash stay on JMD\'s own line
   // sees is its own house's line (JMD's December figure), at the shop's asking.
   assert.equal(result.mcxLiveRate, NEAR_MONTH);
   assert.equal(result.taxSettings.mcxFinalRate, JMD_DEC);
-  // JMD's bhaw is quoted over its own (December) line, so the rate JMD
-  // charges — and the one scans price on — is built there.
-  // Rate 2 ticked by default: the board figure itself (Tax box never saved, so 0).
-  assert.equal(result.taxSettings.rtgsFinalRate, JMD_DEC + 1900 + 200);
-  assert.equal(result.taxSettings.cashFinalRate, JMD_DEC - 3000 - 100);
+  // JMD prices over its own (December) line, so the rate JMD charges — and
+  // the one scans price on — is built there: its own sells plus the shop's
+  // changes, not the tracker's diffs on that line (52 high, the spread).
+  // Rate 1 ticked by default: the board figure itself.
+  assert.equal(result.taxSettings.rtgsFinalRate, JMD_RTGS_SELL + 200);
+  assert.equal(result.taxSettings.cashFinalRate, JMD_CASH_SELL - 100);
+  assert.equal(result.supremeChanges.rtgsChange, 1900, 'the premium, not the diff (1952)');
+  assert.equal(result.supremeChanges.cashChange, -3000, 'the premium, not the diff (-2948)');
   // And the app is told which MCX that was, for when its own feed is out.
   assert.equal(result.taxSettings.pricingMcxLiveRate, JMD_DEC);
 });

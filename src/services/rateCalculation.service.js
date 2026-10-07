@@ -143,11 +143,14 @@ const getLiveGoldRates = async (businessId, scope = null) => {
     : metrics?.metricsData?.bhaw_source_jmd === false
       ? bhawService.SOURCES.MEGA_BULLION
       : bhawService.SOURCES.JMD_PATIL;
+  // The house's premium on each side over its own MCX sell (its Cash or
+  // RTGS sell less that line, off the same record), not the tracker's Badla
+  // Bhaw, which is measured from the MCX buy and so ran high by the spread.
   const vendorBhaw = await bhawService.getBhawForSource(selectedBhawSource);
   if (vendorBhaw) {
-    // Per side: the house's own bhaw where it has published one, the
-    // stored fallback for the side it has not — a scan on that side still
-    // needs a number. The screens show a blank for that side instead.
+    // Per side: the house's own premium where it has published that side,
+    // the stored fallback for the side it has not — a scan on that side
+    // still needs a number. The screens show a blank for that side instead.
     supremeChanges = {
       rtgsChange: vendorBhaw.rtgsBhaw ?? supremeChanges.rtgsChange,
       cashChange: vendorBhaw.cashBhaw ?? supremeChanges.cashChange
@@ -169,10 +172,11 @@ const getLiveGoldRates = async (businessId, scope = null) => {
 
   // The MCX shown as MCX is the market's (the figure most houses agree on).
   // The followed house's RTGS and Cash are built on that house's own MCX
-  // line, the one its bhaw is quoted over: houses do not all quote the same
-  // contract, and the house's bhaw on another contract's MCX is a rate the
-  // house does not charge. Off the live feed, the stored fallback changes
-  // go on the market MCX as before.
+  // sell, the line it prices them over (that sell plus a fixed premium):
+  // houses do not all quote the same contract, and the house's premium on
+  // another contract's MCX is a rate the house does not charge. Line plus
+  // premium is the house's own Cash/RTGS sell. Off the live feed, the
+  // stored fallback changes go on the market MCX as before.
   // The MCX shown is the followed house's own "Gold Future MCX" — the shop
   // follows one house, and its MCX is that house's, straight off its
   // Dashboard Settings card. The market majority (mcxLiveRate) stands in
@@ -182,12 +186,13 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const shownMcxRate = houseMcx ?? mcxLiveRate;
   const mcxFinalRate = shownMcxRate + businessMcxChange;
   const pricingMcxRate = shownMcxRate + businessMcxChange;
-  // RTGS Rate 1 is the house's board RTGS (its line + its bhaw) as Dashboard
-  // Settings shows it, plus the shop's change, with no tax on it (it carried
-  // 3% until the shop asked for the board figure itself). The one the shop
-  // selected is the RTGS rate everything downstream prices on. A scan must
-  // have a number, so a house with no bhaw still gets the stored fallback
-  // here; the screens show a blank for it instead.
+  // RTGS Rate 1 is the house's board RTGS (its line + its premium: its own
+  // RTGS sell) as Dashboard Settings shows it, plus the shop's change, with
+  // no tax on it (it carried 3% until the shop asked for the board figure
+  // itself). The one the shop selected is the RTGS rate everything
+  // downstream prices on. A scan must have a number, so a house with no
+  // bhaw still gets the stored fallback here; the screens show a blank for
+  // it instead.
   const rtgsBaseRate = pricingMcxRate + supremeRtgsChange + businessRtgsChange;
   const rtgsRate1FinalRate = Math.round(rtgsBaseRate);
   // Rate 2 is the board figure less the percent in its Tax box. A saved
@@ -314,7 +319,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       // The MCX this shop's RTGS and Cash were built on, before its own MCX
       // change: the followed house's line while its bhaw is live, else the
       // market MCX. The app builds on the same figure while its own board
-      // feed is not in, so Home never pairs a house's bhaw with another
+      // feed is not in, so Home never pairs a house's premium with another
       // contract's MCX. Once it is in, the phone's Home and Settings show
       // the live stream while the server prices on the 3-minute snapshot
       // with the same arithmetic, so the two can differ by up to three
@@ -322,6 +327,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       pricingMcxLiveRate: houseMcx ?? mcxLiveRate
     },
     karatRates: computedKaratRates,
+    // What bhawService.feedStamp reads: the house line and both premiums.
     feedStamp: vendorBhaw ? `${houseMcx}|${vendorBhaw.cashBhaw}|${vendorBhaw.rtgsBhaw}` : 'off',
     build: RUNNING_COMMIT
   };

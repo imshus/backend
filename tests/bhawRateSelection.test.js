@@ -1,8 +1,13 @@
 /**
  * Pins the bhaw-vendor contract for the gold rates the app displays:
  *
- *   cash rate = MCX final rate + selected vendor's cash_bhaw + business cash change
- *   rtgs rate = MCX final rate + selected vendor's rtgs_bhaw + business rtgs change
+ *   cash rate = house MCX sell + its cash premium + business cash change
+ *   rtgs rate = house MCX sell + its rtgs premium + business rtgs change
+ *
+ * where the premium is the house's own Cash/RTGS sell less its MCX sell, off
+ * the same record — so with no business change the rate is the house's own
+ * sell. The feed's cash_bhaw/rtgs_bhaw (the tracker's diff from the MCX buy)
+ * runs above the premium by the MCX spread and is not what is added.
  *
  * The vendor comes from the Dashboard Settings toggle (bhaw_source_jmd), the
  * bhaw values from the live feed, and the response always carries bhawSource
@@ -18,14 +23,29 @@ const SERVICE = path.join(__dirname, '..', 'src', 'services', 'rateCalculation.s
 const SERVICE_DIR = path.dirname(SERVICE);
 
 const MCX_LIVE = 155000;
+const MCX_BUY = MCX_LIVE - 30;
+
+/** A house quoting MCX_LIVE (buy 30 below) with these premiums on it. */
+const house = (source, name, cashPremium, rtgsPremium) => ({
+  source,
+  name,
+  // The tracker's diffs: side sell less the MCX buy.
+  cash_bhaw: String(MCX_LIVE + cashPremium - MCX_BUY),
+  rtgs_bhaw: String(MCX_LIVE + rtgsPremium - MCX_BUY),
+  rows: [
+    { label: 'Gold Future MCX', buy: String(MCX_BUY), sell: String(MCX_LIVE) },
+    { label: '99.50 Gold Cash', buy: String(MCX_LIVE + cashPremium - 1000), sell: String(MCX_LIVE + cashPremium) },
+    { label: '99.50 Gold RTGS', buy: String(MCX_LIVE + rtgsPremium - 1500), sell: String(MCX_LIVE + rtgsPremium) },
+  ],
+});
 
 const state = {
   useJmd: false,
   cached: null,
   cacheWrites: [],
   feed: [
-    { source: 'jmd_patil', name: 'JMD Patil', cash_bhaw: '-3200', rtgs_bhaw: '4800' },
-    { source: 'mega_bullion', name: 'Mega Bullion', cash_bhaw: '-3900', rtgs_bhaw: '4900' },
+    house('jmd_patil', 'JMD Patil', -3200, 4800),
+    house('mega_bullion', 'Mega Bullion', -3900, 4900),
   ],
 };
 
@@ -92,9 +112,10 @@ test('selecting JMD Patil applies its live cash and rtgs bhaw to the MCX rate', 
   assert.equal(result.bhawSource.key, 'jmd_patil');
   assert.equal(result.bhawSource.name, 'JMD Patil');
   assert.equal(result.bhawSource.live, true);
+  // The premium over JMD's MCX sell, not the tracker's -3170 / 4830.
   assert.equal(result.supremeChanges.cashChange, -3200);
   assert.equal(result.supremeChanges.rtgsChange, 4800);
-  // final = MCX + vendor bhaw + business change
+  // final = house MCX sell + its premium + business change
   assert.equal(result.taxSettings.cashFinalRate, MCX_LIVE - 3200 - 100);
   // Rate 1 = board + 3%; the fixture ticks Rate 2 = the board figure itself (Tax box never saved, so 0).
   // Rate 1 is the board figure itself, no tax on it, and it is the one ticked.
@@ -146,7 +167,7 @@ test('a cached response from the current build is served as-is', async () => {
     bhawSource: { key: 'jmd_patil', name: 'JMD Patil', live: true },
     supremeChanges: { rtgsChange: 4800, cashChange: -3200 },
     // The feed as it was when this was computed — and still is.
-    feedStamp: 'null|-3200|4800',
+    feedStamp: `${MCX_LIVE}|-3200|4800`,
     // Worked out by this same deployment.
     build: RUNNING_COMMIT,
   };

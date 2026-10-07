@@ -17,15 +17,33 @@ const { fetchAndStoreMcxRate } = require('../src/services/mcxScheduler.service')
 
 const BOARD_MAJORITY = 150720;
 
+// Each house's three rows; cash_bhaw / rtgs_bhaw are the tracker's diffs
+// (side sell less the MCX buy).
 const FEED = [
   { source: 'jmd_patil', name: 'JMD Patil', cash_bhaw: '-3073', rtgs_bhaw: '2127',
-    rows: [{ label: 'Gold Future MCX', sell: '153273' }] },
+    rows: [
+      { label: 'Gold Future MCX', buy: '153246', sell: '153273' },
+      { label: '99.50 Gold Cash', buy: null, sell: '150173' },
+      { label: '99.50 Gold RTGS', buy: null, sell: '155373' },
+    ] },
   { source: 'mega_bullion', name: 'Mega Bullion', cash_bhaw: null, rtgs_bhaw: null,
-    rows: [{ label: 'Gold Future MCX', sell: String(BOARD_MAJORITY) }] },
-  { source: 'shri_sai', name: 'Shri Sai Jewels', cash_bhaw: null, rtgs_bhaw: '4450',
-    rows: [{ label: 'Gold Future MCX', sell: String(BOARD_MAJORITY) }] },
+    rows: [
+      { label: 'Gold Future MCX', buy: String(BOARD_MAJORITY - 20), sell: String(BOARD_MAJORITY) },
+      { label: '99.50 Gold Cash', buy: null, sell: null },
+      { label: '99.50 Gold RTGS', buy: null, sell: null },
+    ] },
+  { source: 'shri_sai', name: 'Shri Sai Jewels', cash_bhaw: null, rtgs_bhaw: '4470',
+    rows: [
+      { label: 'Gold Future MCX', buy: String(BOARD_MAJORITY - 20), sell: String(BOARD_MAJORITY) },
+      { label: '99.50 Gold Cash', buy: null, sell: null },
+      { label: '99.50 Gold RTGS', buy: '-', sell: String(BOARD_MAJORITY + 4450) },
+    ] },
   { source: 'shri_ganesh', name: 'Shri Ganesh Bullion', cash_bhaw: null, rtgs_bhaw: null,
-    rows: [{ label: 'Gold Future MCX', sell: String(BOARD_MAJORITY) }] },
+    rows: [
+      { label: 'Gold Future MCX', buy: String(BOARD_MAJORITY - 20), sell: String(BOARD_MAJORITY) },
+      { label: '99.50 Gold Cash', buy: null, sell: null },
+      { label: '99.50 Gold RTGS', buy: null, sell: null },
+    ] },
 ];
 
 const original = {

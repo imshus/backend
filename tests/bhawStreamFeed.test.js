@@ -46,12 +46,24 @@ const callsAtRequire = calls.length;
 const NEAR_MONTH = 151920;
 const JMD_DEC = 154261;
 
+// What a house adds to its own MCX sell (JMD Patil on 7 Oct 2026), and
+// the MCX spread under it. The feed's cash_bhaw / rtgs_bhaw is the
+// tracker's diff from the MCX buy, so it sits above the premium by SPREAD.
+const CASH_PREMIUM = -1200;
+const RTGS_PREMIUM = 2250;
+const SPREAD = 27;
+const STAMP_JMD = `${JMD_DEC}|${CASH_PREMIUM}|${RTGS_PREMIUM}`;
+
 const house = (source, sell, extra = {}) => ({
   source,
   name: source,
-  cash_bhaw: '-3000',
-  rtgs_bhaw: '1900',
-  rows: [{ label: 'Gold Future MCX', buy: String(sell - 20), sell: String(sell) }],
+  cash_bhaw: String(CASH_PREMIUM + SPREAD),
+  rtgs_bhaw: String(RTGS_PREMIUM + SPREAD),
+  rows: [
+    { label: 'Gold Future MCX', buy: String(sell - SPREAD), sell: String(sell) },
+    { label: '99.50 Gold Cash', buy: String(sell + CASH_PREMIUM - 1000), sell: String(sell + CASH_PREMIUM) },
+    { label: '99.50 Gold RTGS', buy: String(sell + RTGS_PREMIUM - 1500), sell: String(sell + RTGS_PREMIUM) },
+  ],
   ok: true,
   ...extra,
 });
@@ -238,7 +250,7 @@ test('readSnapshot rejects when the stream ends with only pings and heartbeats',
   await assert.rejects(bhawService.readSnapshot('https://feed.test/3min'), /closed before a snapshot/);
 });
 
-test('the board is priced off the stream: MCX majority, a house line, its bhaw', async () => {
+test('the board is priced off the stream: MCX majority, a house line, its premium', async () => {
   respond = async () => {
     const stream = new PassThrough();
     stream.write(': ping\n\n');
@@ -248,7 +260,7 @@ test('the board is priced off the stream: MCX majority, a house line, its bhaw',
   assert.equal(await bhawService.boardMcxSell(), NEAR_MONTH);
   assert.equal(await bhawService.houseMcxSell('jmd_patil'), JMD_DEC);
   assert.deepEqual(await bhawService.getBhawForSource('jmd_patil'), {
-    cashBhaw: -3000, rtgsBhaw: 1900, name: 'jmd_patil',
+    cashBhaw: CASH_PREMIUM, rtgsBhaw: RTGS_PREMIUM, name: 'jmd_patil',
   });
   assert.equal(calls.length, 1, 'one read serves every lookup while it is fresh');
 });
@@ -319,7 +331,7 @@ test('a failed read keeps serving the last board, and the next read waits 30 s',
   assert.equal(calls.length, 2);
 
   setClock(t1 + 29_000);
-  assert.equal(await bhawService.feedStamp('jmd_patil'), `${JMD_DEC}|-3000|1900`);
+  assert.equal(await bhawService.feedStamp('jmd_patil'), STAMP_JMD);
   assert.equal(Object.keys(await bhawService.houseMcxLines()).length, 4);
   assert.equal(calls.length, 2, 'inside the hold-off every lookup is served the last board at once');
 
@@ -340,7 +352,7 @@ test('every house marked ok: false: nobody is live, not the old board', async ()
   const t0 = Date.UTC(2026, 9, 6, 13, 30, 0);
   setClock(t0);
   respond = async () => ({ data: snapshotAt(t0, fourHouses()) });
-  assert.equal(await bhawService.feedStamp('jmd_patil'), `${JMD_DEC}|-3000|1900`);
+  assert.equal(await bhawService.feedStamp('jmd_patil'), STAMP_JMD);
 
   // Two hours on, the 3-minute server's scraper has lost every house.
   const t1 = t0 + 2 * 60 * 60_000;
@@ -523,9 +535,9 @@ test('a read that times out is not waited on again by the next lookup in the sam
     const deadlines = timers.pending(8_000);
     assert.equal(deadlines.length, 1, 'one read, with the 8 s deadline');
     deadlines[0].fn();
-    assert.equal(await stamp, `${JMD_DEC}|-3000|1900`, 'the last board is served');
+    assert.equal(await stamp, STAMP_JMD, 'the last board is served');
     assert.equal(silent.destroyed, true);
-    assert.equal(calls.length, 2, 'feedStamp looks the board up twice and waited on one read');
+    assert.equal(calls.length, 2, 'feedStamp waited on one read');
 
     // The recompute that follows in the same request asks three more times.
     await bhawService.prefetch();

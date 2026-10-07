@@ -271,11 +271,55 @@ const fetchRows = async (force = false) => {
   return cache.rows;
 };
 
+/** The three rows each house carries on the feed, by label. */
+const MCX_ROW = /gold\s*future\s*mcx/i;
+const CASH_ROW = /\bcash\b/i;
+const RTGS_ROW = /\brtgs\b/i;
+
+/** One of a house's rows by its label, or null when it has none. */
+const rowOf = (vendor, label) => (Array.isArray(vendor?.rows) ? vendor.rows : [])
+  .find((entry) => label.test(String(entry?.label || ''))) || null;
+
+/** One house's own "Gold Future MCX" sell, or null when it has not published one. */
+const futureMcxSellOf = (vendor) => {
+  const row = rowOf(vendor, MCX_ROW);
+  const sell = Number(String(row?.sell ?? '').replace(/[^0-9.]/g, ''));
+  return Number.isFinite(sell) && sell > 0 ? Math.round(sell) : null;
+};
+
 /**
- * @param {string} source one of SOURCES
- * @returns {Promise<{ cashBhaw: number, rtgsBhaw: number, name: string } | null>}
+ * What a house charges on one side over its own MCX sell: the bhaw the rate
+ * math adds to that line (houseMcxSell).
+ *
+ * The feed's cash_bhaw / rtgs_bhaw (diff1 / diff2) is the tracker's Badla
+ * Bhaw, the side's sell less the MCX *buy*. The houses price Cash and RTGS as
+ * the MCX *sell* plus a fixed premium (on 7 Oct 2026 JMD Patil Cash -1,200,
+ * RTGS +2,250; Shri Sai RTGS +2,350), so that diff added to the sell line
+ * came out high by the MCX spread, 3 to 46 rupees, never once exact over
+ * 1,275 live frames. The premium off the same record is exact on all of them:
+ *
+ *   side sell - MCX sell          both published
+ *   diff - (MCX sell - MCX buy)   the same figure, worked back from the diff
+ *   diff                          a feed that publishes only a bhaw
+ *   null                          the side is not live; the caller falls back
+ *
+ * `line` is the house's MCX sell as the rate math reads it (futureMcxSellOf),
+ * so line + premium is the house's own sell to the rupee.
  */
-const getBhawForSource = async (source) => {
+const premiumOf = (sideRow, rawDiff, line, mcxBuy) => {
+  const sideSell = toFiniteNumber(sideRow?.sell);
+  if (sideSell !== null && line !== null) return sideSell - line;
+  const diff = toFiniteNumber(rawDiff);
+  if (diff === null) return null;
+  if (line !== null && mcxBuy !== null) return diff - (line - mcxBuy);
+  return diff;
+};
+
+/**
+ * The followed house off the board: its MCX line and both premiums, all read
+ * off its one record, or null while it is not live.
+ */
+const lookUpHouse = async (source) => {
   const rows = await fetchRows();
   if (!rows) return null;
 
@@ -289,40 +333,46 @@ const getBhawForSource = async (source) => {
   // Each side stands on its own: a house that quotes RTGS and no cash
   // (Shri Sai) prices RTGS off its board; the side it has not published is
   // null, and the caller falls back for that side alone.
-  const cashBhaw = toFiniteNumber(row.cash_bhaw);
-  const rtgsBhaw = toFiniteNumber(row.rtgs_bhaw);
+  const line = futureMcxSellOf(row);
+  const mcxBuy = toFiniteNumber(rowOf(row, MCX_ROW)?.buy);
+  const cashBhaw = premiumOf(rowOf(row, CASH_ROW), row.cash_bhaw, line, mcxBuy);
+  const rtgsBhaw = premiumOf(rowOf(row, RTGS_ROW), row.rtgs_bhaw, line, mcxBuy);
   if (cashBhaw === null && rtgsBhaw === null) {
     console.warn(`[Bhaw] Source "${source}" has not published rates yet.`);
     return null;
   }
 
-  return { cashBhaw, rtgsBhaw, name: row.name || SOURCE_NAMES[wanted] || source };
+  return { line, cashBhaw, rtgsBhaw, name: row.name || SOURCE_NAMES[wanted] || source };
+};
+
+/**
+ * The followed house's premium on each side over its own MCX sell (see
+ * premiumOf), the figure added to houseMcxSell for its Cash and RTGS.
+ *
+ * @param {string} source one of SOURCES
+ * @returns {Promise<{ cashBhaw: number|null, rtgsBhaw: number|null, name: string } | null>}
+ */
+const getBhawForSource = async (source) => {
+  const house = await lookUpHouse(source);
+  if (!house) return null;
+  return { cashBhaw: house.cashBhaw, rtgsBhaw: house.rtgsBhaw, name: house.name };
 };
 
 /**
  * What the followed house's figures stand on right now, as one string: its
- * MCX line and both bhaw sides, or 'off' while it is not live. A cached
- * rate is served only while this still reads the same, so a move on the
- * board reaches scans with the next 3-minute snapshot, on weekends included.
+ * MCX line and both premiums, off the same record, or 'off' while it is not
+ * live. A cached rate is served only while this still reads the same, so a
+ * move on the board reaches scans with the next 3-minute snapshot, on
+ * weekends included.
  */
 const feedStamp = async (source) => {
-  const bhaw = await getBhawForSource(source);
-  if (!bhaw) return 'off';
-  const line = await houseMcxSell(source);
-  return `${line}|${bhaw.cashBhaw}|${bhaw.rtgsBhaw}`;
+  const house = await lookUpHouse(source);
+  if (!house) return 'off';
+  return `${house.line}|${house.cashBhaw}|${house.rtgsBhaw}`;
 };
 
 /** Back-compat helper used before both vendors were served from this feed. */
 const getJmdBhaw = () => getBhawForSource(SOURCES.JMD_PATIL);
-
-/** One house's own "Gold Future MCX" sell, or null when it has not published one. */
-const futureMcxSellOf = (vendor) => {
-  const row = (Array.isArray(vendor?.rows) ? vendor.rows : []).find((entry) =>
-    /gold\s*future\s*mcx/i.test(String(entry?.label || '')),
-  );
-  const sell = Number(String(row?.sell ?? '').replace(/[^0-9.]/g, ''));
-  return Number.isFinite(sell) && sell > 0 ? Math.round(sell) : null;
-};
 
 /** Quotes within this share of each other are taken as the same contract. */
 const SAME_CONTRACT_SPREAD = 0.004;
@@ -385,10 +435,12 @@ const boardMcxSell = async () => {
 };
 
 /**
- * The followed house's own "Gold Future MCX" sell. Its bhaw is quoted over
- * this line, whichever contract it is, so the house's RTGS and Cash are built
- * on it: MCX-majority plus JMD's bhaw would put a JMD shop ~2,300 below the
- * rate JMD actually charges. Null when that house has no such line.
+ * The followed house's own "Gold Future MCX" sell. The house prices its Cash
+ * and RTGS as this line plus a fixed premium, whichever contract it is, so
+ * they are built on it: line + getBhawForSource's premium (read off the same
+ * record) is the house's own sell. MCX-majority plus JMD's premium would put
+ * a JMD shop ~2,300 below the rate JMD actually charges while JMD quotes
+ * another contract. Null when that house has no such line.
  */
 const houseMcxSell = async (source) => {
   const rows = await fetchRows();
