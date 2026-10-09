@@ -737,8 +737,37 @@ const ADJUDICATION_MAX_COMPLETION_TOKENS = 3000;
 // The app gives up on /analyze at 90s. Finishing after that spends tokens and
 // a credit on an answer nobody receives, so the whole pipeline is bounded
 // below it and the optional third call is skipped when time runs short.
-const PIPELINE_DEADLINE_MS = Number(process.env.OCR_PIPELINE_DEADLINE_MS) || 75_000;
+// OCR_PIPELINE_DEADLINE_MS changes it; read per scan, so a test can shorten it.
+const pipelineDeadlineMs = () => Number(process.env.OCR_PIPELINE_DEADLINE_MS) || 75_000;
 const ADJUDICATION_MIN_BUDGET_MS = 15_000;
+// The plain retry after failed reads is only sent with at least this much of
+// the budget left. It is also callModel's shortest per-request timeout, so a
+// retry that is sent can never wait past the deadline.
+const PLAIN_RETRY_MIN_BUDGET_MS = 5_000;
+
+// A call whose share of the budget was already spent before it was sent.
+const BUDGET_EXHAUSTED_CODE = 'OCR_BUDGET_EXHAUSTED';
+const budgetExhaustedError = (label) => {
+  const error = new Error(`No time left for ${label}: the scan's deadline has passed`);
+  error.code = BUDGET_EXHAUSTED_CODE;
+  return error;
+};
+
+/** A call that ran out of time: cut off by its timeout, or never sent for lack of one. */
+const isTimeoutError = (error) =>
+  error instanceof OpenAI.APIConnectionTimeoutError || error?.code === BUDGET_EXHAUSTED_CODE;
+
+/**
+ * Why the plain whole-image retry must not be sent after the reads failed,
+ * or null when it may be. Without enough budget left it could only finish
+ * after the app gave up. And when read A cut no part, the plain request IS
+ * read A, byte for byte: after a timeout it would be the same wait again.
+ */
+const plainRetrySkipReason = ({ remainingMs, repeatsFailedRead, error }) => {
+  if (!(remainingMs >= PLAIN_RETRY_MIN_BUDGET_MS)) return 'no time left';
+  if (repeatsFailedRead && isTimeoutError(error)) return 'same request timed out';
+  return null;
+};
 
 // The extraction system prompt describes a completely different answer shape
 // (the whole tag schema), which is a good way to get a third look that
@@ -836,6 +865,12 @@ const callModel = async (
   },
 ) => {
   throwIfAborted(signal);
+  // A budget the caller worked out and found spent is not "no budget": sent
+  // anyway, the call would wait on the client's 60s default, well past the
+  // deadline the budget exists to keep.
+  if (timeoutMs !== undefined && timeoutMs !== null && !(timeoutMs > 0)) {
+    throw budgetExhaustedError(label);
+  }
   const settings = resolveModelSettings();
   const model = modelOverride || settings.model;
   const serviceTier = serviceTierOverride || settings.serviceTier;
@@ -1100,7 +1135,8 @@ const analyzeImages = async (
 
   try {
     const tAiStart = Date.now();
-    const remainingMs = () => PIPELINE_DEADLINE_MS - (Date.now() - tPipelineStart);
+    const deadlineMs = pipelineDeadlineMs();
+    const remainingMs = () => deadlineMs - (Date.now() - tPipelineStart);
     const [primary, secondary] = await Promise.allSettled([
       callModel(messagesA, { label: 'read-a', businessId: cacheId, timeoutMs: remainingMs(), signal }),
       secondRead
@@ -1133,7 +1169,21 @@ const analyzeImages = async (
       // whatever stopped one usually stopped the other: a size limit, a rate
       // limit, an unreadable part. One last attempt with the whole images
       // alone is the request the old single-call reader used to send. The
-      // same holds when only one read was sent.
+      // same holds when only one read was sent — unless it would finish after
+      // the app gave up, or would only repeat a read that timed out.
+      const skipReason = plainRetrySkipReason({
+        remainingMs: remainingMs(),
+        repeatsFailedRead: sides.every((side) => partsOf(side, 'quarters').length === 0),
+        error: primary.reason,
+      });
+      if (skipReason) {
+        console.warn('[OCR_READS_FAILED_NO_RETRY]', {
+          reason: skipReason,
+          remainingMs: remainingMs(),
+          error: primary.reason?.message || String(primary.reason),
+        });
+        throw primary.reason;
+      }
       const plain = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'none') }];
       console.warn('[OCR_READS_FAILED_RETRY_PLAIN]', {
         error: primary.reason?.message || String(primary.reason),
@@ -1495,5 +1545,6 @@ module.exports = {
     resolveModelSettings,
     isSpeedParamRefused,
     markSpeedParamsRefused,
+    plainRetrySkipReason,
   },
 };

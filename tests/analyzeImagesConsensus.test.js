@@ -19,6 +19,9 @@ const requests = [];
 let failPartReads = false;
 /** How many of the next whole-image-only reads fail. */
 let failWholeReadsRemaining = 0;
+/** Set to leave every whole-image-only read unanswered (a stalled call). */
+let holdWholeReads = false;
+const heldResponses = [];
 const answerFor = (body) => {
   const user = body.messages.find((m) => m.role === 'user');
   const texts = user.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
@@ -87,6 +90,10 @@ test.before(async () => {
     req.on('end', () => {
       const body = JSON.parse(raw);
       const answer = answerFor(body);
+      if (holdWholeReads && requests[requests.length - 1].kind === 'read-plain') {
+        heldResponses.push(res);
+        return;
+      }
       if (answer === null) {
         res.writeHead(500, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'upstream unavailable' } }));
@@ -308,6 +315,67 @@ test('when the single read fails, the plain retry answers, as when both reads fa
   } finally {
     failWholeReadsRemaining = 0;
   }
+});
+
+test('when the single read times out, nothing more is sent and the scan fails inside its deadline', async () => {
+  requests.length = 0;
+  holdWholeReads = true;
+  process.env.OCR_PIPELINE_DEADLINE_MS = '6000';
+  try {
+    const openaiService = require('../src/services/openai.service');
+    const file = await smallTagImage();
+    const started = Date.now();
+    await assert.rejects(
+      () => openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null),
+      /timed out/i,
+    );
+    const elapsed = Date.now() - started;
+    // The read had the whole budget; a plain retry would have been the same
+    // request again, on the client's 60s default once the budget was spent.
+    assert.deepEqual(requests.map((r) => r.kind), ['print-rotation', 'read-plain']);
+    assert.ok(elapsed < 6000 + 1500, `failed after ${elapsed}ms, past the 6s deadline`);
+  } finally {
+    holdWholeReads = false;
+    delete process.env.OCR_PIPELINE_DEADLINE_MS;
+    for (const res of heldResponses.splice(0)) res.destroy();
+  }
+});
+
+test('a budget already spent sends no read at all instead of waiting on the client default', async () => {
+  requests.length = 0;
+  // Spent before the first read goes out: preparing the image takes longer.
+  process.env.OCR_PIPELINE_DEADLINE_MS = '1';
+  try {
+    const openaiService = require('../src/services/openai.service');
+    const file = await tagImage();
+    await assert.rejects(
+      () => openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null),
+      /No time left for read-a/,
+    );
+    // Only the orientation call, which has its own budget: no read, no retry.
+    assert.deepEqual(requests.map((r) => r.kind), ['print-rotation']);
+  } finally {
+    delete process.env.OCR_PIPELINE_DEADLINE_MS;
+  }
+});
+
+test('the plain retry is skipped without time for it, or when it would repeat a read that timed out', () => {
+  const OpenAI = require('openai');
+  const { plainRetrySkipReason } = require('../src/services/openai.service')._internal;
+  const timedOut = new OpenAI.APIConnectionTimeoutError();
+  const serverError = Object.assign(new Error('upstream unavailable'), { status: 500 });
+
+  assert.equal(plainRetrySkipReason({ remainingMs: 4_999, repeatsFailedRead: false, error: serverError }), 'no time left');
+  assert.equal(plainRetrySkipReason({ remainingMs: -2_000, repeatsFailedRead: false, error: serverError }), 'no time left');
+  // Plenty of time, but the same request that just timed out.
+  assert.equal(
+    plainRetrySkipReason({ remainingMs: 40_000, repeatsFailedRead: true, error: timedOut }),
+    'same request timed out',
+  );
+  // A smaller request than the one that timed out may still make it.
+  assert.equal(plainRetrySkipReason({ remainingMs: 40_000, repeatsFailedRead: false, error: timedOut }), null);
+  // Any other failure of the same request is retried while there is time.
+  assert.equal(plainRetrySkipReason({ remainingMs: 40_000, repeatsFailedRead: true, error: serverError }), null);
 });
 
 test('parts cut for one side only: still two reads, and the third look on a disagreement', async () => {
