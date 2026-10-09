@@ -9,6 +9,7 @@ const { compareReads, applyAdjudication, describeDisagreements } = require('./oc
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const { findScopedRows, scopeCacheId } = require('./userScope.service');
+const { abortedError, isAbortError, throwIfAborted } = require('../utils/abort');
 
 const openai = new OpenAI({
   apiKey: config.openai.apiKey,
@@ -714,13 +715,14 @@ const prepareRead = (parsedData) => {
 
 // Model selection and speed knobs. process.env first so scripts/latency_test.js
 // --model/--tier/--effort still override the .env config.
-// GPT-6 Luna takes none | low | medium | high | xhigh | max. An .env still
-// set to GPT-5's "minimal" is read as "none", its nearest: sent as it is,
-// the refusal would drop the effort from every call in the process.
+// GPT-5.6 Luna is the default reader; it takes "none" and "low", the levels
+// the scan pipeline sends. An .env still set to GPT-5's "minimal" is read as
+// "none", its nearest: sent as it is, a refusal would drop the effort from
+// that model's calls until the refusal expires.
 const resolveModelSettings = () => {
   const effort = process.env.OPENAI_REASONING_EFFORT || config.openai.reasoningEffort;
   return {
-    model: process.env.OPENAI_MODEL || 'gpt-6-luna',
+    model: process.env.OPENAI_MODEL || 'gpt-5.6-luna',
     serviceTier: process.env.OPENAI_SERVICE_TIER || config.openai.serviceTier,
     reasoningEffort: effort === 'minimal' ? 'none' : effort,
   };
@@ -767,9 +769,44 @@ const refusedSpeedParamsIn = (error) => {
 
 const isOptionalParamRejection = (error) => refusedSpeedParamsIn(error).length > 0;
 
-// Speed parameters the API has refused once in this process are left out of
-// every later call, rather than paid for with a failed request each time.
-const refusedSpeedParams = new Set();
+// Speed parameters the API has refused are left out of that model's later
+// calls rather than paid for with a failed request each time — but only for a
+// while, and only for the model that refused them: one refusal (a model
+// switch, an org setting, a bad deploy of theirs) must not quietly slow every
+// call this process makes until it restarts.
+const REFUSED_SPEED_PARAM_TTL_MS = 30 * 60 * 1000;
+/** `${model}\n${param}` -> the time the refusal stops applying. */
+const refusedSpeedParams = new Map();
+const refusalKey = (model, param) => `${model}\n${param}`;
+// OPENAI_REFUSED_PARAM_TTL_MS shortens it (the test suite does).
+const refusedParamTtlMs = () =>
+  Number(process.env.OPENAI_REFUSED_PARAM_TTL_MS) || REFUSED_SPEED_PARAM_TTL_MS;
+
+/** Whether `model` refused `param` recently enough that it is still left out. */
+const isSpeedParamRefused = (model, param, now = Date.now()) => {
+  const key = refusalKey(model, param);
+  const until = refusedSpeedParams.get(key);
+  if (until === undefined) return false;
+  if (now < until) return true;
+  refusedSpeedParams.delete(key);
+  console.info('[OPENAI_SPEED_PARAM_RESTORED]', { model, param });
+  return false;
+};
+
+/** Records a refusal; logs once per parameter when it starts being dropped. */
+const markSpeedParamsRefused = (model, params, { label, now = Date.now() } = {}) => {
+  const ttlMs = refusedParamTtlMs();
+  const newlyDropped = params.filter((param) => !isSpeedParamRefused(model, param, now));
+  params.forEach((param) => refusedSpeedParams.set(refusalKey(model, param), now + ttlMs));
+  if (newlyDropped.length) {
+    console.warn('[OPENAI_SPEED_PARAM_DROPPED]', {
+      model,
+      params: newlyDropped,
+      label,
+      expiresInMs: ttlMs,
+    });
+  }
+};
 
 /**
  * One JSON-mode call, with its own slice of the pipeline's time budget.
@@ -792,8 +829,13 @@ const callModel = async (
     // is a far smaller job than a read and can run on quicker settings.
     model: modelOverride,
     serviceTier: serviceTierOverride,
+    // Cancels the call: a speculative analysis a newer upload superseded, or
+    // an upload that failed its access check. An aborted call throws the
+    // abort error (utils/abort), never a failure to retry.
+    signal,
   },
 ) => {
+  throwIfAborted(signal);
   const settings = resolveModelSettings();
   const model = modelOverride || settings.model;
   const serviceTier = serviceTierOverride || settings.serviceTier;
@@ -807,13 +849,13 @@ const callModel = async (
   // Stable per-user cache routing so repeated scans hit the same prompt-cache
   // shard: the system prompt carries that user's own customizations, so two
   // people in one shop are two shards.
-  if (!refusedSpeedParams.has('prompt_cache_key')) {
+  if (!isSpeedParamRefused(model, 'prompt_cache_key')) {
     requestOptions.prompt_cache_key = String(businessId || 'global');
   }
-  if (reasoningEffort && !refusedSpeedParams.has('reasoning_effort')) {
+  if (reasoningEffort && !isSpeedParamRefused(model, 'reasoning_effort')) {
     requestOptions.reasoning_effort = reasoningEffort;
   }
-  if (serviceTier && !refusedSpeedParams.has('service_tier')) {
+  if (serviceTier && !isSpeedParamRefused(model, 'service_tier')) {
     requestOptions.service_tier = serviceTier;
   }
 
@@ -823,30 +865,41 @@ const callModel = async (
   if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
     perRequest.timeout = Math.max(5_000, Math.round(timeoutMs));
   }
+  if (signal) perRequest.signal = signal;
+
+  const send = async (body) => {
+    try {
+      return await openai.chat.completions.create(body, perRequest);
+    } catch (error) {
+      if (signal?.aborted) throw abortedError();
+      throw error;
+    }
+  };
 
   const started = Date.now();
   let response;
   try {
-    response = await openai.chat.completions.create(requestOptions, perRequest);
+    response = await send(requestOptions);
   } catch (requestError) {
     if (!isOptionalParamRejection(requestError)) throw requestError;
-    refusedSpeedParamsIn(requestError).forEach((param) => refusedSpeedParams.add(param));
+    const refused = refusedSpeedParamsIn(requestError);
+    markSpeedParamsRefused(model, refused, { label });
     console.error('[OPENAI_REQUEST_FALLBACK]', {
       label,
+      model,
       error: requestError?.message || String(requestError),
       status: requestError?.status || null,
-      refused: [...refusedSpeedParams],
+      refused,
     });
-    response = await openai.chat.completions.create(
-      {
-        model,
-        messages,
-        response_format: { type: 'json_object' },
-        max_completion_tokens: maxCompletionTokens,
-      },
-      perRequest,
-    );
+    response = await send({
+      model,
+      messages,
+      response_format: { type: 'json_object' },
+      max_completion_tokens: maxCompletionTokens,
+    });
   }
+  // An answer that landed after the cancel is not used.
+  throwIfAborted(signal);
   const ms = Date.now() - started;
   const usage = response.usage || {};
   const choice = response.choices?.[0];
@@ -953,7 +1006,13 @@ const analyzeImages = async (
   scannerSettings = {},
   businessId,
   preprocessed = {},
+  // `signal` cancels the whole pipeline (a speculative analysis a newer upload
+  // superseded): every model call is aborted, nothing is retried or logged as
+  // a failure, and the promise rejects with the abort error instead of
+  // resolving with a result.
+  { signal } = {},
 ) => {
+  throwIfAborted(signal);
   // Callers pass a scope ({ businessId, userId }); an older caller passing a
   // bare id is read as the shop itself.
   const scope =
@@ -975,6 +1034,7 @@ const analyzeImages = async (
           ? prepareImageViews(frontImagePath, {
               detectRotation: detectPrintRotation,
               scanContext: scope,
+              signal,
             })
           : null),
     preprocessed?.backViews || preprocessed?.backBase64
@@ -983,10 +1043,12 @@ const analyzeImages = async (
           ? prepareImageViews(backImagePath, {
               detectRotation: detectPrintRotation,
               scanContext: scope,
+              signal,
             })
           : null),
     getContextCached(scope),
   ]);
+  throwIfAborted(signal);
   const preprocessMs = Date.now() - tPipelineStart;
   console.log(`[TIMING] preprocess_and_context_ms=${preprocessMs}`);
 
@@ -1021,20 +1083,32 @@ const analyzeImages = async (
     messages[1].content.filter((part) => part.type === 'image_url').length;
   const doubleRead = config.ocr?.doubleRead !== false && !isOff('OCR_DOUBLE_READ');
   const adjudicate = config.ocr?.adjudicate !== false && !isOff('OCR_ADJUDICATE');
-  const imageCount = countImages(messagesA) + (doubleRead ? countImages(messagesB) : 0);
+  // With no magnified part cut for any side (a camera crop below the model's
+  // pixel budget), the two reads would be the same request byte for byte:
+  // the second would only add sampling noise and the third look would settle
+  // that noise. One read is sent, and it is treated exactly like a read that
+  // stood alone today.
+  const partsOf = (side, layout) => (Array.isArray(side.views[layout]) ? side.views[layout] : []);
+  const identicalReads = sides.every(
+    (side) => partsOf(side, 'quarters').length === 0 && partsOf(side, 'thirds').length === 0,
+  );
+  const secondRead = doubleRead && !identicalReads;
+  const imageCount = countImages(messagesA) + (secondRead ? countImages(messagesB) : 0);
   console.log(
-    `[OPENAI_REQUEST] model=${model} images=${imageCount} promptChars=${promptCharacters} tier=${serviceTier || 'default'} effort=${reasoningEffort || 'default'} doubleRead=${doubleRead} at=${new Date().toISOString()}`,
+    `[OPENAI_REQUEST] model=${model} images=${imageCount} promptChars=${promptCharacters} tier=${serviceTier || 'default'} effort=${reasoningEffort || 'default'} doubleRead=${doubleRead} reads=${secondRead ? 2 : 1} at=${new Date().toISOString()}`,
   );
 
   try {
     const tAiStart = Date.now();
     const remainingMs = () => PIPELINE_DEADLINE_MS - (Date.now() - tPipelineStart);
     const [primary, secondary] = await Promise.allSettled([
-      callModel(messagesA, { label: 'read-a', businessId: cacheId, timeoutMs: remainingMs() }),
-      doubleRead
-        ? callModel(messagesB, { label: 'read-b', businessId: cacheId, timeoutMs: remainingMs() })
-        : Promise.reject(new Error('second read disabled')),
+      callModel(messagesA, { label: 'read-a', businessId: cacheId, timeoutMs: remainingMs(), signal }),
+      secondRead
+        ? callModel(messagesB, { label: 'read-b', businessId: cacheId, timeoutMs: remainingMs(), signal })
+        : Promise.reject(new Error(doubleRead ? 'second read identical to the first' : 'second read disabled')),
     ]);
+    // A cancelled pipeline stops here: no plain retry, no failure logged.
+    throwIfAborted(signal);
     const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
     const addUsage = (u) => {
       usage.prompt_tokens += Number(u?.prompt_tokens || 0);
@@ -1048,12 +1122,18 @@ const analyzeImages = async (
     else addUsage(secondary.reason?.usage);
 
     let parsedData;
-    let consensus = { mode: 'single', agreements: 0, disagreements: 0, adjudicated: 0 };
-    if (primary.status === 'rejected' && (secondary.status === 'rejected' || !doubleRead)) {
+    let consensus = {
+      mode: secondRead || !doubleRead ? 'single' : 'single-identical',
+      agreements: 0,
+      disagreements: 0,
+      adjudicated: 0,
+    };
+    if (primary.status === 'rejected' && (secondary.status === 'rejected' || !secondRead)) {
       // Both reads carry the same large payload to the same endpoint, so
       // whatever stopped one usually stopped the other: a size limit, a rate
       // limit, an unreadable part. One last attempt with the whole images
-      // alone is the request the old single-call reader used to send.
+      // alone is the request the old single-call reader used to send. The
+      // same holds when only one read was sent.
       const plain = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'none') }];
       console.warn('[OCR_READS_FAILED_RETRY_PLAIN]', {
         error: primary.reason?.message || String(primary.reason),
@@ -1063,6 +1143,7 @@ const analyzeImages = async (
         label: 'read-plain',
         businessId: cacheId,
         timeoutMs: remainingMs(),
+        signal,
       });
       addUsage(fallback.usage);
       parsedData = prepareRead(fallback.parsedData);
@@ -1072,7 +1153,7 @@ const analyzeImages = async (
       // The plain retry above already produced the reading.
     } else if (primary.status === 'rejected' || secondary.status === 'rejected') {
       // One read is a complete answer on its own; the other's failure is logged.
-      if (doubleRead) {
+      if (secondRead) {
         const failed = primary.status === 'rejected' ? primary : secondary;
         console.warn('[OCR_READ_FAILED]', {
           label: primary.status === 'rejected' ? 'read-a' : 'read-b',
@@ -1099,6 +1180,7 @@ const analyzeImages = async (
               businessId: cacheId,
               maxCompletionTokens: ADJUDICATION_MAX_COMPLETION_TOKENS,
               timeoutMs: remainingMs(),
+              signal,
             },
           );
           addUsage(verdict.usage);
@@ -1114,6 +1196,7 @@ const analyzeImages = async (
             });
           }
         } catch (adjudicationError) {
+          if (isAbortError(adjudicationError)) throw adjudicationError;
           // The contested fields stay at low confidence and get reviewed.
           console.warn('[OCR_ADJUDICATION_FAILED]', {
             error: adjudicationError?.message || String(adjudicationError),
@@ -1199,7 +1282,8 @@ const analyzeImages = async (
 
     return parsedData;
   } catch (err) {
-    console.error('[OpenAI Error]', err);
+    // A cancelled pipeline failed nothing.
+    if (!isAbortError(err)) console.error('[OpenAI Error]', err);
     throw err;
   }
 };
@@ -1237,10 +1321,12 @@ const VALID_ROTATIONS = new Set([0, 90, 180, 270]);
  * print is needs far less of the image than transcribing it, and this runs
  * while the upload is still being prepared, off the scan's critical path.
  *
- * Never throws and never guesses: anything other than a clear 0/90/180/270
+ * Never guesses, and never throws except when the caller cancels it (an
+ * aborted `signal` rejects with the abort error, so cancelled work is not
+ * mistaken for an upright tag): anything other than a clear 0/90/180/270
  * answers 0, which leaves the image exactly as it arrived.
  */
-const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs = 12_000 } = {}) => {
+const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs = 12_000, signal } = {}) => {
   const who = { businessId: businessId || null, userId: userId || null };
   try {
     const { parsedData } = await callModel(
@@ -1266,6 +1352,7 @@ const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs 
         // and on a thumbnail the premium is a fraction of a paisa. The
         // reasoning effort stays the reader's — this is about speed only.
         serviceTier: process.env.OPENAI_ROTATION_SERVICE_TIER || 'priority',
+        signal,
       },
     );
 
@@ -1276,6 +1363,7 @@ const detectPrintRotation = async (base64Image, { businessId, userId, timeoutMs 
     }
     return rotate;
   } catch (error) {
+    if (isAbortError(error)) throw error;
     // A tag read the way it arrived is worth more than a failed scan.
     console.warn('[PRINT_ROTATION_FAILED]', { ...who, error: error?.message || String(error) });
     return 0;
@@ -1343,9 +1431,10 @@ const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_00
     timeoutMs,
     // Locating a white card is not a reasoning task, and this call sits in
     // front of every capture. It ran at the deployment's default effort —
-    // the reader's — which was most of a wait the shop called huge. "none":
-    // GPT-6 Luna refuses the old "minimal", and a refusal would drop the
-    // effort from every later call in the process.
+    // the reader's — which was most of a wait the shop called huge. "none",
+    // not the old "minimal": GPT-6 Luna refuses that, GPT-5.6 Luna is only
+    // known to take "none" and "low", and a refusal would drop the effort
+    // from that model's later calls until the refusal expires.
     reasoningEffort: 'none',
     // Its own model and tier, from the environment: a lighter model may
     // place a card as well as the reader's, and the priority tier answers
@@ -1403,5 +1492,8 @@ module.exports = {
     correctSeparatorMisreads,
     buildReadContent,
     buildAdjudicationContent,
+    resolveModelSettings,
+    isSpeedParamRefused,
+    markSpeedParamsRefused,
   },
 };

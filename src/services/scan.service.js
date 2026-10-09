@@ -7,6 +7,7 @@ const ocrPreprocessCache = require('./ocrPreprocess.cache');
 const scanBillingService = require('./scanBilling.service');
 const fs = require('fs');
 const { assertScanAccess } = require('../utils/scanAccess');
+const { isAbortError, throwIfAborted } = require('../utils/abort');
 
 async function cleanupTempImage(filePath) {
   if (!filePath) return;
@@ -80,6 +81,10 @@ const createScan = async (jewelleryType, scanType, session = {}) => {
  *
  * The short settle delay lets a re-crop (a new upload for the same side)
  * replace the first image before any call is made for it.
+ *
+ * A pipeline a newer upload supersedes (or that the analyze request cannot
+ * use) is aborted, not just forgotten: its model calls are cancelled, and it
+ * writes nothing, bills nothing and logs no failure.
  */
 const SPECULATIVE_ANALYSIS_ENABLED = String(process.env.SPECULATIVE_ANALYSIS || 'true').toLowerCase() !== 'false';
 const SPECULATIVE_SETTLE_MS = Number(process.env.SPECULATIVE_SETTLE_MS) || 1200;
@@ -98,11 +103,30 @@ const imageSetKey = (scan, scannerSettings = {}) => {
   return `${scan.frontImagePath || ''}|${scan.backImagePath || ''}|${prompt}`;
 };
 
+/**
+ * Stops an entry for good: its timer, and its model calls if they started.
+ * Only a pipeline still in flight is logged as cancelled; one that had already
+ * finished (its calls made and paid for) is logged as discarded, so the logs
+ * do not count savings that never happened.
+ */
+const cancelSpeculative = (entry) => {
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (entry.controller.signal.aborted) return;
+  entry.controller.abort();
+  if (!entry.promise) return;
+  console.info(entry.done ? '[SPECULATIVE_ANALYSIS_DISCARDED]' : '[SPECULATIVE_ANALYSIS_CANCELLED]', {
+    scanId: entry.scanId,
+  });
+};
+
 const dropSpeculative = (scanId) => {
   const entry = speculativeAnalyses.get(scanId);
   if (!entry) return;
-  if (entry.timer) clearTimeout(entry.timer);
   speculativeAnalyses.delete(scanId);
+  cancelSpeculative(entry);
 };
 
 const pruneSpeculative = () => {
@@ -112,9 +136,10 @@ const pruneSpeculative = () => {
   }
 };
 
-const runModelForScan = async (scan, scannerSettings, scope) => {
+const runModelForScan = async (scan, scannerSettings, scope, signal) => {
   const { frontImagePath, backImagePath, jewelleryType, scanType } = scan;
   const views = await takePreparedViews(scan.scanId, frontImagePath, backImagePath);
+  throwIfAborted(signal);
   return openaiService.analyzeImages(
     frontImagePath,
     backImagePath,
@@ -123,6 +148,7 @@ const runModelForScan = async (scan, scannerSettings, scope) => {
     scannerSettings,
     scope,
     views,
+    { signal },
   );
 };
 
@@ -146,42 +172,101 @@ const takePreparedViews = async (scanId, frontImagePath, backImagePath) => {
   return { frontViews, backViews };
 };
 
-const scheduleSpeculativeAnalysis = (scan, scope) => {
-  if (!SPECULATIVE_ANALYSIS_ENABLED || !scan?.scanId) return;
-  if (!scan.frontImagePath && !scan.backImagePath) return;
-  pruneSpeculative();
-  dropSpeculative(scan.scanId);
-  const key = imageSetKey(scan, {});
-  const entry = { key, promise: null, timer: null, createdAt: Date.now() };
-  entry.timer = setTimeout(() => {
-    entry.timer = null;
-    if (speculativeAnalyses.get(scan.scanId) !== entry) return;
-    console.info('[SPECULATIVE_ANALYSIS_START]', {
-      scanId: scan.scanId,
-      businessId: String(scope?.businessId || ''),
-      userId: String(scope?.userId || ''),
-    });
-    entry.promise = runModelForScan(scan, {}, scope);
-    entry.promise.catch((error) => {
+/** Starts an installed entry once its settle delay has passed; idempotent. */
+const startSpeculative = (entry) => {
+  if (!entry.settled || !entry.scan || entry.promise) return;
+  if (entry.controller.signal.aborted || speculativeAnalyses.get(entry.scanId) !== entry) return;
+  console.info('[SPECULATIVE_ANALYSIS_START]', {
+    scanId: entry.scanId,
+    businessId: String(entry.scope?.businessId || ''),
+    userId: String(entry.scope?.userId || ''),
+  });
+  entry.promise = runModelForScan(entry.scan, {}, entry.scope, entry.controller.signal);
+  entry.promise.then(
+    () => {
+      entry.done = true;
+    },
+    (error) => {
+      entry.done = true;
+      // Cancelled on purpose: superseded, not failed.
+      if (isAbortError(error)) return;
       console.warn('[SPECULATIVE_ANALYSIS_FAILED]', {
-        scanId: scan.scanId,
+        scanId: entry.scanId,
         error: error?.message || String(error),
       });
-    });
+    },
+  );
+};
+
+/**
+ * A speculative analysis for an upload whose access check is still running.
+ * The settle delay starts now, with the upload on disk; nothing can call the
+ * model until install() publishes the entry with the updated scan, which
+ * saveImage does only after the upload passed its access check and was
+ * recorded. discard() drops an upload that did not.
+ */
+const beginSpeculativeAnalysis = (scanId, scope) => {
+  if (!SPECULATIVE_ANALYSIS_ENABLED || !scanId) return null;
+  const entry = {
+    scanId,
+    scope,
+    key: null,
+    scan: null,
+    promise: null,
+    // Set once the promise has settled (resolved or rejected).
+    done: false,
+    timer: null,
+    settled: false,
+    createdAt: Date.now(),
+    controller: new AbortController(),
+  };
+  entry.timer = setTimeout(() => {
+    entry.timer = null;
+    entry.settled = true;
+    startSpeculative(entry);
   }, SPECULATIVE_SETTLE_MS);
-  speculativeAnalyses.set(scan.scanId, entry);
+  return {
+    install(scan) {
+      if (entry.controller.signal.aborted) return;
+      if (!scan?.frontImagePath && !scan?.backImagePath) {
+        cancelSpeculative(entry);
+        return;
+      }
+      entry.scan = scan;
+      entry.key = imageSetKey(scan, {});
+      pruneSpeculative();
+      dropSpeculative(scanId);
+      speculativeAnalyses.set(scanId, entry);
+      // Starts right away when the record took longer than the settle delay.
+      startSpeculative(entry);
+    },
+    discard() {
+      cancelSpeculative(entry);
+    },
+  };
 };
 
 /** The speculative result for this exact image set, or null to run fresh. */
 const takeSpeculativeResult = async (scanId, scan, scannerSettings) => {
   const entry = speculativeAnalyses.get(scanId);
   if (!entry) return null;
-  dropSpeculative(scanId);
-  if (entry.key !== imageSetKey(scan, scannerSettings) || !entry.promise) {
+  // Claimed: out of the map, so no later upload can cancel what this request
+  // is about to wait on.
+  speculativeAnalyses.delete(scanId);
+  if (
+    entry.key !== imageSetKey(scan, scannerSettings) ||
+    !entry.promise ||
+    entry.controller.signal.aborted
+  ) {
+    // Not for these images and this prompt (or not started yet): cancel it,
+    // run fresh. Whether the pipeline sent one read or two follows from the
+    // images alone (a part cut or not), so a matching key covers that too.
+    cancelSpeculative(entry);
     return null;
   }
   try {
     const result = await entry.promise;
+    if (entry.controller.signal.aborted) return null;
     // Read without the app's labour setting; a labour the setting cannot be
     // applied to by rule is read again with the setting in the prompt.
     if (!openaiService.applyLabourPreference(result, scannerSettings)) {
@@ -200,26 +285,49 @@ const saveImage = async (scanId, imagePath, type, session = {}, options = {}) =>
     front: 'FRONT_IMAGE_RECEIVED',
     back: 'BACK_IMAGE_RECEIVED'
   };
-  const scan = await redisService.getScan(scanId);
-  assertScanAccess(scan, session);
-  console.info('[IMAGE_UPLOAD_START]', { scanId, side: type });
-  const updated = await redisService.updateScanStatus(scanId, statusMap[type], {
-    [`${type}ImagePath`]: imagePath
-  });
-  // Fire-and-forget: start OCR preprocessing now so /analyze can reuse the result.
-  ocrPreprocessCache.warmPreprocess(scanId, type, imagePath, {
-    businessId: session?.businessId || scan?.businessId || null,
+  // The decode, the orientation call and the speculation's settle delay
+  // start now, with the file on disk, instead of after the two scan-record
+  // round trips below. Nothing they produce is visible until the upload has
+  // passed its access check and been recorded; an upload that fails either
+  // has its warm-up aborted and discarded unseen.
+  const warmContext = (businessId) => ({
+    businessId: session?.businessId || businessId || null,
     userId: session?.userId || null,
   });
+  // Routes always carry the caller's business; a caller without one waits
+  // for the scan's own, as before.
+  let warm = session?.businessId
+    ? ocrPreprocessCache.beginWarm(scanId, type, imagePath, warmContext(null))
+    : null;
+  const speculation = options.speculate
+    ? beginSpeculativeAnalysis(
+        scanId,
+        settingsScope({ ...session, businessId: options.businessId || session.businessId }),
+      )
+    : null;
+
+  let updated;
+  try {
+    const scan = await redisService.getScan(scanId);
+    assertScanAccess(scan, session);
+    if (!warm) {
+      warm = ocrPreprocessCache.beginWarm(scanId, type, imagePath, warmContext(scan?.businessId));
+    }
+    console.info('[IMAGE_UPLOAD_START]', { scanId, side: type });
+    updated = await redisService.updateScanStatus(scanId, statusMap[type], {
+      [`${type}ImagePath`]: imagePath
+    });
+  } catch (error) {
+    warm?.discard();
+    speculation?.discard();
+    throw error;
+  }
+  // The upload is the caller's and is recorded: /analyze can reuse the views.
+  warm.commit();
   // A new image invalidates any call made for the old set; start one for the
   // new set if the client asked for it.
   dropSpeculative(scanId);
-  if (options.speculate) {
-    scheduleSpeculativeAnalysis(
-      updated,
-      settingsScope({ ...session, businessId: options.businessId || session.businessId }),
-    );
-  }
+  speculation?.install(updated);
   console.info('[IMAGE_UPLOAD_COMPLETE]', {
     scanId,
     side: type,

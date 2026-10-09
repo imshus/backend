@@ -1,6 +1,7 @@
 const fs = require('fs');
 const sharp = require('sharp');
 const config = require('../config/env');
+const { throwIfAborted } = require('../utils/abort');
 
 /**
  * Image views for the tag reader.
@@ -70,8 +71,10 @@ const ROTATION_PROBE_EDGE_PX = 640;
  * The orientation question, asked on a thumbnail cut straight from the file.
  * JPEG shrink-on-load makes that a few tens of milliseconds, so the question
  * is on its way before the full decode has finished rather than after it.
+ * A cancelled preparation never asks it, and the call in flight is handed the
+ * signal so cancelling aborts it at the API.
  */
-const askPrintRotation = async (filePath, detectRotation, scanContext) => {
+const askPrintRotation = async (filePath, detectRotation, scanContext, signal) => {
   const probe = await sharp(filePath, { failOn: 'none', limitInputPixels: MAX_INPUT_PIXELS })
     .rotate()
     .resize({
@@ -83,7 +86,9 @@ const askPrintRotation = async (filePath, detectRotation, scanContext) => {
     .flatten({ background: '#ffffff' })
     .jpeg({ quality: 70, mozjpeg: true })
     .toBuffer();
-  return (await detectRotation(probe.toString('base64'), scanContext || {})) || 0;
+  throwIfAborted(signal);
+  const context = signal ? { ...(scanContext || {}), signal } : scanContext || {};
+  return (await detectRotation(probe.toString('base64'), context)) || 0;
 };
 
 const regionPixels = (region, width, height) => {
@@ -114,8 +119,14 @@ const regionPixels = (region, width, height) => {
  * `detectRotation` is the question that decides that, and it is the caller's
  * to pass: this module makes no model call of its own, so a caller that wants
  * only the pixels — every unit test, and any future one — gets exactly them.
+ *
+ * `signal` cancels the work (an upload that failed its access check, or a
+ * speculative analysis a newer upload superseded): it is handed to
+ * `detectRotation` with the scan context, so the orientation call in flight
+ * is aborted, and the preparation stops at its next step with the abort error
+ * instead of finishing views nobody will read.
  */
-const prepareImageViews = async (filePath, { detectRotation, scanContext } = {}) => {
+const prepareImageViews = async (filePath, { detectRotation, scanContext, signal } = {}) => {
   const started = Date.now();
   const maxEdgePx = config.ocr?.maxEdgePx || 2400;
   const jpegQuality = config.ocr?.jpegQuality || 82;
@@ -129,6 +140,7 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
   const uprightHeight = rotated ? metadata.width || 0 : metadata.height || 0;
   const longEdge = Math.max(uprightWidth, uprightHeight);
   const needsResize = longEdge > maxEdgePx;
+  throwIfAborted(signal);
 
   // Which way up the print is. The question is a model call of a second or
   // more, and it used to be asked only after the full decode, with every
@@ -138,7 +150,7 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
   // still gets views cut from the turned pixels, exactly as before.
   const detector = orientationFix ? detectRotation : null;
   const rotationAnswer = detector
-    ? askPrintRotation(filePath, detector, scanContext)
+    ? askPrintRotation(filePath, detector, scanContext, signal)
     : Promise.resolve(0);
   // Awaited below; until then a failure must not count as unhandled.
   rotationAnswer.catch(() => {});
@@ -157,6 +169,7 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
     });
   }
   const decoded = await pipeline.raw().toBuffer({ resolveWithObject: true });
+  throwIfAborted(signal);
   const asImage = (buffer, size) => {
     const image = sharp(buffer, {
       raw: { width: size.width, height: size.height, channels: size.channels },
@@ -166,6 +179,7 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
 
   /** The whole image and both part layouts, cut from one set of upright pixels. */
   const encodeViews = async (data, info, { turned }) => {
+    throwIfAborted(signal);
     const work = () => asImage(data, info);
 
     // The whole image: the original bytes when they are already what the model
@@ -234,6 +248,7 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
         return box.width * box.height >= MODEL_IMAGE_BUDGET_PX;
       });
 
+    throwIfAborted(signal);
     let quarters = [];
     let thirds = [];
     const thirdLayout = info.width >= info.height ? THIRDS_ALONG_WIDTH : THIRDS_ALONG_HEIGHT;
@@ -260,6 +275,7 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
   // Everything is then cut from the turned pixels, so a tag held the other way
   // round produces exactly the views an upright one would.
   const printRotation = (await rotationAnswer) || 0;
+  throwIfAborted(signal);
   let views;
   if (printRotation) {
     const turned = await asImage(decoded.data, decoded.info)
@@ -271,6 +287,7 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext } = {})
     views = await uprightViews;
   }
   const { info, full, passthrough, fullWidth, fullHeight, quarters, thirds } = views;
+  throwIfAborted(signal);
 
   console.info('[OCR_IMAGE_VIEWS]', {
     filePath,

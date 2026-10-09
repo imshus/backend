@@ -1229,7 +1229,7 @@ the value as a string ("" when not present) and the confidence as a number (0 wh
 Do not wrap fields in objects.
 
 {
-  "provider": "openai-gpt-6-luna",
+  "provider": "openai-gpt-5.6-luna",
 
   "rawText": {
     "merged": ""

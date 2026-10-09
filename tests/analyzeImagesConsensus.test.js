@@ -17,6 +17,8 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrpscan-analyze-'));
 const requests = [];
 /** Set to fail every read that carries magnified parts. */
 let failPartReads = false;
+/** How many of the next whole-image-only reads fail. */
+let failWholeReadsRemaining = 0;
 const answerFor = (body) => {
   const user = body.messages.find((m) => m.role === 'user');
   const texts = user.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
@@ -35,6 +37,10 @@ const answerFor = (body) => {
   // the right way up, so nothing is turned.
   if (kind === 'print-rotation') return { rotate: 0 };
   if (failPartReads && (kind === 'read-a' || kind === 'read-b')) return null;
+  if (kind === 'read-plain' && failWholeReadsRemaining > 0) {
+    failWholeReadsRemaining -= 1;
+    return null;
+  }
   if (kind === 'adjudicate') {
     return { answers: { 'diamonds[0].weight': ['.54', 96] } };
   }
@@ -227,4 +233,91 @@ test('with the second read switched off a single read still answers', async () =
   } finally {
     delete process.env.OCR_DOUBLE_READ;
   }
+});
+
+// A camera crop: too few pixels for any magnified part to add anything, so
+// no part is cut and the two reads would be the same request byte for byte.
+const smallTagImage = async () => {
+  const svg = `
+  <svg width="1200" height="750" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="750" fill="#ffffff"/>
+    <g font-family="Arial" font-size="64" font-weight="700" fill="#1a1a1a">
+      <text x="80" y="150">DIA WT .54</text>
+      <text x="80" y="300">GR WT 8.208</text>
+      <text x="80" y="450">NET WT 8.100</text>
+      <text x="80" y="600">ST NO GR10286</text>
+    </g>
+  </svg>`;
+  tagCount += 1;
+  const file = path.join(tmpDir, `small-tag-${tagCount}.jpg`);
+  await sharp(Buffer.from(svg)).jpeg({ quality: 90 }).toFile(file);
+  return file;
+};
+
+test('no part cut on any side: ONE read, no second read and no third look', async () => {
+  requests.length = 0;
+  const openaiService = require('../src/services/openai.service');
+  const file = await smallTagImage();
+  const result = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
+
+  // The orientation thumbnail, then a single whole-image read.
+  assert.deepEqual(requests.map((r) => `${r.kind}:${r.images}`), ['print-rotation:1', 'read-plain:1']);
+  assert.equal(requests.filter((r) => r.kind === 'adjudicate').length, 0);
+  const read = requests.find((r) => r.kind === 'read-plain');
+  assert.equal(read.body.max_completion_tokens, 6000);
+  assert.deepEqual(result.consensus, { mode: 'single-identical', agreements: 0, disagreements: 0, adjudicated: 0 });
+  assert.equal(result.billingMeta.promptTokens, 1000, 'one read billed, nothing else');
+  assert.equal(result.structuredData.grossWeight.value, '8.208');
+});
+
+test('the single read keeps exactly the confidences a lone read produces today', async () => {
+  const openaiService = require('../src/services/openai.service');
+  const file = await smallTagImage();
+
+  requests.length = 0;
+  const single = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
+
+  // Today's lone read: the second read switched off, same image, same answer.
+  process.env.OCR_DOUBLE_READ = 'false';
+  let lone;
+  try {
+    lone = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
+  } finally {
+    delete process.env.OCR_DOUBLE_READ;
+  }
+
+  assert.equal(single.consensus.mode, 'single-identical');
+  assert.equal(lone.consensus.mode, 'single');
+  assert.deepEqual(single.structuredData, lone.structuredData);
+  assert.deepEqual(single.unknownFields, lone.unknownFields);
+  assert.equal(single.structuredData.grossWeight.confidence, 97);
+  assert.equal(single.structuredData.diamonds[0].weight.confidence, 88);
+});
+
+test('when the single read fails, the plain retry answers, as when both reads fail', async () => {
+  requests.length = 0;
+  failWholeReadsRemaining = 1;
+  try {
+    const openaiService = require('../src/services/openai.service');
+    const file = await smallTagImage();
+    const result = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
+    assert.deepEqual(requests.map((r) => r.kind), ['print-rotation', 'read-plain', 'read-plain']);
+    assert.ok(requests.every((r) => r.kind !== 'adjudicate'));
+    assert.equal(result.consensus.mode, 'plain');
+    assert.equal(result.structuredData.grossWeight.value, '8.208');
+  } finally {
+    failWholeReadsRemaining = 0;
+  }
+});
+
+test('parts cut for one side only: still two reads, and the third look on a disagreement', async () => {
+  requests.length = 0;
+  const openaiService = require('../src/services/openai.service');
+  const front = await tagImage();
+  const back = await smallTagImage();
+  const result = await openaiService.analyzeImages(front, back, 'DIAMOND', 'BOTH_SIDES', {}, null);
+  const kinds = requests.map((r) => r.kind).sort();
+  assert.deepEqual(kinds, ['adjudicate', 'print-rotation', 'print-rotation', 'read-a', 'read-b']);
+  assert.equal(result.consensus.mode, 'double');
+  assert.equal(result.consensus.adjudicated, 1);
 });

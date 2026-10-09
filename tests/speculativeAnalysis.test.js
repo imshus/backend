@@ -30,6 +30,7 @@ const original = {
   updateScanStatus: redisService.updateScanStatus,
   analyzeImages: openaiService.analyzeImages,
   warmPreprocess: ocrPreprocessCache.warmPreprocess,
+  beginWarm: ocrPreprocessCache.beginWarm,
   takePreprocessed: ocrPreprocessCache.takePreprocessed,
   billCompletedScan: scanBillingService.billCompletedScan,
 };
@@ -52,6 +53,8 @@ test.before(() => {
     };
   };
   ocrPreprocessCache.warmPreprocess = () => {};
+  // saveImage starts the warm-up before the access check (beginWarm).
+  ocrPreprocessCache.beginWarm = () => ({ commit() {}, discard() {} });
   ocrPreprocessCache.takePreprocessed = () => null;
   scanBillingService.billCompletedScan = async () => null;
 });
@@ -63,6 +66,7 @@ test.after(() => {
   });
   openaiService.analyzeImages = original.analyzeImages;
   ocrPreprocessCache.warmPreprocess = original.warmPreprocess;
+  ocrPreprocessCache.beginWarm = original.beginWarm;
   ocrPreprocessCache.takePreprocessed = original.takePreprocessed;
   scanBillingService.billCompletedScan = original.billCompletedScan;
   fs.rmSync(tmpDir, { recursive: true, force: true });

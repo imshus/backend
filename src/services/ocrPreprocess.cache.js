@@ -1,4 +1,5 @@
 const { prepareImageViews } = require('./ocrViews');
+const { isAbortError } = require('../utils/abort');
 
 /**
  * Upload-time image view cache.
@@ -10,8 +11,10 @@ const { prepareImageViews } = require('./ocrViews');
  * Correctness guarantees:
  *  - Entries are keyed by scanId:side AND verified against the exact filePath
  *    stored at warm time — a re-uploaded (different) file never matches.
- *  - warmPreprocess REPLACES any existing entry for the key, so a re-upload
+ *  - A committed warm REPLACES any existing entry for the key, so a re-upload
  *    of the same side always supersedes the old result.
+ *  - A warm begun before the upload's access check (beginWarm) is invisible
+ *    until committed; a discarded one is aborted and never published.
  *  - Reading an entry does not consume it: a speculative analysis and the
  *    real one both need the same views, and making the first reader destroy
  *    them put a full decode back on the second one's critical path.
@@ -46,10 +49,23 @@ const pruneStale = () => {
   }
 };
 
-const warmPreprocess = (scanId, side, filePath, scanContext) => {
-  if (!scanId || !side || !filePath) return;
+const NOOP_WARM = Object.freeze({ commit() {}, discard() {} });
+
+/**
+ * Starts preparing an upload's views before the caller has confirmed the
+ * upload may be attached to the scan, so the decode and the orientation call
+ * overlap the scan-record round trips instead of following them.
+ *
+ * Nothing is visible to takePreprocessed until commit(): an upload that fails
+ * its access check is discard()ed, which aborts the work (the orientation
+ * call included) and drops the result unseen. It never replaces the entry a
+ * legitimate upload of the same scan holds, and never reaches any other scan.
+ */
+const beginWarm = (scanId, side, filePath, scanContext) => {
+  if (!scanId || !side || !filePath) return NOOP_WARM;
 
   const key = keyFor(scanId, side);
+  const controller = new AbortController();
   // Required here, not at the top: the reader service is what asks the model
   // which way up the tag is, and requiring it while this module is still
   // loading would be a cycle through ocrViews.
@@ -57,22 +73,56 @@ const warmPreprocess = (scanId, side, filePath, scanContext) => {
   const promise = prepareImageViews(filePath, {
     detectRotation: detectPrintRotation,
     scanContext,
+    signal: controller.signal,
   });
-  entries.delete(key);
-  entries.set(key, { promise, filePath, createdAt: Date.now() });
-  pruneStale();
+  let state = 'pending';
+  let failure = null;
 
-  promise.catch((error) => {
+  // Reported only once the upload is known to be the caller's: a warm that
+  // is discarded was cancelled on purpose and failed nothing.
+  const reportFailure = () => {
     console.error('[OCR_PREPROCESS_WARM_FAILED]', {
       scanId,
       side,
-      error: error?.message || String(error),
+      error: failure?.message || String(failure),
     });
     const current = entries.get(key);
     if (current && current.promise === promise) {
       entries.delete(key);
     }
+  };
+
+  promise.catch((error) => {
+    if (state === 'discarded' || isAbortError(error)) return;
+    failure = error;
+    if (state === 'committed') reportFailure();
   });
+
+  return {
+    commit() {
+      if (state !== 'pending') return;
+      state = 'committed';
+      // Already failed: nothing to publish, analyze prepares on demand. The
+      // entry of the upload this one replaces is stale either way.
+      if (failure) {
+        entries.delete(key);
+        reportFailure();
+        return;
+      }
+      entries.delete(key);
+      entries.set(key, { promise, filePath, createdAt: Date.now() });
+      pruneStale();
+    },
+    discard() {
+      if (state !== 'pending') return;
+      state = 'discarded';
+      controller.abort();
+    },
+  };
+};
+
+const warmPreprocess = (scanId, side, filePath, scanContext) => {
+  beginWarm(scanId, side, filePath, scanContext).commit();
 };
 
 /** The prepared views for this scan's exact file, or null. Does not consume. */
@@ -95,4 +145,4 @@ const releaseScan = (scanId) => {
   for (const side of ['front', 'back']) entries.delete(keyFor(scanId, side));
 };
 
-module.exports = { warmPreprocess, takePreprocessed, releaseScan };
+module.exports = { beginWarm, warmPreprocess, takePreprocessed, releaseScan };

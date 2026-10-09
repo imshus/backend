@@ -3,8 +3,8 @@
  * provided path), runs the real analyzeImages pipeline once, and prints
  * per-stage timings + extraction results.
  *
- * Usage: node scripts/latency_test.js [imagePath] [--model=gpt-6-luna] [--effort=low] [--tier=priority] [--edge=1600]
- *   --model   override the OpenAI model for this run
+ * Usage: node scripts/latency_test.js [imagePath] [--model=gpt-5.6-luna] [--effort=low] [--tier=priority] [--edge=1600]
+ *   --model   override the OpenAI model for this run (default gpt-5.6-luna)
  *   --effort  set reasoning_effort (none|low|medium|high|xhigh|max)
  *   --tier    set service_tier (e.g. priority)
  *   --edge    override OCR_MAX_EDGE_PX for this run
