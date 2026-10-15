@@ -1,8 +1,18 @@
+/**
+ * A scan id with no record: never created, or dropped because the scan is
+ * over (scanStore). 404 SCAN_EXPIRED, "Please scan again" (errorHandler). The
+ * words keep "Scan not found", which the review card of every build already
+ * reads as a stale scan.
+ */
+function scanExpiredError() {
+  const err = new Error('SCAN_EXPIRED');
+  err.statusCode = 404;
+  return err;
+}
+
 function assertScanAccess(scan, session = {}) {
   if (!scan) {
-    const err = new Error('Scan not found');
-    err.statusCode = 404;
-    throw err;
+    throw scanExpiredError();
   }
 
   const hasSession = Boolean(session && (session.userId || session.businessId));
@@ -36,5 +46,6 @@ function toSessionContext(user) {
 
 module.exports = {
   assertScanAccess,
+  scanExpiredError,
   toSessionContext,
 };

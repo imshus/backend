@@ -37,6 +37,9 @@ const createScan = async (jewelleryType, scanType, session = {}) => {
           calculation: null,
           calculationInputSnapshot: null,
         });
+        // Its scan is over: the memory store drops it after a short grace,
+        // which a request still in flight on it outlasts.
+        await redisService.finishScan(previousScanId, 'superseded');
       } catch (error) {
         // If previous scan does not exist, continue with new scan creation.
       }

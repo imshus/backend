@@ -1,5 +1,7 @@
 const config = require('../config/env');
 const redis = require('../redis/redisClient');
+const scanStore = require('./scanStore');
+const { scanExpiredError } = require('../utils/scanAccess');
 
 // 24 hours
 const TTL = 24 * 60 * 60;
@@ -70,7 +72,17 @@ async function runStoreOp(operation) {
   }
 }
 
+// Where scan records (scan:<id>, latest_scan:<biz>:<user>) live: this
+// process's memory by default (scanStore: no round trip on the scan path,
+// dropped when the scan is over), or Redis as before with SCAN_STORE=redis.
+// Read on every call, so the switch needs only a restart.
+const scansInMemory = () => String(process.env.SCAN_STORE || 'memory').trim().toLowerCase() !== 'redis';
+
 const setScan = async (scanId, data) => {
+  if (scansInMemory()) {
+    scanStore.set(scanId, data);
+    return;
+  }
   return runStoreOp(async (backend) => {
     if (backend === 'memory') {
       memoryStore.set(scanKey(scanId), JSON.stringify(data));
@@ -81,6 +93,7 @@ const setScan = async (scanId, data) => {
 };
 
 const getScan = async (scanId) => {
+  if (scansInMemory()) return scanStore.get(scanId);
   return runStoreOp(async (backend) => {
     if (backend === 'memory') {
       const data = memoryStore.get(scanKey(scanId));
@@ -93,6 +106,10 @@ const getScan = async (scanId) => {
 };
 
 const deleteScan = async (scanId) => {
+  if (scansInMemory()) {
+    scanStore.remove(scanId);
+    return;
+  }
   return runStoreOp(async (backend) => {
     if (backend === 'memory') {
       memoryStore.delete(scanKey(scanId));
@@ -102,7 +119,32 @@ const deleteScan = async (scanId) => {
   });
 };
 
+/**
+ * The scan is over: superseded by the same person's newer scan, or invoiced.
+ * In memory it is dropped once nothing has touched it for a short grace;
+ * Redis keeps it to its TTL, as it always did.
+ */
+const finishScan = async (scanId, reason) => {
+  if (!scanId || !scansInMemory()) return false;
+  return scanStore.finish(scanId, reason);
+};
+
+/**
+ * An invoice was made: the person's latest scan is finished, when it is one
+ * that was read (an invoice is made from a scan's card). A session the
+ * scanner opened and nothing was read into is left alone; the next photo
+ * goes into it.
+ */
+const finishLatestAnalyzedScan = async (businessId, userId, reason) => {
+  if (!businessId || !userId || !scansInMemory()) return false;
+  const scanId = scanStore.getLatest(businessId, userId);
+  const scan = scanId ? scanStore.peek(scanId) : null;
+  if (!scan?.analysisResult) return false;
+  return scanStore.finish(scanId, reason);
+};
+
 const getLatestScanIdForUser = async (businessId, userId) => {
+  if (scansInMemory()) return scanStore.getLatest(businessId, userId);
   return runStoreOp(async (backend) => {
     const key = latestUserScanKey(businessId, userId);
     if (backend === 'memory') {
@@ -115,6 +157,10 @@ const getLatestScanIdForUser = async (businessId, userId) => {
 };
 
 const setLatestScanIdForUser = async (businessId, userId, scanId) => {
+  if (scansInMemory()) {
+    scanStore.setLatest(businessId, userId, scanId);
+    return;
+  }
   return runStoreOp(async (backend) => {
     const key = latestUserScanKey(businessId, userId);
     if (backend === 'memory') {
@@ -142,7 +188,7 @@ const updateScanStatus = async (scanId, status, extraData = {}) => {
   await acquireLock(scanId);
   try {
     const scan = await getScan(scanId);
-    if (!scan) throw new Error('Scan not found');
+    if (!scan) throw scanExpiredError();
 
     const updatedScan = {
       ...scan,
@@ -521,6 +567,8 @@ module.exports = {
   setScan,
   getScan,
   deleteScan,
+  finishScan,
+  finishLatestAnalyzedScan,
   getLatestScanIdForUser,
   setLatestScanIdForUser,
   updateScanStatus,

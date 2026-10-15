@@ -768,6 +768,13 @@ const generateInvoice = async (req, res, next) => {
         });
     });
 
+    // The scan this invoice was made from is over. The request carries no
+    // scan id, so it is the caller's latest scan, when one was read. Never
+    // a reason for the invoice itself to fail.
+    Promise.resolve()
+      .then(() => redisService.finishLatestAnalyzedScan(req.user?.businessId, req.user?.userId, 'invoice'))
+      .catch((finishErr) => console.warn('[Invoice] Could not finish the scan:', finishErr.message));
+
     return sendSuccess(res, {
       invoiceNumber,
       invoiceDate,

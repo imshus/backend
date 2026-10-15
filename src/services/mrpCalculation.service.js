@@ -9,7 +9,7 @@ const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const Employee = require('../models/employee.model');
-const { assertScanAccess } = require('../utils/scanAccess');
+const { assertScanAccess, scanExpiredError } = require('../utils/scanAccess');
 const { roundHalfUp } = require('../utils/money');
 const { settingsScope, findScopedSetting, findScopedRows } = require('./userScope.service');
 const { findDiamondRateMatch } = require('./diamondRateLookup.service');
@@ -72,24 +72,19 @@ const resolveScanForCalculation = async (requestedScanId, session) => {
     return { resolvedScanId: requestedScanId, scan };
   }
 
+  // No record: 404 SCAN_EXPIRED ("Please scan again").
   if (!session?.businessId || !session?.userId) {
-    const err = new Error('Scan not found. Please start a new scan session.');
-    err.statusCode = 404;
-    throw err;
+    throw scanExpiredError();
   }
 
   const latestScanId = await redisService.getLatestScanIdForUser(session.businessId, session.userId);
   if (!latestScanId || latestScanId === requestedScanId) {
-    const err = new Error('Scan not found. Please start a new scan session.');
-    err.statusCode = 404;
-    throw err;
+    throw scanExpiredError();
   }
 
   scan = await redisService.getScan(latestScanId);
   if (!scan) {
-    const err = new Error('Scan session expired. Please scan again.');
-    err.statusCode = 404;
-    throw err;
+    throw scanExpiredError();
   }
 
   assertScanAccess(scan, session);

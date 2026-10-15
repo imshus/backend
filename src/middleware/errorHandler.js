@@ -39,6 +39,8 @@ const errorHandler = (err, req, res, next) => {
       status: 410,
       msg: 'That photo is no longer on the server. Please capture the tag again.',
     },
+    // A scan id with no record: the scan is over, or was never made.
+    'SCAN_EXPIRED': { status: 404, msg: 'Scan not found or expired. Please scan again.' },
     'GST_VERIFICATION_UNAVAILABLE': {
       status: 503,
       msg: 'GST verification is not available right now, so the number was not changed.',
