@@ -35,9 +35,21 @@ const MAX_INPUT_PIXELS = 60_000_000;
 // small enough that the raw buffer stays around 30 MB.
 const PART_SOURCE_MAX_EDGE_PX = Number(process.env.OCR_PART_SOURCE_MAX_EDGE_PX) || 3400;
 // Bytes of a JPEG that goes to the model unchanged when it needs no rotation
-// and no downscale; re-encoding an already compact file only loses detail.
+// and no resize; re-encoding an already compact file only loses detail.
 const PASSTHROUGH_MAX_BYTES = 2.5 * 1024 * 1024;
-const PART_JPEG_QUALITY = 90;
+// The lowest quality any view is encoded at. The phone has already encoded
+// the crop at 92; a second pass at 82 on top of it smeared the strokes that
+// tell an 8 from a 3. OCR_JPEG_QUALITY may raise it, never lower it.
+const MIN_JPEG_QUALITY = 92;
+const PART_JPEG_QUALITY = MIN_JPEG_QUALITY;
+// A camera crop is about 1100 px across, which leaves a weight's digits a few
+// pixels thick. The whole image is enlarged when its long edge is below this
+// (Lanczos, up to UPSCALE_FACTOR, never past OCR_MAX_EDGE_PX), so the model
+// gets bigger digits. OCR_UPSCALE_BELOW_PX=0 switches it off.
+const UPSCALE_BELOW_EDGE_PX = /^\d+$/.test(process.env.OCR_UPSCALE_BELOW_PX || '')
+  ? Number(process.env.OCR_UPSCALE_BELOW_PX)
+  : 1600;
+const UPSCALE_FACTOR = 2;
 
 // Fractions of the upright image. Quarters at 60% overlap by 20%, so a value
 // on a seam is whole in at least one part.
@@ -91,6 +103,17 @@ const askPrintRotation = async (filePath, detectRotation, scanContext, signal) =
   return (await detectRotation(probe.toString('base64'), context)) || 0;
 };
 
+/**
+ * How much the whole image is enlarged: UPSCALE_FACTOR when its long edge is
+ * below UPSCALE_BELOW_EDGE_PX, less when that would pass the edge cap, and 1
+ * (left as it is) otherwise.
+ */
+const upscaleFactorFor = (width, height, maxEdgePx) => {
+  const longEdge = Math.max(width || 0, height || 0);
+  if (!longEdge || longEdge >= UPSCALE_BELOW_EDGE_PX) return 1;
+  return Math.max(1, Math.min(UPSCALE_FACTOR, maxEdgePx / longEdge));
+};
+
 const regionPixels = (region, width, height) => {
   const left = Math.round(region.left * width);
   const top = Math.round(region.top * height);
@@ -105,7 +128,8 @@ const regionPixels = (region, width, height) => {
  *   { full, width, height, quarters: [{ name, base64, width, height }], thirds: [...] }
  *
  * The whole image is capped at OCR_MAX_EDGE_PX, because the model rescales it
- * anyway. The parts are cut from the photo's own pixels instead, up to
+ * anyway, and a small one (a camera crop) is enlarged about 2x so its digits
+ * arrive bigger. The parts are cut from the photo's own pixels instead, up to
  * PART_SOURCE_MAX_EDGE_PX: each part gets its own budget at the API, so what
  * decides the magnification is how much of the tag a part covers, not how
  * large the whole image was sent. Cutting them from the capped image made the
@@ -129,7 +153,7 @@ const regionPixels = (region, width, height) => {
 const prepareViews = async (filePath, { detectRotation, scanContext, signal } = {}, stages = {}) => {
   const started = Date.now();
   const maxEdgePx = config.ocr?.maxEdgePx || 2400;
-  const jpegQuality = config.ocr?.jpegQuality || 82;
+  const jpegQuality = Math.max(Number(config.ocr?.jpegQuality) || MIN_JPEG_QUALITY, MIN_JPEG_QUALITY);
   const multiView = config.ocr?.multiView !== false;
   const orientationFix = config.ocr?.orientationFix !== false;
 
@@ -184,7 +208,9 @@ const prepareViews = async (filePath, { detectRotation, scanContext, signal } = 
     const work = () => asImage(data, info);
 
     // The whole image: the original bytes when they are already what the model
-    // should see, otherwise one encode of the upright, capped pixels.
+    // should see, otherwise one encode of the upright pixels, capped, or
+    // enlarged when they are few.
+    const upscale = upscaleFactorFor(info.width, info.height, maxEdgePx);
     let full;
     let passthrough = false;
     let fullWidth = Math.min(info.width, needsResize ? maxEdgePx : info.width);
@@ -193,6 +219,7 @@ const prepareViews = async (filePath, { detectRotation, scanContext, signal } = 
       metadata.format === 'jpeg' &&
       (metadata.orientation === undefined || metadata.orientation === 1) &&
       !needsResize &&
+      upscale === 1 &&
       // The file on disk is still the way it arrived, so it cannot stand in for
       // an image that had to be turned.
       !turned
@@ -206,9 +233,19 @@ const prepareViews = async (filePath, { detectRotation, scanContext, signal } = 
       }
     }
     if (!full) {
-      const encoded = await work()
-        .resize({ width: maxEdgePx, height: maxEdgePx, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: jpegQuality, mozjpeg: true })
+      const sized =
+        upscale > 1
+          ? work().resize({
+              width: Math.round(info.width * upscale),
+              height: Math.round(info.height * upscale),
+              fit: 'fill',
+              kernel: sharp.kernel.lanczos3,
+            })
+          : work().resize({ width: maxEdgePx, height: maxEdgePx, fit: 'inside', withoutEnlargement: true });
+      const encoded = await sized
+        // mozjpeg costs ~120 ms more on an enlarged crop to save a few tens of
+        // kilobytes, which upload faster than that.
+        .jpeg({ quality: jpegQuality, mozjpeg: upscale === 1 })
         .toBuffer({ resolveWithObject: true });
       full = encoded.data;
       fullWidth = encoded.info.width;
@@ -266,7 +303,7 @@ const prepareViews = async (filePath, { detectRotation, scanContext, signal } = 
         });
       }
     }
-    return { info, full, passthrough, fullWidth, fullHeight, quarters, thirds };
+    return { info, full, passthrough, upscale, fullWidth, fullHeight, quarters, thirds };
   };
 
   const uprightViews = encodeViews(decoded.data, decoded.info, { turned: false });
@@ -292,7 +329,7 @@ const prepareViews = async (filePath, { detectRotation, scanContext, signal } = 
   } else {
     views = await uprightViews;
   }
-  const { info, full, passthrough, fullWidth, fullHeight, quarters, thirds } = views;
+  const { info, full, passthrough, upscale, fullWidth, fullHeight, quarters, thirds } = views;
   throwIfAborted(signal);
 
   console.info('[OCR_IMAGE_VIEWS]', {
@@ -306,7 +343,9 @@ const prepareViews = async (filePath, { detectRotation, scanContext, signal } = 
     fullWidth,
     fullHeight,
     resized: needsResize,
+    upscale: Number(upscale.toFixed(2)),
     passthrough,
+    jpegQuality: passthrough ? null : jpegQuality,
     fullBytes: full.length,
     parts: quarters.length + thirds.length,
     partPixels: quarters[0] ? quarters[0].width * quarters[0].height : 0,
@@ -387,4 +426,7 @@ module.exports = {
   MIN_SOURCE_EDGE_PX,
   MODEL_IMAGE_BUDGET_PX,
   PART_SOURCE_MAX_EDGE_PX,
+  MIN_JPEG_QUALITY,
+  UPSCALE_BELOW_EDGE_PX,
+  upscaleFactorFor,
 };

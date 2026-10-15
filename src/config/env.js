@@ -47,7 +47,9 @@ const envVarsSchema = joi.object({
   MCX_3MINUTE_STREAMING: joi.string().uri().empty('').default('https://jmd.mrpscan.com/api/3min/stream'),
   MAX_UPLOAD_MB: joi.number().min(5).max(200).default(80),
   OCR_MAX_EDGE_PX: joi.number().min(1000).max(8000).default(2400),
-  OCR_JPEG_QUALITY: joi.number().min(40).max(95).default(82),
+  // The reader never encodes below 92 whatever this says (ocrViews.js): a
+  // lower setting on top of the phone's own 92 blurred 8 into 3.
+  OCR_JPEG_QUALITY: joi.number().min(40).max(95).default(92),
   // Tag reading accuracy: magnified parts of each image alongside the whole
   // image, a second independent read compared field by field, and a third
   // targeted look at whatever the two reads disagree on.

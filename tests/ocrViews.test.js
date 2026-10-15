@@ -16,6 +16,9 @@ const {
   MIN_SOURCE_EDGE_PX,
   MODEL_IMAGE_BUDGET_PX,
   PART_SOURCE_MAX_EDGE_PX,
+  MIN_JPEG_QUALITY,
+  UPSCALE_BELOW_EDGE_PX,
+  upscaleFactorFor,
 } = require('../src/services/ocrViews');
 
 /** Parts are sent at the model's own budget: more pixels would be discarded. */
@@ -171,4 +174,99 @@ test('a PNG upload is delivered as JPEG', async () => {
   assert.equal(full.format, 'jpeg');
   const part = await decode(views.quarters[0].base64);
   assert.equal(part.format, 'jpeg');
+});
+
+// ── Camera crops: enlarged once, never re-encoded below 92 ────────────────
+// A camera crop is about 1100 px across; the 8 / 3 strokes of its weights
+// are a few pixels thick, and a second encode at 82 smeared them.
+
+/** A JPEG's quantisation tables, which are what its quality setting decides. */
+const quantTables = (buffer) => {
+  const tables = [];
+  let offset = 2; // after SOI
+  while (offset + 4 <= buffer.length && buffer[offset] === 0xff) {
+    const marker = buffer[offset + 1];
+    const length = buffer.readUInt16BE(offset + 2);
+    if (marker === 0xdb) tables.push(buffer.subarray(offset + 4, offset + 2 + length).toString('hex'));
+    if (marker === 0xda) break; // start of scan: no tables after it
+    offset += 2 + length;
+  }
+  return tables.join('|');
+};
+
+/** The tables sharp writes at `quality` with these encoder settings, on any picture. */
+const referenceTables = async (quality, mozjpeg) =>
+  quantTables(
+    await sharp({ create: { width: 64, height: 64, channels: 3, background: '#808080' } })
+      .jpeg({ quality, mozjpeg })
+      .toBuffer(),
+  );
+
+const withJpegQuality = async (quality, run) => {
+  const before = config.ocr.jpegQuality;
+  config.ocr.jpegQuality = quality;
+  try {
+    return await run();
+  } finally {
+    config.ocr.jpegQuality = before;
+  }
+};
+
+test('the enlargement factor: about 2x below the threshold, never past the edge cap, 1 otherwise', () => {
+  assert.equal(UPSCALE_BELOW_EDGE_PX, 1600);
+  assert.equal(upscaleFactorFor(1100, 700, 2400), 2);
+  assert.equal(upscaleFactorFor(700, 1100, 2400), 2);
+  assert.equal(upscaleFactorFor(1500, 900, 2400), 1.6);
+  assert.equal(upscaleFactorFor(UPSCALE_BELOW_EDGE_PX, 1000, 2400), 1);
+  assert.equal(upscaleFactorFor(2400, 1500, 2400), 1);
+  // A cap below the source never turns the enlargement into a shrink.
+  assert.equal(upscaleFactorFor(1100, 700, 1000), 1);
+  assert.equal(upscaleFactorFor(0, 0, 2400), 1);
+});
+
+test('a camera-sized crop is enlarged 2x, encoded once from its own pixels at quality 92 or more', async () => {
+  const file = await writeTag('camera.jpg', 1100, 700);
+  const views = await withJpegQuality(82, () => prepareImageViews(file));
+  assert.equal(views.width, 2200);
+  assert.equal(views.height, 1400);
+  const sent = Buffer.from(views.full, 'base64');
+  const meta = await sharp(sent).metadata();
+  assert.equal(meta.format, 'jpeg');
+  assert.deepEqual([meta.width, meta.height], [2200, 1400]);
+  // Not a generation of 82 on top of the phone's encode: the tables are 92's.
+  assert.equal(quantTables(sent), await referenceTables(MIN_JPEG_QUALITY, false));
+  // Too few pixels for a magnified part: the whole image is all that goes.
+  assert.equal(views.quarters.length, 0);
+  assert.equal(views.thirds.length, 0);
+});
+
+test('just under the threshold the enlargement stops at the edge cap', async () => {
+  const file = await writeTag('under-threshold.jpg', 1500, 900);
+  const views = await prepareImageViews(file);
+  assert.deepEqual([views.width, views.height], [2400, 1440]);
+  const meta = await decode(views.full);
+  assert.deepEqual([meta.width, meta.height], [2400, 1440]);
+});
+
+test('an original that needs no resize and no turn is not re-encoded: its own bytes go to the model', async () => {
+  for (const [name, width, height] of [
+    ['at-threshold.jpg', UPSCALE_BELOW_EDGE_PX, 1000],
+    ['mid.jpg', 1800, 1150],
+  ]) {
+    const file = await writeTag(name, width, height);
+    const views = await withJpegQuality(60, () => prepareImageViews(file));
+    assert.ok(Buffer.from(views.full, 'base64').equals(fs.readFileSync(file)), `${name} was re-encoded`);
+    assert.deepEqual([views.width, views.height], [width, height]);
+  }
+});
+
+test('an encode that cannot be avoided never goes below quality 92, whatever OCR_JPEG_QUALITY says', async () => {
+  // Stored on its side (EXIF 6): it has to be turned, so it has to be encoded.
+  const file = await writeTag('turned-camera.jpg', 2400, 1500, { withExifRotation: 6 });
+  const views = await withJpegQuality(60, () => prepareImageViews(file));
+  assert.deepEqual([views.width, views.height], [1500, 2400]);
+  assert.equal(quantTables(Buffer.from(views.full, 'base64')), await referenceTables(MIN_JPEG_QUALITY, true));
+  // A setting above the floor is still honoured.
+  const higher = await withJpegQuality(95, () => prepareImageViews(file));
+  assert.equal(quantTables(Buffer.from(higher.full, 'base64')), await referenceTables(95, true));
 });
