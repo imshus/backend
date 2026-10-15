@@ -209,9 +209,8 @@ test('calculateMRP: sends the preview amount before the cache write finishes', a
     nextErr = err;
   });
 
-  // The cache write is still held open. With CALC_ENGINE=python and its
-  // worker up, the price itself is one round trip to the worker (bounded by
-  // its 1.5 s timeout), so wait for the response rather than a single tick.
+  // The cache write is still held open; wait for the response rather than a
+  // single tick.
   const deadline = Date.now() + 3000;
   do {
     await new Promise((resolve) => setImmediate(resolve));

@@ -2,7 +2,7 @@
  * One regression per pricing finding from the October 2026 calculation
  * audit, each on the finding's own numbers: every one of these failed on the
  * code before the fix. The controller, computeMrp, deriveInputFromReading
- * and the pricing engine (CALC_ENGINE as set: python or js) are the real
+ * and pricingMath are the real
  * ones; the database and the live rates are stood in for.
  *
  * The rates themselves (half-up rounding, no rate without an MCX) are in
@@ -32,13 +32,6 @@ const {
   resolveKaratFromReading,
 } = require('../src/services/mrpCalculation.service');
 const { ratesUnavailable, findColorstoneRateMatch } = require('../src/services/pricingInputs');
-const pyCalcEngine = require('../src/services/pyCalcEngine');
-
-// With CALC_ENGINE=python these prices are the worker's, not Node's
-// stand-in while it starts (with CALC_ENGINE=js this resolves at once).
-test.before(async () => {
-  await pyCalcEngine.getDefaultEngine().warm();
-});
 
 const BIZ = '507f1f77bcf86cd799439011';
 const OWNER = { businessId: BIZ, userId: '507f1f77bcf86cd799439012', role: 'OWNER' };

@@ -4,9 +4,7 @@ const { roundHalfUp } = require('../utils/money');
 /**
  * The MRP arithmetic on its own, apart from the reads that feed it.
  * computeMrp gathers the inputs (rates, labour, wastage, permissions) and
- * hands them here; the Python worker (calc/calc_worker.py) runs the same
- * sums on the same inputs, and tests/pricingParity.test.js holds the two
- * identical to the last bit. Plain JSON in, plain JSON out.
+ * hands them here. Plain JSON in, plain JSON out.
  *
  * inputs, every value already read off the request and the rate tables:
  *   netWt, grossWt             grams; a net weight of 0 with a gross weight is

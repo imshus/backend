@@ -7,8 +7,8 @@
  *
  * `appPayload` is pricingPrefetch.derivePricingInput's body after
  * processing.tsx: what the card sends, not a hand-built body. The
- * controller, computeMrp, deriveInputFromReading and the pricing engine
- * (CALC_ENGINE as set) are the real ones; the database and the live rates
+ * controller, computeMrp, deriveInputFromReading and pricingMath are the
+ * real ones; the database and the live rates
  * are stood in for.
  */
 process.env.USE_MEMORY_STORE = 'true';
@@ -34,11 +34,6 @@ const {
   FINENESS_STANDARDS,
 } = require('../src/services/pricingInputs');
 const { computeInvoiceFigures, InvoiceInputError } = require('../src/services/invoiceMath');
-const pyCalcEngine = require('../src/services/pyCalcEngine');
-
-test.before(async () => {
-  await pyCalcEngine.getDefaultEngine().warm();
-});
 
 const BIZ = '507f1f77bcf86cd799439011';
 const OWNER = { businessId: BIZ, userId: '507f1f77bcf86cd799439012', role: 'OWNER' };

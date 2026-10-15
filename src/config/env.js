@@ -92,13 +92,6 @@ const envVarsSchema = joi.object({
   INVOICE_SELLER_ADDRESS: joi.string().allow('').default('1st Floor, Plot No. 2, Right Portion, WZ-3, DLF Industrial Area, Moti Nagar, New Delhi, Delhi - 110015'),
   INVOICE_SELLER_GSTIN: joi.string().allow('').default('07ABGCA3065M1ZG'),
   INVOICE_SELLER_EMAIL: joi.string().allow('').default(''),
-  // Where the MRP arithmetic runs: 'python' is the numpy/pandas worker
-  // (calc/calc_worker.py), with Node pricing any request it cannot answer in
-  // time; 'js' keeps it all in Node and never starts Python. SHADOW runs both
-  // and logs any figure on which they differ.
-  CALC_ENGINE: joi.string().trim().lowercase().valid('python', 'js').default('python'),
-  CALC_ENGINE_SHADOW: joi.boolean().default(false),
-  PYTHON_BIN: joi.string().allow('').default(''),
 })
   .unknown();
 
@@ -203,12 +196,6 @@ module.exports = {
     user: envVars.SMTP_USER,
     pass: envVars.SMTP_PASS,
     from: envVars.SMTP_FROM,
-  },
-  calc: {
-    engine: envVars.CALC_ENGINE,
-    shadow: envVars.CALC_ENGINE_SHADOW,
-    // Empty: python3, or python on Windows.
-    pythonBin: envVars.PYTHON_BIN,
   },
   invoiceSeller: {
     name: envVars.INVOICE_SELLER_NAME,

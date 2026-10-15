@@ -9,12 +9,11 @@ const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const Employee = require('../models/employee.model');
-const pyCalcEngine = require('./pyCalcEngine');
 const { assertScanAccess } = require('../utils/scanAccess');
 const { roundHalfUp } = require('../utils/money');
 const { settingsScope, findScopedSetting, findScopedRows } = require('./userScope.service');
 const { findDiamondRateMatch } = require('./diamondRateLookup.service');
-const { LABOUR_UNIT_PERCENT } = require('./pricingMath');
+const { LABOUR_UNIT_PERCENT, computePricing } = require('./pricingMath');
 const {
   ratesUnavailable,
   readFigure,
@@ -338,9 +337,8 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     rules,
   });
 
-  // The arithmetic itself: pricingMath, in the Python worker when
-  // CALC_ENGINE=python and it answers in time, else in Node.
-  const priced = await pyCalcEngine.computePricing({
+  // The arithmetic itself: pricingMath.
+  const priced = computePricing({
     netWt: request.netWt,
     grossWt: request.grossWt,
     customPurityPercent: request.customPurityPercent,

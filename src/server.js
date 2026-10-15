@@ -6,7 +6,6 @@ const { initMcxScheduler } = require('./services/mcxScheduler.service');
 const { startKeepWarm: startBhawKeepWarm } = require('./services/bhaw.service');
 const { ensureUserScopedIndexes } = require('./services/userScope.service');
 const { resetOldRtgsTaxDefault } = require('./services/rtgsTaxDefaultReset.service');
-const { announce: announceCalcEngine } = require('./services/pyCalcEngine');
 const DiamondRate = require('./models/diamondRate.model');
 const PaymentTransaction = require('./models/paymentTransaction.model');
 
@@ -105,10 +104,6 @@ function getLanAddresses() {
 
   return [...addresses];
 }
-
-// The MRP engine in use (grep CALC_ENGINE), and with CALC_ENGINE=python its
-// worker started now rather than on the first price.
-announceCalcEngine();
 
 connectDB().then(async () => {
   try {
