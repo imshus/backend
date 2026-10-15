@@ -13,7 +13,7 @@ const {
 } = require('../src/services/einvoice.service');
 
 const payload = {
-  invoice_number: 'INV-20260909-00001',
+  invoice_number: '26-27/0909/00001',
   invoice_date: '09-09-2026',
   company_name: 'Pratham International',
   company_address: '12 Karol Bagh, New Delhi, 110005',
@@ -84,7 +84,7 @@ test('the specimen band has the real IRN shape and says it is not registered', (
   assert.match(first.ackNo, /^\d{15}$/);
   assert.match(first.ackDt, /^\d{2}-\d{2}-\d{4}$/);
   assert.ok(first.signedQr.includes('NOT REGISTERED WITH THE GOVERNMENT IRP'));
-  assert.ok(first.signedQr.includes('INV-20260909-00001'));
+  assert.ok(first.signedQr.includes('26-27/0909/00001'));
   assert.ok(first.signedQr.includes('Seller 07AAACR5055K1Z7'));
   assert.equal(first.test, true);
 
@@ -113,13 +113,19 @@ test('the INV-01 document mirrors the printed invoice exactly', () => {
   const doc = buildInv01(payload, business);
 
   assert.equal(doc.Version, '1.1');
-  assert.deepEqual(doc.DocDtls, { Typ: 'INV', No: 'INV-20260909-00001', Dt: '09/09/2026' });
+  assert.deepEqual(doc.DocDtls, { Typ: 'INV', No: '26-27/0909/00001', Dt: '09/09/2026' });
 
   assert.equal(doc.SellerDtls.Gstin, '07AAACR5055K1Z7');
+  // The IRP schema's field is LglNm; LglName is not in it.
+  assert.equal(doc.SellerDtls.LglNm, 'Pratham International Pvt Ltd');
+  assert.equal(doc.SellerDtls.LglName, undefined);
   assert.equal(doc.SellerDtls.Stcd, '07');
   assert.equal(doc.SellerDtls.Pin, 110005);
 
   assert.equal(doc.BuyerDtls.Gstin, '09AKFPV8673D2ZK');
+  assert.equal(doc.BuyerDtls.LglNm, 'Referred Jewels');
+  assert.equal(doc.BuyerDtls.LglName, undefined);
+  assert.equal(doc.BuyerDtls.Loc, 'Uttar Pradesh');
   assert.equal(doc.BuyerDtls.Pos, '09');
   assert.equal(doc.BuyerDtls.Pin, 226001);
 
@@ -131,7 +137,7 @@ test('the INV-01 document mirrors the printed invoice exactly', () => {
   assert.equal(chain.HsnCd, '71131913');
   assert.equal(ring.Unit, 'PCS');
   assert.equal(chain.Unit, 'NOS');
-  // The tax splits proportionally over the two lines: 60/40.
+  // Each line is taxed on its own amount: 60,000 and 40,000 at 1.5% a head.
   assert.equal(ring.CgstAmt, 900);
   assert.equal(ring.SgstAmt, 900);
   assert.equal(ring.IgstAmt, 0);
@@ -143,6 +149,7 @@ test('the INV-01 document mirrors the printed invoice exactly', () => {
     CgstVal: 1500,
     SgstVal: 1500,
     IgstVal: 0,
+    RndOffAmt: 0,
     TotInvVal: 103000,
   });
 });

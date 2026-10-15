@@ -85,13 +85,15 @@ test('invoice numbers count per business per day, and a business is required', a
     const a1 = await generateInvoiceNumber('shop-a');
     const a2 = await generateInvoiceNumber('shop-a');
     const b1 = await generateInvoiceNumber('shop-b');
-    assert.match(a1, /^INV-\d{4}-\d{4}-00001$/);
-    assert.match(a2, /-00002$/);
+    // FY/MMDD/sequence, sixteen characters at most.
+    assert.match(a1, /^\d{2}-\d{2}\/\d{4}\/00001$/);
+    assert.ok(a1.length <= 16);
+    assert.match(a2, /\/00002$/);
     // The other shop starts its own count; the numbers may coincide.
-    assert.match(b1, /-00001$/);
+    assert.match(b1, /\/00001$/);
     assert.ok(seen.every((f) => f.businessId && f.dateKey));
-    assert.match(await peekNextInvoiceNumber('shop-a'), /-00003$/);
-    assert.match(await peekNextInvoiceNumber('shop-c'), /-00001$/);
+    assert.match(await peekNextInvoiceNumber('shop-a'), /\/00003$/);
+    assert.match(await peekNextInvoiceNumber('shop-c'), /\/00001$/);
     await assert.rejects(() => generateInvoiceNumber(undefined), /belongs to a business/);
   } finally {
     InvoiceCounter.findOneAndUpdate = originalUpdate;

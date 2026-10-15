@@ -39,6 +39,12 @@ const REQUIRED_PAYLOAD_KEYS = [
   'subtotal_display',
   'grand_total_display',
   'qr_code_image',
+  // Oct 2026: CGST and SGST print as two lines, and a discounted line shows
+  // its discount.
+  'cgst_amount_display',
+  'sgst_amount_display',
+  'discount_display',
+  'gross_amount_display',
 ];
 
 async function main() {

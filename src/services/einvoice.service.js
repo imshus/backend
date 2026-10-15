@@ -2,6 +2,8 @@ const axios = require('axios');
 const crypto = require('crypto');
 const config = require('../config/env');
 const gstService = require('./gst.service');
+const { toPaise, paiseToRupees } = require('../utils/money');
+const { computeInvoiceFigures, placeOfSupplyFor, stateName } = require('./invoiceMath');
 
 /**
  * Government e-invoicing (IRN + signed QR) through Sandbox (sandbox.co.in),
@@ -143,78 +145,135 @@ function generateTestEInvoice(payload, business) {
   };
 }
 
+/** The NIC pattern for DocDtls.No: at most sixteen characters. */
+const DOC_NO_PATTERN = /^[a-zA-Z1-9][a-zA-Z0-9/-]{0,15}$/;
+
+/** A NIC name or place: trimmed, cut to `max`, and never under three characters. */
+const nicText = (value, max, fallback) => {
+  const text = String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  return text.length >= 3 ? text : fallback;
+};
+
+/** A six-digit Indian PIN as a number, or undefined (the field is then left out). */
+const nicPin = (value) => {
+  const pin = String(value || '').trim();
+  return /^[1-9]\d{5}$/.test(pin) ? Number(pin) : undefined;
+};
+
+/** An address as Addr1 and, when longer than a hundred characters, Addr2. */
+const nicAddress = (address, fallback) => {
+  const text = String(address || '').replace(/\s+/g, ' ').trim();
+  if (!text) return { Addr1: fallback };
+  if (text.length <= 100) return { Addr1: text };
+  // Break at the last comma or space that keeps Addr1 within 100.
+  const cut = Math.max(text.lastIndexOf(',', 100), text.lastIndexOf(' ', 100));
+  const at = cut > 0 ? cut : 100;
+  return {
+    Addr1: text.slice(0, at).replace(/[,\s]+$/, ''),
+    Addr2: text.slice(at).replace(/^[,\s]+/, '').slice(0, 100),
+  };
+};
+
+/** Drops undefined fields, so an unknown optional value is absent rather than 0. */
+const compact = (object) => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
+
 /**
  * The NIC INV-01 document, built from the exact payload the PDF template
- * renders so the registered figures and the printed figures cannot drift.
+ * renders, through the same figures function (services/invoiceMath.js), so
+ * the registered figures and the printed figures cannot drift:
+ *
+ *  - each item's CGST, SGST and IGST is its own line tax, and ValDtls'
+ *    heads are the sums of the items', which are the heads printed
+ *  - TotAmt is Qty × UnitPrice; a line billed below its list price carries
+ *    the difference as Discount, and AssAmt = TotAmt − Discount is the amount
+ *    printed
+ *  - RndOffAmt is the printed Rounded Off, so AssVal + the heads + RndOffAmt
+ *    is TotInvVal to the paisa
+ *  - HSN is the code printed on the line, Unit its UQC (GMS for grams, CTS
+ *    for carats, OTH for labour), and Pos the printed place of supply
  */
 function buildInv01(payload, business) {
   // The registered GSTIN from the business record is the e-invoice identity;
   // the payload copy (also profile-sourced) only fills in if it is missing.
   const sellerGstin = String(business?.gstNumber || payload.gstin_number || '').trim().toUpperCase();
   const buyerGstin = String(payload.customer_gstin || '').trim().toUpperCase();
-  const sellerPin = String(business?.pincode || '').trim() || extractPincode(payload.company_address);
-  const buyerPin = extractPincode(payload.customer_address);
+  const sellerStateCode = sellerGstin.slice(0, 2);
+  const buyerStateCode = buyerGstin.slice(0, 2);
 
-  const subtotal = toTwo(payload.subtotal);
-  const cgst = toTwo(payload.cgst_amount);
-  const sgst = toTwo(payload.sgst_amount);
-  const igst = toTwo(payload.igst_amount);
-  const total = toTwo(payload.grand_total);
-
-  const items = (payload.line_items || []).map((item, index) => {
-    const amount = toTwo(item.amount);
-    const share = subtotal > 0 ? amount / subtotal : 0;
-    const itemCgst = toTwo(cgst * share);
-    const itemSgst = toTwo(sgst * share);
-    const itemIgst = toTwo(igst * share);
-    return {
-      SlNo: String(index + 1),
-      PrdDesc: String(item.description || 'Jewellery').slice(0, 300),
-      IsServc: 'N',
-      // 71131913: articles of jewellery, gold and diamond — the default when
-      // a line carries none, and what every line the app sends carries.
-      HsnCd: String(item.hsn || '71131913').replace(/\D/g, '') || '71131913',
-      Qty: Number(item.qty) || 1,
-      Unit: String(item.unit || 'NOS').toUpperCase().slice(0, 8) || 'NOS',
-      UnitPrice: toTwo(item.price),
-      TotAmt: amount,
-      AssAmt: amount,
-      GstRt: toTwo(payload.gst_rate),
-      CgstAmt: itemCgst,
-      SgstAmt: itemSgst,
-      IgstAmt: itemIgst,
-      TotItemVal: toTwo(amount + itemCgst + itemSgst + itemIgst),
-    };
+  const intraState = typeof payload.is_intra_state === 'boolean'
+    ? payload.is_intra_state
+    : toTwo(payload.cgst_amount) > 0 || toTwo(payload.sgst_amount) > 0;
+  const figures = computeInvoiceFigures({
+    lineItems: payload.line_items || [],
+    gstRate: payload.gst_rate,
+    intraState,
   });
+  const rupees = paiseToRupees;
+
+  const items = figures.lines.map((line) => compact({
+    SlNo: String(line.index),
+    PrdDesc: String(line.item.description || 'Jewellery').slice(0, 300),
+    IsServc: 'N',
+    HsnCd: line.hsn,
+    Qty: line.billedQty,
+    Unit: line.uqc,
+    UnitPrice: line.unitPrice,
+    TotAmt: rupees(line.grossPaise),
+    Discount: line.discountPaise > 0 ? rupees(line.discountPaise) : undefined,
+    AssAmt: rupees(line.amountPaise),
+    GstRt: figures.gstRate,
+    CgstAmt: rupees(line.cgstPaise),
+    SgstAmt: rupees(line.sgstPaise),
+    IgstAmt: rupees(line.igstPaise),
+    TotItemVal: rupees(line.amountPaise + line.cgstPaise + line.sgstPaise + line.igstPaise),
+  }));
+
+  // The grand total printed. RndOffAmt is what takes the items to it: the
+  // printed Rounded Off, within ±50 paise.
+  const itemsTotalPaise = figures.subtotalPaise + figures.gstPaise;
+  const totalPaise = payload.grand_total !== undefined && payload.grand_total !== null
+    ? toPaise(payload.grand_total)
+    : figures.grandPaise;
+
+  // Place of supply: the state printed on the invoice (the buyer GSTIN's for
+  // a B2B sale), with its name as the buyer's location.
+  const posCode = String(payload.place_of_supply_code || '').trim()
+    || placeOfSupplyFor({ customerGstin: buyerGstin, business }).code;
+  const posName = stateName(posCode);
+  const sellerStateName = stateName(sellerStateCode);
 
   return {
     Version: '1.1',
     TranDtls: { TaxSch: 'GST', SupTyp: 'B2B', RegRev: payload.reverse_charge === 'Y' ? 'Y' : 'N' },
     DocDtls: { Typ: 'INV', No: String(payload.invoice_number || ''), Dt: toNicDate(payload.invoice_date) },
-    SellerDtls: {
+    SellerDtls: compact({
       Gstin: sellerGstin,
-      LglName: String(business?.legalName || payload.company_name || '').slice(0, 100),
-      Addr1: String(payload.company_address || '').slice(0, 100) || 'NA',
-      Loc: String(business?.stateName || 'NA').slice(0, 50) || 'NA',
-      Pin: Number(sellerPin) || 0,
-      Stcd: sellerGstin.slice(0, 2),
-    },
-    BuyerDtls: {
+      LglNm: nicText(business?.legalName || payload.company_name, 100, sellerGstin),
+      TrdNm: business?.tradeName ? String(business.tradeName).trim().slice(0, 100) || undefined : undefined,
+      ...nicAddress(payload.company_address || business?.address, sellerStateName || sellerGstin),
+      Loc: nicText(business?.stateName || sellerStateName, 50, sellerStateName || sellerGstin),
+      Pin: nicPin(business?.pincode) ?? nicPin(extractPincode(payload.company_address)),
+      Stcd: sellerStateCode,
+    }),
+    BuyerDtls: compact({
       Gstin: buyerGstin,
-      LglName: String(payload.customer_name || '').slice(0, 100) || 'NA',
-      Pos: buyerGstin.slice(0, 2),
-      Addr1: String(payload.customer_address || '').slice(0, 100) || 'NA',
-      Loc: String(payload.place_of_supply || 'NA').slice(0, 50) || 'NA',
-      Pin: Number(buyerPin) || 0,
-      Stcd: buyerGstin.slice(0, 2),
-    },
+      // A name under three characters still identifies the party with its GSTIN.
+      LglNm: nicText(payload.customer_name, 100, `${String(payload.customer_name || '').trim()} ${buyerGstin}`.trim()),
+      Pos: posCode,
+      ...nicAddress(payload.customer_address, posName || buyerGstin),
+      Loc: posName || nicText(payload.customer_address, 50, buyerGstin),
+      // Optional for a buyer: left out unless the address carries a real PIN.
+      Pin: nicPin(extractPincode(payload.customer_address)),
+      Stcd: buyerStateCode,
+    }),
     ItemList: items,
     ValDtls: {
-      AssVal: subtotal,
-      CgstVal: cgst,
-      SgstVal: sgst,
-      IgstVal: igst,
-      TotInvVal: total,
+      AssVal: rupees(figures.subtotalPaise),
+      CgstVal: rupees(figures.cgstPaise),
+      SgstVal: rupees(figures.sgstPaise),
+      IgstVal: rupees(figures.igstPaise),
+      RndOffAmt: rupees(totalPaise - itemsTotalPaise),
+      TotInvVal: rupees(totalPaise),
     },
   };
 }
@@ -263,6 +322,12 @@ async function getTaxpayerToken(business, deps) {
  */
 async function generateEInvoice({ payload, business }, deps = { axios, getAccessToken: gstService.getAccessToken }) {
   const inv01 = buildInv01(payload, business);
+  // Refused here, with the reason, rather than by the IRP's schema check: an
+  // invoice numbered before numbers were cut to sixteen characters cannot be
+  // registered under that number.
+  if (!DOC_NO_PATTERN.test(inv01.DocDtls.No)) {
+    throw new Error(`EINVOICE_DOC_NO_INVALID:${inv01.DocDtls.No} is not a 1-16 character document number`);
+  }
   const apiToken = await deps.getAccessToken();
   const authToken = await getTaxpayerToken(business, deps);
 

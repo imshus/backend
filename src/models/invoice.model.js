@@ -6,6 +6,18 @@ const lineItemSchema = new mongoose.Schema({
   qty: { type: Number, required: true },
   price: { type: Number, required: true },
   amount: { type: Number, required: true },
+  // What the line was registered as: the HSN printed beside it, its unit
+  // quantity code (GMS, CTS, OTH), any discount off Qty × Price, and its own
+  // tax. Absent on invoices issued before these were kept.
+  kind: { type: String, default: '' },
+  hsn: { type: String, default: '' },
+  qty_unit: { type: String, default: '' },
+  uqc: { type: String, default: '' },
+  gross_amount: { type: Number, default: 0 },
+  discount: { type: Number, default: 0 },
+  cgst_amount: { type: Number, default: 0 },
+  sgst_amount: { type: Number, default: 0 },
+  igst_amount: { type: Number, default: 0 },
 }, { _id: false });
 
 const invoiceSchema = new mongoose.Schema({
@@ -43,7 +55,9 @@ const invoiceSchema = new mongoose.Schema({
 
   // Invoice metadata
   invoiceDate: { type: String, required: true },
+  // "Delhi (07)": the buyer GSTIN's state, or the shop's own for a walk-in.
   placeOfSupply: { type: String, default: '' },
+  placeOfSupplyCode: { type: String, default: '' },
   transport: { type: String, default: '' },
 
   // Billing
@@ -51,6 +65,11 @@ const invoiceSchema = new mongoose.Schema({
   subtotal: { type: Number, required: true },
   gstRate: { type: Number, required: true },
   gstAmount: { type: Number, required: true },
+  // The heads, each the sum of the line taxes, and the rupee round-off.
+  cgstAmount: { type: Number, default: 0 },
+  sgstAmount: { type: Number, default: 0 },
+  igstAmount: { type: Number, default: 0 },
+  roundedOff: { type: Number, default: 0 },
   grandTotal: { type: Number, required: true },
   amountInWords: { type: String, default: '' },
   termsAndConditions: { type: String, default: '' },

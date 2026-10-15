@@ -24,6 +24,15 @@ const redisService = require('../services/redis.service');
 const config = require('../config/env');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
 const { isEmail } = require('../utils/email');
+const { roundHalfUp, paiseToRupees } = require('../utils/money');
+const { amountInWords } = require('../utils/amountInWords');
+const {
+  InvoiceInputError,
+  computeInvoiceFigures,
+  checkClientTotals,
+  placeOfSupplyFor,
+  isIntraStateSupply,
+} = require('../services/invoiceMath');
 
 const MAX_INVOICE_PDF_BYTES = config.invoicePdfCache?.maxBytes || (15 * 1024 * 1024);
 
@@ -119,64 +128,13 @@ const resolveQuantity = (item) => {
   return { value: qty, unit: item.qty_unit || '' };
 };
 
-/** GST state codes, used to classify a supply when the buyer has no GSTIN. */
-const STATE_CODES = {
-  'jammu and kashmir': '01', 'himachal pradesh': '02', punjab: '03', chandigarh: '04',
-  uttarakhand: '05', haryana: '06', delhi: '07', 'new delhi': '07', rajasthan: '08',
-  'uttar pradesh': '09', bihar: '10', sikkim: '11', 'arunachal pradesh': '12',
-  nagaland: '13', manipur: '14', mizoram: '15', tripura: '16', meghalaya: '17',
-  assam: '18', 'west bengal': '19', jharkhand: '20', odisha: '21', orissa: '21',
-  chhattisgarh: '22', 'madhya pradesh': '23', gujarat: '24', 'dadra and nagar haveli and daman and diu': '26',
-  maharashtra: '27', karnataka: '29', goa: '30', lakshadweep: '31', kerala: '32',
-  'tamil nadu': '33', puducherry: '34', 'andaman and nicobar islands': '35',
-  telangana: '36', 'andhra pradesh': '37', ladakh: '38', 'other territory': '97',
-};
-
-/**
- * Determines the customer's state code for the IGST-vs-CGST/SGST decision.
- *
- * A registered buyer's GSTIN carries it in the first two digits. An
- * unregistered walk-in has none, so it comes from the place of supply — which
- * is free text. Accepting only the bracketed "(07)" form meant a counter sale
- * typed as "Delhi" was billed IGST instead of CGST+SGST, sending the tax to the
- * wrong heads on both sides' returns.
- */
-const resolveStateCode = (customerGstin, placeOfSupply) => {
-  const fromGstin = String(customerGstin || '').trim().slice(0, 2);
-  if (/^\d{2}$/.test(fromGstin)) return fromGstin;
-
-  const place = String(placeOfSupply || '').trim();
-
-  // "Uttar Pradesh (09)" — an explicit code always wins.
-  const bracketed = place.match(/\((\d{2})\)/);
-  if (bracketed) return bracketed[1];
-
-  // Otherwise match the state name, ignoring any trailing pincode or punctuation.
-  const name = place
-    .replace(/\(.*?\)/g, ' ')
-    .replace(/[^a-zA-Z& ]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-  if (STATE_CODES[name]) return STATE_CODES[name];
-
-  // Fall back to a contained state name, e.g. "Karol Bagh, New Delhi".
-  const matches = Object.keys(STATE_CODES).filter((state) => name.includes(state));
-  if (matches.length) {
-    // Prefer the longest match so "new delhi" beats "delhi".
-    const best = matches.sort((a, b) => b.length - a.length)[0];
-    return STATE_CODES[best];
-  }
-
-  return '';
-};
-
 /**
  * Formats a number the way an Indian tax invoice prints it: two decimals and
- * lakh/crore digit grouping, e.g. 350650 -> "3,50,650.00".
+ * lakh/crore digit grouping, e.g. 350650 -> "3,50,650.00". Paise are rounded
+ * half-up first (toFixed alone prints 1.005 as "1.00").
  */
 const formatInr = (value) => {
-  const amount = Number(value) || 0;
+  const amount = roundHalfUp(Number(value) || 0, 2);
   const [whole, decimals] = Math.abs(amount).toFixed(2).split('.');
   const last3 = whole.slice(-3);
   let rest = whole.slice(0, -3);
@@ -240,21 +198,40 @@ const resolveBusinessIdFromUser = async (user) => {
  *   gr_rr_number, vehicle_number, station,
  *   shipped_to_name, shipped_to_address, shipped_to_gstin,
  *   irn, ack_number, ack_date, qr_code_data,
- *   place_of_supply, transport,
- *   line_items: [{ description, note, qty, price, amount }],
+ *   transport,
+ *   line_items: [{ description, note, qty, qty_unit, hsn, price, amount, kind? }],
  *   subtotal, gst_rate, gst_amount, grand_total,
- *   amount_in_words, terms_and_conditions
+ *   terms_and_conditions
  * }
  *
  * Company fields (company_name, company_address, gstin_number) are
  * sourced from the authenticated business profile — not trusted from client.
+ *
+ * So are the figures: subtotal, GST (each head), Rounded Off, the grand
+ * total and the amount in words are all worked out here from the line items
+ * (services/invoiceMath.js). The client's subtotal, gst_amount and
+ * grand_total are only checked: a request more than a rupee away from its
+ * own lines, or at a rate that is not the jewellery rate, is refused with a
+ * 400 before an invoice number is spent. Place of supply is the buyer
+ * GSTIN's state, or the shop's own for a walk-in; a client place_of_supply
+ * is not used.
+ *
+ * A wastage line ({ description: 'Wastage', qty: <wastage grams>,
+ * qty_unit: 'Gms.', price: <24K rate per gram>, amount }) bills like the
+ * gold line: HSN 7113 at 3%, registered in grams (GMS), so the subtotal
+ * comes to the MRP the scanner quoted.
  */
 /**
  * Builds the payload the invoice template renders.
  *
  * Shared by generation and preview so the two cannot drift: the preview
  * shows the same document the PDF is made from, rather than a lookalike
- * maintained separately.
+ * maintained separately. The e-invoice (INV-01) is built from this payload
+ * by the same figures function, so the registered figures cannot drift
+ * from the printed ones either.
+ *
+ * Throws InvoiceInputError (400) for a request the invoice cannot be issued
+ * from; see computeInvoiceFigures and checkClientTotals.
  */
 const buildInvoicePayload = (body, context) => {
   const {
@@ -263,14 +240,9 @@ const buildInvoicePayload = (body, context) => {
     customer_phone = '',
     customer_email = '',
     customer_gstin = '',
-    place_of_supply = '',
     transport = '',
     line_items = [],
-    subtotal = 0,
     gst_rate = 3,
-    gst_amount = 0,
-    grand_total = 0,
-    amount_in_words = '',
     terms_and_conditions = '',
     customer_pan = '',
     reverse_charge = 'N',
@@ -294,38 +266,33 @@ const buildInvoicePayload = (body, context) => {
     invoiceDownloadUrl = '',
   } = context;
 
-    // Per the client's rule, Delhi is decided purely by the supplier's own
-    // GSTIN prefix: beginning "07" prints a single "GST" line, anything else
-    // prints "IGST". The buyer's state is not consulted.
-    //
-    // NOTE: statute splits this by supplier state vs place of supply, so a
-    // Delhi shop selling into UP should raise IGST. This rule prints the
-    // combined GST line there instead.
-    const supplierStateCode = String(business?.gstNumber || '').trim().slice(0, 2);
-    const isIntraState = supplierStateCode === '07';
+    // Per the client's rule, CGST + SGST or IGST is decided by the supplier's
+    // own GSTIN alone (invoiceMath.isIntraStateSupply): a Delhi shop prints
+    // CGST and SGST as two lines, everyone else prints IGST.
+    const isIntraState = isIntraStateSupply(business);
 
-    const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
+    const figures = context.figures || computeInvoiceFigures({
+      lineItems: line_items,
+      gstRate: gst_rate,
+      intraState: isIntraState,
+    });
+    checkClientTotals(body, figures);
 
-    const gstRateValue = Number(gst_rate) || 0;
-    const halfRate = round2(gstRateValue / 2);
+    const placeOfSupply = placeOfSupplyFor({ customerGstin: customer_gstin, business });
 
-    // Every figure the invoice prints is rounded to paise once, here, so the
-    // totals column is arithmetic the customer can redo by hand. CGST and SGST
-    // are both the same rounded half: an intra-state supply must show equal
-    // heads, so the odd paisa a 50/50 split cannot carry falls to Rounded Off
-    // rather than making one head disagree with its own printed rate.
-    const subtotalValue = round2(subtotal);
-    const gstAmountValue = round2(gst_amount);
-    const halfAmount = round2(gstAmountValue / 2);
-    // Delhi prints one combined "GST" line and everyone else prints "IGST", so
-    // either way a single figure is what the column has to close against.
-    const printedTax = gstAmountValue;
-
-    // The printed grand total is rounded to the rupee. Rounded Off is the
-    // residual against the figures actually printed above it — not against the
-    // client's unrounded total — so the column always closes.
-    const roundedTotal = Math.round(round2(grand_total));
-    const roundedOff = round2(roundedTotal - (subtotalValue + printedTax));
+    // Every printed figure is whole paise from the figures above, so the
+    // totals column is arithmetic the customer can redo by hand and the
+    // CGST and SGST lines add up to the GST.
+    const rupees = paiseToRupees;
+    const gstRateValue = figures.gstRate;
+    const halfRate = figures.halfRate;
+    const subtotalValue = rupees(figures.subtotalPaise);
+    const gstAmountValue = rupees(figures.gstPaise);
+    const cgstValue = rupees(figures.cgstPaise);
+    const sgstValue = rupees(figures.sgstPaise);
+    const igstValue = rupees(figures.igstPaise);
+    const roundedOff = rupees(figures.roundedOffPaise);
+    const roundedTotal = rupees(figures.grandPaise);
 
     // 4. Build the PDFMonkey payload exactly matching the template schema
     const pdfPayload = {
@@ -339,47 +306,76 @@ const buildInvoicePayload = (body, context) => {
       customer_gstin,
       invoice_number: invoiceNumber,
       invoice_date: invoiceDate,
-      place_of_supply,
+      // "Delhi (07)": the state name and its code, per Rule 46(1)(n).
+      place_of_supply: placeOfSupply.display,
+      place_of_supply_code: placeOfSupply.code,
+      place_of_supply_state: placeOfSupply.name,
       transport,
-      line_items: line_items
-        .filter((item) => Number(item.qty) > 0 || Number(item.amount) > 0)
-        .map((item, index) => ({
-          sn: index + 1,
+      line_items: figures.lines.map((line) => {
+        const { item } = line;
+        const amount = rupees(line.amountPaise);
+        const quantity = resolveQuantity(item);
+        const discount = rupees(line.discountPaise);
+        const grossAmount = rupees(line.grossPaise);
+        return {
+          sn: line.index,
+          kind: line.kind,
           description: item.description ?? '',
           note: item.note ?? '',
-          // Articles of jewellery — gold of every karat and diamond alike.
-          // The labour line is a charge, not goods, and prints no HSN code.
-          hsn: item.description === 'Labour Charge'
-            ? ''
-            : String(item.hsn ?? '').trim() || '71131913',
-          qty: Number(item.qty) || 0,
+          // Articles of jewellery — gold of every karat, diamond, wastage
+          // and the labour that made them alike. The code printed is the
+          // code registered with the IRP.
+          hsn: line.hsn,
+          qty: line.qty,
           qty_unit: item.qty_unit ?? item.qtyUnit ?? '',
+          // NIC unit quantity code: GMS for grams, CTS for carats, OTH for
+          // a line billed by its amount alone.
+          uqc: line.uqc,
           net_weight: Number(item.net_weight) || 0,
           diamond_weight: Number(item.diamond_weight) || 0,
           price: Number(item.price) || 0,
-          amount: Number(item.amount) || 0,
+          amount,
+          // What the e-invoice registers: Qty × Unit Price, less any
+          // discount, is the amount billed.
+          unit_price: line.unitPrice,
+          gross_amount: grossAmount,
+          discount,
+          discount_percent: line.discountPaise > 0 && line.grossPaise > 0
+            ? roundHalfUp((line.discountPaise / line.grossPaise) * 100, 2)
+            : 0,
+          cgst_amount: rupees(line.cgstPaise),
+          sgst_amount: rupees(line.sgstPaise),
+          igst_amount: rupees(line.igstPaise),
           price_display: formatInr(item.price),
-          amount_display: formatInr(item.amount),
-          qty_display: resolveQuantity(item).value
-            ? resolveQuantity(item).value.toFixed(3)
+          amount_display: formatInr(amount),
+          gross_amount_display: formatInr(grossAmount),
+          discount_display: line.discountPaise > 0 ? formatInr(discount) : '',
+          discount_percent_display: line.discountPaise > 0 && line.grossPaise > 0
+            ? roundHalfUp((line.discountPaise / line.grossPaise) * 100, 2).toFixed(2)
             : '',
-          unit_display: resolveQuantity(item).unit,
-        })),
+          qty_display: quantity.value
+            ? roundHalfUp(quantity.value, 3).toFixed(3)
+            : '',
+          unit_display: quantity.unit,
+        };
+      }),
       subtotal: subtotalValue,
       gst_rate: gstRateValue,
       gst_amount: gstAmountValue,
       grand_total: roundedTotal,
 
-      // Tax split for the invoice footer. A Delhi supplier prints one combined
-      // "GST" line; everyone else prints IGST. CGST/SGST stay in the payload
-      // for any caller that files the two heads separately.
+      // Tax split for the invoice footer. A Delhi supplier prints CGST and
+      // SGST as separate lines (Rule 46(1)(i)-(j)); everyone else prints
+      // IGST. Each head is the sum of the line taxes, so CGST + SGST is
+      // always the GST printed and registered.
       is_intra_state: isIntraState,
       igst_rate: isIntraState ? 0 : gstRateValue,
-      igst_amount: isIntraState ? 0 : gstAmountValue,
+      igst_amount: igstValue,
       cgst_rate: isIntraState ? halfRate : 0,
-      cgst_amount: isIntraState ? halfAmount : 0,
+      cgst_amount: cgstValue,
       sgst_rate: isIntraState ? halfRate : 0,
-      sgst_amount: isIntraState ? halfAmount : 0,
+      sgst_amount: sgstValue,
+      // Within ±50 paise by construction.
       rounded_off: roundedOff,
 
       // Tax rates print to two decimals, e.g. "@ 3.00 %".
@@ -395,9 +391,9 @@ const buildInvoicePayload = (body, context) => {
       // that needs to compute with them.
       subtotal_display: formatInr(subtotalValue),
       gst_amount_display: formatInr(gstAmountValue),
-      igst_amount_display: formatInr(isIntraState ? 0 : gstAmountValue),
-      cgst_amount_display: formatInr(isIntraState ? halfAmount : 0),
-      sgst_amount_display: formatInr(isIntraState ? halfAmount : 0),
+      igst_amount_display: formatInr(igstValue),
+      cgst_amount_display: formatInr(cgstValue),
+      sgst_amount_display: formatInr(sgstValue),
       rounded_off_display: formatInr(Math.abs(roundedOff)),
       grand_total_display: formatInr(roundedTotal),
 
@@ -434,7 +430,8 @@ const buildInvoicePayload = (body, context) => {
       // True when the band is a test-mode specimen rather than an IRP record.
       e_invoice_test: false,
 
-      amount_in_words,
+      // Worded from the grand total printed above it, never the client's.
+      amount_in_words: amountInWords(roundedTotal),
       signature_image: '',
       terms_and_conditions,
       terms_list:
@@ -514,6 +511,11 @@ const previewInvoiceHtml = async (req, res, next) => {
 
     return sendSuccess(res, { html });
   } catch (err) {
+    // The same refusal generation would give, so the preview never shows a
+    // document that cannot be issued.
+    if (err instanceof InvoiceInputError) {
+      return sendError(res, err.message, 400);
+    }
     next(err);
   }
 };
@@ -539,27 +541,12 @@ const generateInvoice = async (req, res, next) => {
       customer_phone = '',
       customer_email = '',
       customer_gstin = '',
-      place_of_supply = '',
       transport = '',
       line_items = [],
-      subtotal = 0,
       gst_rate = 3,
-      gst_amount = 0,
       grand_total = 0,
-      amount_in_words = '',
       terms_and_conditions = '',
       customer_pan = '',
-      reverse_charge = 'N',
-      gr_rr_number = '',
-      vehicle_number = '',
-      station = '',
-      shipped_to_name = '',
-      shipped_to_address = '',
-      shipped_to_gstin = '',
-      irn = '',
-      ack_number = '',
-      ack_date = '',
-      qr_code_data = '',
     } = req.body;
 
     // Validate required fields
@@ -575,12 +562,34 @@ const generateInvoice = async (req, res, next) => {
       return sendError(res, 'grand_total must be greater than zero', 400);
     }
 
-    // 2. Generate server-side invoice number (atomic, per business per day)
-    const invoiceNumber = await generateInvoiceNumber(businessId);
+    // The figures, worked out here from the line items, and the client's own
+    // totals checked against them — all before a number is spent, so a
+    // refused request costs the shop no gap in its series.
+    let figures;
+    try {
+      figures = computeInvoiceFigures({
+        lineItems: line_items,
+        gstRate: gst_rate,
+        intraState: isIntraStateSupply(business),
+      });
+      checkClientTotals(req.body, figures);
+    } catch (inputErr) {
+      if (inputErr instanceof InvoiceInputError) {
+        return sendError(res, inputErr.message, 400);
+      }
+      throw inputErr;
+    }
+    if (!(figures.grandPaise > 0)) {
+      return sendError(res, 'grand_total must be greater than zero', 400);
+    }
+
+    // 2. Generate server-side invoice number (atomic, per business per day).
+    // One instant for both, so the number's date is the date printed.
+    const now = new Date();
+    const invoiceNumber = await generateInvoiceNumber(businessId, now);
 
     // 3. Format the invoice date (server time). The printed tax invoice shows
     // the date alone as DD-MM-YYYY — no time component.
-    const now = new Date();
     const invoiceDate = now
       .toLocaleDateString('en-GB', {
         day: '2-digit',
@@ -624,7 +633,8 @@ const generateInvoice = async (req, res, next) => {
       console.error('[Invoice] QR generation failed:', qrErr.message);
     }
 
-    // 4. Build the payload the template renders (shared with preview)
+    // 4. Build the payload the template renders (shared with preview), from
+    // the figures already checked above.
     const pdfPayload = buildInvoicePayload(req.body, {
       business,
       invoiceNumber,
@@ -632,6 +642,7 @@ const generateInvoice = async (req, res, next) => {
       qrCodeImage,
       invoiceUrl,
       invoiceDownloadUrl,
+      figures,
     });
 
     // 5. Save invoice record (status: pending) before hitting PDFMonkey
@@ -649,14 +660,19 @@ const generateInvoice = async (req, res, next) => {
       customerGstin: customer_gstin,
       customerPan: customer_pan,
       invoiceDate,
-      placeOfSupply: place_of_supply,
+      placeOfSupply: pdfPayload.place_of_supply,
+      placeOfSupplyCode: pdfPayload.place_of_supply_code,
       transport,
       lineItems: pdfPayload.line_items,
       subtotal: pdfPayload.subtotal,
       gstRate: pdfPayload.gst_rate,
       gstAmount: pdfPayload.gst_amount,
+      cgstAmount: pdfPayload.cgst_amount,
+      sgstAmount: pdfPayload.sgst_amount,
+      igstAmount: pdfPayload.igst_amount,
+      roundedOff: pdfPayload.rounded_off,
       grandTotal: pdfPayload.grand_total,
-      amountInWords: amount_in_words,
+      amountInWords: pdfPayload.amount_in_words,
       termsAndConditions: terms_and_conditions,
       pdfStatus: 'pending',
       publicToken,
@@ -669,7 +685,8 @@ const generateInvoice = async (req, res, next) => {
     // invoiceUrl answers 409 until the PDF exists and the app polls that,
     // and the app can print its own copy from the same template meanwhile.
     // The record already holds the number, so nothing can drift.
-    const pdfFilename = `${invoiceNumber}-${(customer_name || 'customer').replace(/\s+/g, '-')}.pdf`;
+    // The number has slashes ("26-27/1015/00001"), which a file name cannot.
+    const pdfFilename = `${String(invoiceNumber).replace(/[^\w.-]+/g, '-')}-${(customer_name || 'customer').replace(/\s+/g, '-')}.pdf`;
     setImmediate(async () => {
       // Government e-invoice first, so the PDF can carry the signed QR. B2B
       // only, behind EINVOICE_ENABLED; any failure is recorded on the invoice
@@ -761,6 +778,10 @@ const generateInvoice = async (req, res, next) => {
       // The same QR printed on the PDF, so the app can show it on screen
       // instead of rendering a second one that could drift from it.
       qrCodeImage,
+      // The figures as issued: the server's, from the line items.
+      subtotal: pdfPayload.subtotal,
+      gstAmount: pdfPayload.gst_amount,
+      grandTotal: pdfPayload.grand_total,
     }, 201);
   } catch (err) {
     next(err);
