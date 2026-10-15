@@ -184,6 +184,7 @@ const startSpeculative = (entry) => {
     businessId: String(entry.scope?.businessId || ''),
     userId: String(entry.scope?.userId || ''),
   });
+  entry.startedAt = Date.now();
   entry.promise = runModelForScan(entry.scan, {}, entry.scope, entry.controller.signal);
   entry.promise.then(
     () => {
@@ -242,8 +243,12 @@ const beginSpeculativeAnalysis = (scanId, scope) => {
   };
 };
 
-/** The speculative result for this exact image set, or null to run fresh. */
+/**
+ * The speculative result for this exact image set, with how long it had been
+ * running when the analyze request came (headStartMs), or null to run fresh.
+ */
 const takeSpeculativeResult = async (scanId, scan, scannerSettings) => {
+  const arrivedAt = Date.now();
   const entry = speculativeAnalyses.get(scanId);
   if (!entry) return null;
   // Claimed: out of the map, so no later upload can cancel what this request
@@ -270,7 +275,7 @@ const takeSpeculativeResult = async (scanId, scan, scannerSettings) => {
       return null;
     }
     console.info('[SPECULATIVE_ANALYSIS_USED]', { scanId });
-    return result;
+    return { result, headStartMs: Math.max(0, arrivedAt - (entry.startedAt || arrivedAt)) };
   } catch (error) {
     return null;
   }
@@ -333,7 +338,9 @@ const saveImage = async (scanId, imagePath, type, session = {}, options = {}) =>
 };
 
 const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {}, licenseContext = null) => {
+  const readStartedAt = Date.now();
   const scan = await redisService.getScan(scanId);
+  let storeMs = Date.now() - readStartedAt;
   assertScanAccess(scan, session);
 
   const { frontImagePath, backImagePath, jewelleryType, scanType } = scan;
@@ -376,7 +383,8 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
   const views = await takePreparedViews(scanId, frontImagePath, backImagePath);
 
   // Call OpenAI to get structured data
-  let result = await takeSpeculativeResult(scanId, scan, scannerSettings);
+  const speculative = await takeSpeculativeResult(scanId, scan, scannerSettings);
+  let result = speculative?.result || null;
   try {
     if (!result) result = await openaiService.analyzeImages(
       frontImagePath,
@@ -429,9 +437,23 @@ const analyzeScan = async (scanId, scannerSettings = {}, businessId, session = {
   // STEP 1 — respond with the calculation immediately. Access (license + credit
   // balance) was already enforced by requireScannerAccess middleware before this
   // request reached analyze, so billing does not need to block the user.
+  const writeStartedAt = Date.now();
   const updated = await redisService.updateScanStatus(scanId, 'ANALYSIS_COMPLETED', {
     analysisResult: result,
     billing: { billed: false, pending: true },
+  });
+  storeMs += Date.now() - writeStartedAt;
+  // Where this scan's wait went, for the controller's [SCAN_TIMING] line
+  // (scanTiming). Not part of the record: never stored or sent.
+  Object.defineProperty(updated, 'timing', {
+    value: {
+      ...(result?.timing || {}),
+      headStartMs: speculative?.headStartMs || 0,
+      storeMs,
+      speculativeUsed: Boolean(speculative),
+    },
+    enumerable: false,
+    configurable: true,
   });
 
   // STEP 2 — bill and clean up in the background. billCompletedScan is

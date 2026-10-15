@@ -11,6 +11,7 @@ const { pricingRulesOf } = require('../services/pricingInputs');
 const { sendSuccess } = require('../utils/apiResponse');
 const { toSessionContext } = require('../utils/scanAccess');
 const { tagIdentifiersOf } = require('../utils/tagIdentifiers');
+const { recordScanTiming } = require('../services/scanTiming');
 
 const createScan = async (req, res, next) => {
   try {
@@ -71,6 +72,7 @@ const uploadBackImage = async (req, res, next) => {
 };
 
 const analyzeScan = async (req, res, next) => {
+  const receivedAt = Date.now();
   try {
     const { scanId } = req.params;
     console.info('[API_ANALYZE_REQUEST_RECEIVED]', {
@@ -102,6 +104,7 @@ const analyzeScan = async (req, res, next) => {
     // The rules the asking build prices its card with, so the price made
     // here is the one its card asks for first.
     const rules = pricingRulesOf(req);
+    const pricingStartedAt = Date.now();
     try {
       pricingInput = await deriveInputFromReading({
         user: req.user,
@@ -125,6 +128,18 @@ const analyzeScan = async (req, res, next) => {
       if (error?.code === 'RATES_UNAVAILABLE' || error?.code === 'INVALID_PRICING_INPUT') {
         pricingError = { code: error.code, message: error.message };
       }
+    }
+    const pricingMs = Date.now() - pricingStartedAt;
+
+    // One timing line per analyzed scan (not for a finished scan asked
+    // again, which carries none), and the window /api/v1/health reports.
+    if (updated.timing) {
+      recordScanTiming({
+        ...updated.timing,
+        scanId: updated.scanId,
+        pricingMs,
+        totalMs: Date.now() - receivedAt,
+      });
     }
 
     sendSuccess(res, {

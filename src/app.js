@@ -60,6 +60,8 @@ app.get('/api/v1/app-config', (req, res) => {
   });
 });
 
+const { scanTimingSummary } = require('./services/scanTiming');
+
 app.get('/api/v1/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
@@ -67,6 +69,9 @@ app.get('/api/v1/health', (req, res) => {
     // Capabilities the app relies on; a missing one here means the server
     // is behind the app.
     features: { analyzePricing: true, einvoiceTestMode: true, notifications: true },
+    // The last 200 analyzed scans, received to answered, against the
+    // SCAN_TARGET_MS target (APItracker's Scan speed card reads this).
+    scanTiming: scanTimingSummary(),
   });
 });
 
