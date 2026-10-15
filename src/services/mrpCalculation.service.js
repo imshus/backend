@@ -9,7 +9,7 @@ const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const Employee = require('../models/employee.model');
-const { aggregateJewelleryMrp } = require('./pricingAggregation.service');
+const { computePricing } = require('./pricingMath');
 const { assertScanAccess } = require('../utils/scanAccess');
 const { settingsScope, findScopedSetting, findScopedRows } = require('./userScope.service');
 const { findDiamondRateMatch, normalizeKey } = require('./diamondRateLookup.service');
@@ -184,13 +184,13 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   const karatData = liveRatesData.karatRates.find(r => r.carat.replace(/t$/i, '').toUpperCase() === normalizedKarat);
   const karatPurityPercent = karatData ? karatData.purity : 0;
 
-  // If DB lookup failed, derive a fallback purity percent from the karat value
-  // e.g. 24K -> 100%, 18K -> 75% (karat/24 * 100)
-  let fallbackPurityPercent = 0;
+  // If DB lookup failed, the purity falls back to one derived from the karat
+  // value (pricingMath: karat/24 * 100); this is that karat as a number.
+  let karatNumber = 0;
   if (purityKarat) {
     const numericKarat = Number(String(purityKarat).replace(/[^0-9.]/g, ''));
     if (Number.isFinite(numericKarat) && numericKarat > 0) {
-      fallbackPurityPercent = Math.min(100, (numericKarat / 24) * 100);
+      karatNumber = numericKarat;
     }
   }
 
@@ -202,38 +202,21 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     customPurityPercent !== undefined &&
     customPurityPercent !== null &&
     String(customPurityPercent).trim() !== '';
-  let effectivePurityPercent = hasCustomPurityPercent
-    ? toNumber(customPurityPercent)
-    : (karatPurityPercent || fallbackPurityPercent);
-  effectivePurityPercent = Math.max(0, Math.min(100, effectivePurityPercent));
 
-  // Diamond amount, line by line and discount-aware
-  const diamondLineItems = Array.isArray(diamonds)
-    ? diamonds.map((dia, index) => {
-        const wt = toNumber(dia.weight);
-        const rate = toNumber(dia.rate);
-        const discountPercent = Math.max(0, Math.min(100, toNumber(dia.discountPercent)));
-        const baseAmount = wt * rate;
-        const amount = baseAmount - baseAmount * (discountPercent / 100);
-        return { index: index + 1, weight: wt, rate, discountPercent, amount };
-      })
+  // Stone rows as numbers; pricingMath prices them line by line.
+  const diamondRows = Array.isArray(diamonds)
+    ? diamonds.map((dia) => ({
+        weight: toNumber(dia.weight),
+        rate: toNumber(dia.rate),
+        discountPercent: toNumber(dia.discountPercent),
+      }))
     : [];
-  const diamondAmount = diamondLineItems.reduce((sum, item) => sum + item.amount, 0);
-
-  // Colorstone amount, line by line
-  const colorstoneLineItems = Array.isArray(colorstones)
-    ? colorstones.map((cs, index) => {
-        const wt = toNumber(cs.weight);
-        const rate = toNumber(cs.rate);
-        return { index: index + 1, weight: wt, rate, amount: wt * rate };
-      })
+  const colorstoneRows = Array.isArray(colorstones)
+    ? colorstones.map((cs) => ({ weight: toNumber(cs.weight), rate: toNumber(cs.rate) }))
     : [];
-  const colorstoneAmount = colorstoneLineItems.reduce((sum, item) => sum + item.amount, 0);
 
-  // Pure weight, selected gold rate and labour charge
   const numericNetWt = toNumber(netWt);
   const numericGrossWt = toNumber(grossWt);
-  const pureWeight = numericNetWt * (effectivePurityPercent / 100);
 
   const hasManualLabourRate =
     labourChargeAmount !== undefined && labourChargeAmount !== null && String(labourChargeAmount).trim() !== '';
@@ -242,18 +225,6 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     : toNumber(labourCharge?.value);
   const resolvedLabourUnit = labourChargeUnit || labourCharge?.rupeesUnit || 'Per Gram';
   const resolvedLabourWeightBasis = labourWeightBasis === 'gross' ? 'gross' : 'net';
-  const labourWeightGrams =
-    resolvedLabourWeightBasis === 'gross'
-      ? (numericGrossWt > 0 ? numericGrossWt : numericNetWt)
-      : numericNetWt;
-
-  let labourAmount = 0;
-  if (labourRatePerUnit > 0) {
-    labourAmount =
-      resolvedLabourUnit === 'Per 10 Gram'
-        ? labourWeightGrams * (labourRatePerUnit / 10)
-        : labourWeightGrams * labourRatePerUnit;
-  }
 
   let resolvedMode = calculationMode || scan?.calculationMode || 'rtgs';
 
@@ -305,37 +276,11 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     baseGoldRatePer10g = mcxFinalRate + supremeChange + businessChange;
   }
 
-  const selected24kGoldRatePerGram = (baseGoldRatePer10g || 0) / 10;
-  const purityAdjustedGoldRatePerGram = selected24kGoldRatePerGram * (effectivePurityPercent / 100);
-
-  // Gold Amount = Pure Weight × selected 24K RTGS/Cash live rate per gram
-  const goldAmount = pureWeight * selected24kGoldRatePerGram;
-
   const otherChargesAmount = toNumber(otherCharges);
 
-  // Wastage: the metal the making consumes, charged as gold. It is a share of
-  // the metal in the piece, so it runs on the NET weight — the stones are not
-  // gold and nothing is lost off them — and at the 24K rate, the same rate
-  // the gold line is priced at rather than the rate after karat purity.
   const itemRow = Array.isArray(itemRows) && itemRows.length > 0 ? itemRows[0] : null;
   const wastageRow = findWastageRow(wastageRows, wastageCandidates);
   const wastage = resolveWastage({ manualPercent: wastagePercent, wastageRow, itemRow });
-  const resolvedWastagePercent = wastage.percent;
-  const wastageWeightGrams =
-    resolvedWastagePercent > 0 ? numericNetWt * (resolvedWastagePercent / 100) : 0;
-  const wastageAmount = wastageWeightGrams * selected24kGoldRatePerGram;
-
-  const aggregation = aggregateJewelleryMrp({
-    goldAmount,
-    diamondAmount,
-    colorstoneAmount,
-    labourAmount,
-    wastageAmount,
-    otherChargesAmount,
-  });
-
-  const subtotal = aggregation.subtotal;
-  const finalMRP = aggregation.finalMRP;
 
   const labourChargeType = hasManualLabourRate
     ? 'AMOUNT_MANUAL'
@@ -343,46 +288,47 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
       ? `${labourCharge.type || 'AMOUNT'}_GLOBAL`
       : 'NONE';
 
+  // The arithmetic itself.
+  const priced = computePricing({
+    netWt: numericNetWt,
+    grossWt: numericGrossWt,
+    customPurityPercent: hasCustomPurityPercent ? toNumber(customPurityPercent) : null,
+    karatPurityPercent,
+    karatNumber,
+    goldRatePer10g: baseGoldRatePer10g,
+    diamonds: diamondRows,
+    colorstones: colorstoneRows,
+    labourRatePerUnit,
+    labourUnit: resolvedLabourUnit,
+    labourWeightBasis: resolvedLabourWeightBasis,
+    wastagePercent: wastage.percent,
+    otherCharges: otherChargesAmount,
+    labourChargeType,
+    wastageCode: wastage.code,
+  });
+  const { breakdown, finalMRP, effectivePurityPercent } = priced;
+
   console.info('[MRP_CALC_AUDIT]', JSON.stringify({
     scanId: resolvedScanId || scanId,
     selectedKarat: purityKarat || '',
     effectivePurityPercent,
     netWeight: numericNetWt,
-    pureWeight,
-    selected24kGoldRatePerGram,
-    purityAdjustedGoldRatePerGram,
-    goldAmount: aggregation.goldAmount,
-    diamondLineItems,
-    colorstoneLineItems,
-    labourAmount: aggregation.labourAmount,
-    wastagePercent: resolvedWastagePercent,
-    wastageWeightGrams,
-    wastageAmount: aggregation.wastageAmount,
-    otherChargesAmount: aggregation.otherChargesAmount,
-    subtotal,
+    pureWeight: breakdown.pureWeight,
+    selected24kGoldRatePerGram: breakdown.goldRateApplied,
+    purityAdjustedGoldRatePerGram: priced.purityAdjustedGoldRatePerGram,
+    goldAmount: breakdown.goldAmount,
+    diamondLineItems: priced.diamondLineItems,
+    colorstoneLineItems: priced.colorstoneLineItems,
+    labourAmount: breakdown.labourAmount,
+    wastagePercent: breakdown.wastagePercent,
+    wastageWeightGrams: breakdown.wastageWeightGrams,
+    wastageAmount: breakdown.wastageAmount,
+    otherChargesAmount: breakdown.otherCharges,
+    subtotal: breakdown.subtotal,
     finalMRP,
   }));
 
-  const resultData = {
-    breakdown: {
-      diamondAmount: aggregation.diamondAmount,
-      colorstoneAmount: aggregation.colorstoneAmount,
-      pureWeight,
-      goldRateApplied: selected24kGoldRatePerGram,
-      goldAmount: aggregation.goldAmount,
-      labourAmount: aggregation.labourAmount,
-      labourChargeType,
-      // A Masters -> Wastage code the tag's number matched, and nothing else:
-      // the item code is never shown as a wastage code.
-      wastageCode: wastage.code,
-      wastagePercent: resolvedWastagePercent,
-      wastageWeightGrams,
-      wastageAmount: aggregation.wastageAmount,
-      otherCharges: aggregation.otherChargesAmount,
-      subtotal,
-    },
-    finalMRP,
-  };
+  const resultData = { breakdown, finalMRP };
 
   const snapshot = {
     jewelleryType,
