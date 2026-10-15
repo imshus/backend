@@ -48,7 +48,9 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   const settings = { businessId, userId: scope?.userId || null };
   const cacheId = settings.userId ? `${businessId}:u:${settings.userId}` : businessId.toString();
 
-  // 1. Check Redis Cache First. An entry without bhawSource was computed by a
+  // 1. This process's cache first (redis.service keeps it in memory, per
+  // business and per employee, under the settings generation; no round
+  // trip). An entry without bhawSource was computed by a
   // pre-vendor-selection build; serving it would pin stale rates for up to the
   // cache TTL after a deploy, so treat it as a miss and recompute.
   const cachedData = await redisService.getGoldRatesCache(cacheId);
@@ -75,7 +77,8 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // another, so a cache miss (every MCX tick clears the cache for every
   // business) paid for five round trips in sequence plus the vendor feed.
   // The vendor rows are warmed here too, so the lookup by name below finds
-  // them ready.
+  // them ready. The MCX comes off that same board (mcx.service) and the
+  // supreme changes from this process's copy: no Redis call on the way.
   const bhawWarm = bhawService.prefetch();
   const [mcxLiveRate, taxSettingsDoc, supremeRead, metrics, bullionSetting, karatRowsRead] = await Promise.all([
     mcxService.getLiveMcxRate24K(),

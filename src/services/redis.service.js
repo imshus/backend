@@ -274,12 +274,6 @@ const getInvoicePdfCache = async (publicToken) => {
   });
 };
 
-// === GOLD RATES CACHING ===
-
-function goldKey(businessId) {
-  return `gold_rates:${businessId}`;
-}
-
 /**
  * Holds a public invoice token that has been shown to a user but not yet
  * spent, so the QR in the preview is the very same code the PDF ends up
@@ -315,86 +309,74 @@ const claimInvoiceToken = async (publicToken, businessId) => {
   });
 };
 
-// Every invalidation of a business's rates moves this on. A compute that
-// began before an invalidation and finished after it used to write the
-// older settings into the cache for the day; it now writes only while the
-// generation it read is still the current one.
-const genKey = (businessId) => `gold_rates_gen:${String(businessId).split(':')[0]}`;
+// === GOLD RATES CACHING (THIS PROCESS) ===
+// The rates a business (or an employee with rate settings of their own)
+// prices on, worked out from the board and its settings. Held in this
+// process's memory, not Redis: every scan reads them, and a Redis read is a
+// round trip to us-east-1 on the scan's wait. Each entry is served only while
+// the board reads as it did when it was worked out (feedStamp, checked by
+// rateCalculation) and while no invalidation has happened since (the
+// generation below); every settings save and every MCX or house-line move
+// clears it, as it cleared the Redis copy.
 
-const getGoldRatesGeneration = async (businessId) => {
-  return runStoreOp(async (backend) => {
-    if (backend === 'memory') return Number(memoryStore.get(genKey(businessId)) || 0);
-    return Number((await redis.get(genKey(businessId))) || 0);
-  });
-};
+const GOLD_RATES_MAX_ENTRIES = 5000;
+/** cacheId -> { json, generation }, oldest first. */
+const goldRatesMemo = new Map();
+// Every invalidation moves a generation on: the business's own for a
+// settings save, the shared one for a move on the board or the supreme
+// changes. A compute that began before an invalidation and finished after it
+// used to write the older settings into the cache for the day; it now writes
+// only while the generation it read is still the current one, and an entry
+// is served only under the generation it was written in.
+const goldRatesGenerations = new Map();
+let goldRatesSharedGeneration = 0;
+
+const baseBusinessId = (businessId) => String(businessId).split(':')[0];
+
+const currentGoldRatesGeneration = (businessId) =>
+  goldRatesSharedGeneration + Number(goldRatesGenerations.get(baseBusinessId(businessId)) || 0);
+
+const getGoldRatesGeneration = async (businessId) => currentGoldRatesGeneration(businessId);
 
 const bumpGoldRatesGeneration = async (businessId) => {
-  return runStoreOp(async (backend) => {
-    if (backend === 'memory') {
-      memoryStore.set(genKey(businessId), String(Number(memoryStore.get(genKey(businessId)) || 0) + 1));
-      return;
-    }
-    await redis.incr(genKey(businessId));
-  });
+  const base = baseBusinessId(businessId);
+  goldRatesGenerations.set(base, Number(goldRatesGenerations.get(base) || 0) + 1);
 };
 
 const setGoldRatesCache = async (businessId, data) => {
-  return runStoreOp(async (backend) => {
-    if (backend === 'memory') {
-      memoryStore.set(goldKey(businessId), JSON.stringify(data));
-      return;
-    }
-    await redis.set(goldKey(businessId), JSON.stringify(data), "EX", TTL);
-  });
+  const key = String(businessId);
+  goldRatesMemo.delete(key);
+  goldRatesMemo.set(key, { json: JSON.stringify(data), generation: currentGoldRatesGeneration(key) });
+  while (goldRatesMemo.size > GOLD_RATES_MAX_ENTRIES) {
+    goldRatesMemo.delete(goldRatesMemo.keys().next().value);
+  }
 };
 
 const getGoldRatesCache = async (businessId) => {
-  return runStoreOp(async (backend) => {
-    if (backend === 'memory') {
-      const data = memoryStore.get(goldKey(businessId));
-      return data ? JSON.parse(data) : null;
-    }
-    const data = await redis.get(goldKey(businessId));
-    return data ? JSON.parse(data) : null;
-  });
+  const key = String(businessId);
+  const entry = goldRatesMemo.get(key);
+  if (!entry) return null;
+  if (entry.generation !== currentGoldRatesGeneration(key)) {
+    goldRatesMemo.delete(key);
+    return null;
+  }
+  return JSON.parse(entry.json);
 };
 
 // A business's rates are cached once for the shop and once more for every
 // employee who keeps their own rate settings; a change to the shop's inputs
 // invalidates all of them.
 const invalidateGoldRatesCache = async (businessId) => {
-  const prefix = goldKey(businessId);
-  await bumpGoldRatesGeneration(businessId);
-  return runStoreOp(async (backend) => {
-    if (backend === 'memory') {
-      for (const key of [...memoryStore.keys()]) {
-        if (key === prefix || key.startsWith(`${prefix}:u:`)) memoryStore.delete(key);
-      }
-      return;
-    }
-    const keys = await redis.keys(`${prefix}*`);
-    if (keys.length > 0) {
-      await redis.del(...keys);
-    }
-  });
+  const base = baseBusinessId(businessId);
+  await bumpGoldRatesGeneration(base);
+  for (const key of [...goldRatesMemo.keys()]) {
+    if (key === base || key.startsWith(`${base}:u:`)) goldRatesMemo.delete(key);
+  }
 };
 
 const invalidateAllGoldRatesCache = async () => {
-  return runStoreOp(async (backend) => {
-    if (backend === 'memory') {
-      for (const key of memoryStore.keys()) {
-        if (key.startsWith('gold_rates:')) {
-          memoryStore.delete(key);
-        }
-      }
-      return;
-    }
-    // In Redis, delete all keys matching gold_rates:*
-    const keys = await redis.keys('gold_rates:*');
-    if (keys.length > 0) {
-      await redis.del(...keys);
-    }
-  });
+  goldRatesSharedGeneration += 1;
+  goldRatesMemo.clear();
 };
 
 // === MCX API CACHING ===
@@ -542,7 +524,14 @@ function supremeKey() {
   return `supreme_rates`;
 }
 
+// This process writes every copy (the scheduler on each board snapshot, the
+// supreme-rates screen), so it also keeps the last one in memory: a rate
+// compute reads that instead of paying a Redis round trip, and Redis is read
+// only by a process that has not written one yet.
+let supremeMemo = null;
+
 const setSupremeCache = async (data) => {
+  supremeMemo = JSON.stringify(data);
   return runStoreOp(async (backend) => {
     if (backend === 'memory') {
       memoryStore.set(supremeKey(), JSON.stringify(data));
@@ -553,14 +542,17 @@ const setSupremeCache = async (data) => {
 };
 
 const getSupremeCache = async () => {
-  return runStoreOp(async (backend) => {
+  if (supremeMemo !== null) return JSON.parse(supremeMemo);
+  const stored = await runStoreOp(async (backend) => {
     if (backend === 'memory') {
       const data = memoryStore.get(supremeKey());
-      return data ? JSON.parse(data) : null;
+      return data || null;
     }
     const data = await redis.get(supremeKey());
-    return data ? JSON.parse(data) : null;
+    return data || null;
   });
+  if (stored && supremeMemo === null) supremeMemo = String(stored);
+  return stored ? JSON.parse(stored) : null;
 };
 
 module.exports = {
