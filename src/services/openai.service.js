@@ -604,6 +604,13 @@ const WEIGHT_CLOSE_TOLERANCE_G = 0.015;
 // A shortfall smaller than this is marked, never pinned on a digit: it is
 // within reach of a thousandths swap, which rounding explains as well.
 const LOOKALIKE_MIN_SHORTFALL_G = 2 * WEIGHT_CLOSE_TOLERANCE_G;
+// A lookalike change is the misread only when it closes the weights to the
+// rounding of the printed figures (lookalikeFitTolerance: 0.002 g for a
+// 3-decimal gross and net and one 2-decimal carat row), and never looser
+// than this. A change that closes only part of the gap is a coincidence:
+// 5.116 / 5.050 / 0.48 ct with the 8 read as 0 still leaves 0.014 g, and the
+// gross misread 4 for 1 is the real error.
+const LOOKALIKE_FIT_TOLERANCE_G = 0.006;
 // Below the review screen's attention threshold (80): the amber "check" mark.
 const WEIGHT_CHECK_CONFIDENCE = 70;
 // What else a tag can carry that weighs: a label naming it, followed by a figure.
@@ -670,6 +677,19 @@ const lookalikeVariants = (text) => {
   return out;
 };
 
+/**
+ * How close a lookalike change must bring the weights: the rounding of the
+ * figures as printed (half a unit of each one's last decimal, a carat at
+ * 0.2 g), never more than LOOKALIKE_FIT_TOLERANCE_G.
+ */
+const lookalikeFitTolerance = (terms) => {
+  const rounding = terms.reduce((sum, term) => {
+    const decimals = (String(term.field.value ?? '').split('.')[1] || '').replace(/\D/g, '').length;
+    return sum + Math.abs(term.gramsPer) * 0.5 * 10 ** -decimals;
+  }, 0);
+  return Math.min(LOOKALIKE_FIT_TOLERANCE_G, rounding) + 1e-9;
+};
+
 const markForReview = (field, reason) => {
   field.confidence = Math.min(Number(field.confidence) || 0, WEIGHT_CHECK_CONFIDENCE);
   field.reason = reason;
@@ -693,13 +713,14 @@ const correctLookalikeWeightDigit = (parsedData) => {
     return { outcome: 'unresolved', suspects: [] };
   }
 
+  const fitTolerance = lookalikeFitTolerance(terms);
   const candidates = [];
   for (const term of terms) {
     const read = String(term.field.value ?? '').trim();
     for (const variant of lookalikeVariants(read)) {
       const number = parseWeightNumber({ value: variant.text });
       if (number == null) continue;
-      if (Math.abs(weightResidual(terms, { term, number })) <= WEIGHT_CLOSE_TOLERANCE_G) {
+      if (Math.abs(weightResidual(terms, { term, number })) <= fitTolerance) {
         candidates.push({ term, read, ...variant });
       }
     }
@@ -751,11 +772,11 @@ const flagWeightShortfall = (parsedData, suspects = []) => {
 /**
  * Every weight check on the agreed record, in order: the lookalike digit
  * (8 read as 3), then the stone-weight repairs, then a review mark on any
- * shortfall neither explained.
+ * shortfall neither explained. The later checks run after a correction too,
+ * so a reading the correction did not fully close still gets its marks.
  */
 const crossCheckWeights = (parsedData) => {
-  const { outcome, suspects } = correctLookalikeWeightDigit(parsedData);
-  if (outcome === 'corrected') return;
+  const { suspects } = correctLookalikeWeightDigit(parsedData);
   reconcileStoneWeightsWithGrossNet(parsedData);
   flagWeightShortfall(parsedData, suspects);
 };

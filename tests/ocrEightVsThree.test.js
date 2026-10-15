@@ -84,9 +84,13 @@ const untouched = (f, value) => {
 test('the prompt tells the reader to check the left side of the glyph', () => {
   const { getSystemPrompt } = require('../src/prompts/openai.prompt');
   const prompt = getSystemPrompt();
-  assert.match(prompt, /An 8 is closed on the left, a 3 is open on the left/);
-  assert.match(prompt, /6\/8,\s+5\/6, 0\/8/);
-  assert.match(prompt, /check the left side of the glyph before writing 3 or 8 in a\s+weight or code/);
+  assert.match(prompt, /An 8 is closed on the left, a 3 is open on the left \(same care for 5\/6\)/);
+  assert.match(prompt, /check the left side of the glyph before writing 3, 5, 6 or 8 in a weight\s+or code/);
+  // The left side does not tell 6 from 8 or 0 from 8 (both closed there); the
+  // weight cross-check covers those swaps, the rule does not claim to.
+  const rule = prompt.match(/3d\. 8 OR 3\.[\s\S]*?\n\s*\n/);
+  assert.ok(rule, 'rule 3d is in the prompt');
+  assert.doesNotMatch(rule[0], /6\/8|0\/8/);
 });
 
 test('weights that already close are never changed', () => {
@@ -226,6 +230,50 @@ test('a shortfall within reach of rounding is marked, never pinned on a thousand
   crossCheckWeights(data);
   assert.equal(data.structuredData.grossWeight.value, '8.190');
   assert.ok(flagged(data.structuredData.grossWeight));
+});
+
+test('a lookalike change that closes only part of the gap is not taken: every weight stays as read and amber', () => {
+  const { crossCheckWeights } = internal();
+  // The tag is 5.146 / 5.050 / 0.48 ct and the gross was misread 4 for 1.
+  // Reading the diamond's 8 as 0 (0.40 ct) still leaves 0.014 g: a
+  // coincidence, not the misread, so the real error must stay marked.
+  const data = reading('5.116', '5.050', ['0.48']);
+  crossCheckWeights(data);
+  const sd = data.structuredData;
+  assert.equal(sd.grossWeight.value, '5.116');
+  assert.equal(sd.netWeight.value, '5.050');
+  assert.equal(sd.diamonds[0].weight.value, '0.48');
+  assert.ok(flagged(sd.grossWeight));
+  assert.ok(flagged(sd.netWeight));
+  assert.ok(flagged(sd.diamonds[0].weight));
+  assert.doesNotMatch(sd.diamonds[0].weight.reason, /Read as/);
+
+  // 8.166 / 8.100 / 0.50 ct: the 6 -> 8 swap (8.186) covers 0.020 of a 0.034 g gap.
+  const partial = reading('8.166', '8.100', ['0.50']);
+  crossCheckWeights(partial);
+  assert.equal(partial.structuredData.grossWeight.value, '8.166');
+  assert.ok(flagged(partial.structuredData.grossWeight));
+  assert.ok(flagged(partial.structuredData.netWeight));
+});
+
+test('a correct tag whose printed weights fall 0.03-0.05 g short is marked, never rewritten', () => {
+  const { crossCheckWeights } = internal();
+  // The shop's own arithmetic: 6.140 / 6.000 / 0.85 ct is 0.030 g short. 0.65
+  // ct would leave the gross 0.010 g over, which is no closer to the tag.
+  const short30 = reading('6.140', '6.000', ['0.85']);
+  // 6.435 / 6.300 / 0.90 ct is 0.045 g short. Reading its 3 as an 8 (6.485)
+  // leaves the gross 0.005 g over: closer, but not to the printing rounding.
+  const short45 = reading('6.435', '6.300', ['0.90']);
+  for (const data of [short30, short45]) {
+    const before = JSON.parse(JSON.stringify(data.structuredData));
+    crossCheckWeights(data);
+    const sd = data.structuredData;
+    assert.equal(sd.grossWeight.value, before.grossWeight.value);
+    assert.equal(sd.netWeight.value, before.netWeight.value);
+    assert.equal(sd.diamonds[0].weight.value, before.diamonds[0].weight.value);
+    assert.ok(flagged(sd.grossWeight));
+    assert.ok(flagged(sd.netWeight));
+  }
 });
 
 test('the stone-weight repairs that came before still apply', () => {

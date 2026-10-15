@@ -1037,9 +1037,9 @@ ABSOLUTE RULES
    "" when no unit is printed. Never convert the weight itself.
 
 3d. 8 OR 3.
-   An 8 is closed on the left, a 3 is open on the left (same care for 6/8,
-   5/6, 0/8): check the left side of the glyph before writing 3 or 8 in a
-   weight or code.
+   An 8 is closed on the left, a 3 is open on the left (same care for 5/6):
+   check the left side of the glyph before writing 3, 5, 6 or 8 in a weight
+   or code.
 
 4. NEVER convert purity values.
    Examples:
