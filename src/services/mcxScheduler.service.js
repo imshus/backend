@@ -29,6 +29,15 @@ if (schedulerConfig.startSeconds > schedulerConfig.endSeconds) {
 
 let schedulerTimer = null;
 
+// The board snapshot (its fetched_at, bhaw.service snapshotStamp) whose MCX
+// was last written to Redis: each snapshot is stored once, whichever of the
+// snapshot itself and the trading-window timer gets to it first.
+let lastStoredStamp = null;
+// One store at a time, so a snapshot and the timer cannot interleave their
+// read of the old rate with each other's write.
+let storeQueue = Promise.resolve();
+let stopWatchingSnapshots = null;
+
 function parseTimeToSeconds(timeValue) {
   const [hours, minutes, seconds] = String(timeValue || '00:00:00').split(':').map(Number);
   if (
@@ -169,11 +178,13 @@ function getNextScheduledExecutionUtc(fromDate = new Date()) {
 }
 
 async function fetchAndStoreMcxRate(options = {}) {
-  const phase = options.phase === 'startup' ? 'startup' : 'scheduled';
+  const phase = ['startup', 'snapshot'].includes(options.phase) ? options.phase : 'scheduled';
   const attemptAt = new Date();
   try {
     if (phase === 'startup') {
       console.log(`[MCX Scheduler] Performing startup synchronization at ${formatIstDateTime(attemptAt)}...`);
+    } else if (phase === 'snapshot') {
+      console.log(`[MCX Scheduler] New 3-minute snapshot at ${formatIstDateTime(attemptAt)}. Storing its MCX...`);
     } else {
       console.log(`[MCX Scheduler] Trading session active. Fetching MCX rate at ${formatIstDateTime(attemptAt)}...`);
     }
@@ -191,6 +202,14 @@ async function fetchAndStoreMcxRate(options = {}) {
     const source = 'board';
     if (liveRate === null) {
       return { success: false, reason: 'the board has no MCX line' };
+    }
+    // The snapshot that MCX came from. One already stored (the timer coming
+    // round after the snapshot itself was stored) is not written again; the
+    // startup sync always writes.
+    const stamp = bhawService.snapshotStamp?.() ?? null;
+    if (phase !== 'startup' && stamp && stamp === lastStoredStamp) {
+      console.log(`[MCX Scheduler] Snapshot ${stamp} is already stored (INR ${liveRate}).`);
+      return { success: true, liveRate, alreadyStored: true };
     }
     const oldSnapshot = await redisService.getMcxCacheSnapshot();
     const oldRate = oldSnapshot?.rate ?? null;
@@ -211,6 +230,7 @@ async function fetchAndStoreMcxRate(options = {}) {
     };
 
     await redisService.setMcxCache(mcxSnapshot);
+    if (stamp) lastStoredStamp = stamp;
     if (phase === 'startup') {
       console.log(`[MCX Scheduler] Startup MCX fetch successful. Current Rate: INR ${liveRate}`);
     } else {
@@ -271,6 +291,27 @@ async function fetchAndStoreMcxRate(options = {}) {
   }
 }
 
+/** fetchAndStoreMcxRate, one at a time. */
+function queueStore(options) {
+  const run = storeQueue.then(() => fetchAndStoreMcxRate(options));
+  storeQueue = run.catch(() => {});
+  return run;
+}
+
+/**
+ * Every new board snapshot (every 3 minutes, any hour of any day) writes its
+ * MCX and the supreme rates to Redis at once, by the same rules as the
+ * timer, which stays as the fallback in the trading window. Calling it again
+ * does nothing.
+ */
+function watchBoardSnapshots() {
+  if (stopWatchingSnapshots) return;
+  stopWatchingSnapshots = bhawService.onSnapshot((stamp) => {
+    if (stamp && stamp === lastStoredStamp) return undefined;
+    return queueStore({ phase: 'snapshot' });
+  });
+}
+
 function scheduleNextFetch(reason) {
   if (schedulerTimer) {
     clearTimeout(schedulerTimer);
@@ -283,9 +324,9 @@ function scheduleNextFetch(reason) {
 
   const nowIst = getIstParts(now);
   if (!isTradingDay(nowIst)) {
-    console.log(`[MCX Scheduler] Current IST Time: ${formatIstDateTime(now)} | Weekend detected. Using cached MCX rate.`);
+    console.log(`[MCX Scheduler] Current IST Time: ${formatIstDateTime(now)} | Weekend detected. Timer idle; each new 3-minute snapshot still stores the MCX.`);
   } else if (getSecondsOfDay(nowIst) < schedulerConfig.startSeconds || getSecondsOfDay(nowIst) > schedulerConfig.endSeconds) {
-    console.log(`[MCX Scheduler] Current IST Time: ${formatIstDateTime(now)} | Outside trading window. Using cached MCX rate.`);
+    console.log(`[MCX Scheduler] Current IST Time: ${formatIstDateTime(now)} | Outside trading window. Timer idle; each new 3-minute snapshot still stores the MCX.`);
   }
 
   console.log(`[MCX Scheduler] Next scheduler activation (${reason}): ${formatIstDateTime(nextExecution)}`);
@@ -300,7 +341,7 @@ function scheduleNextFetch(reason) {
       return;
     }
 
-    await fetchAndStoreMcxRate({ phase: 'scheduled' });
+    await queueStore({ phase: 'scheduled' });
 
     const nextExecutionAfterRun = getNextScheduledExecutionUtc(new Date());
     console.log(`[MCX Scheduler] Next scheduled fetch: ${formatIstTime(nextExecutionAfterRun)} IST`);
@@ -321,8 +362,11 @@ async function initMcxScheduler() {
       + `window=${config.mcxScheduler.startTime}-${config.mcxScheduler.endTime}, interval=${schedulerConfig.pollIntervalSeconds}s`
     );
 
+    // Each new board snapshot is stored as it arrives, any hour of any day.
+    watchBoardSnapshots();
+
     // Mandatory one-time startup sync irrespective of day/time window.
-    const startupResult = await fetchAndStoreMcxRate({ phase: 'startup' });
+    const startupResult = await queueStore({ phase: 'startup' });
     if (!startupResult.success) {
       const cachedSnapshot = await redisService.getMcxCacheSnapshot();
       const fallbackRate = cachedSnapshot?.rate;
@@ -357,7 +401,15 @@ async function initMcxScheduler() {
 module.exports = {
   initMcxScheduler,
   fetchAndStoreMcxRate,
+  watchBoardSnapshots,
   __internal: {
+    queueStore,
+    lastStoredStamp: () => lastStoredStamp,
+    resetSnapshotState: () => {
+      lastStoredStamp = null;
+      if (stopWatchingSnapshots) stopWatchingSnapshots();
+      stopWatchingSnapshots = null;
+    },
     parseTimeToSeconds,
     getIstParts,
     isTradingDay,

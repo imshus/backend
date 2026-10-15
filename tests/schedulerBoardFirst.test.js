@@ -105,3 +105,112 @@ test('no MCX line on the board is a failed fetch, never a made-up rate', async (
   assert.equal(seen.stored, null);
   assert.equal(seen.metalsCalls, 0, 'metals.dev is gone and must never be called');
 });
+
+// ── Every 3-minute snapshot stored as it arrives ────────────────────────────
+
+const {
+  watchBoardSnapshots,
+  __internal: { resetSnapshotState },
+} = require('../src/services/mcxScheduler.service');
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const waitFor = async (predicate, timeoutMs = 5_000) => {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) return false;
+    await sleep(5);
+  }
+  return true;
+};
+
+/** The real board, fed one snapshot by the stubbed feed; every write recorded. */
+function armSnapshots() {
+  const seen = { writes: [], supreme: [], invalidations: 0, fetchRecords: 0, payload: null };
+  bhawService.boardMcxSell = original.boardMcxSell;
+  bhawService.houseMcxLines = original.houseMcxLines;
+  axios.get = async () => ({ data: seen.payload });
+  redisService.getMcxCacheSnapshot = async () => seen.writes[seen.writes.length - 1] || null;
+  redisService.setMcxCache = async (snapshot) => { seen.writes.push(snapshot); };
+  redisService.setSupremeCache = async (data) => { seen.supreme.push(data); };
+  redisService.invalidateAllGoldRatesCache = async () => { seen.invalidations += 1; };
+  MCXFetch.findOne = async () => ({ save: async () => { seen.fetchRecords += 1; }, numberOfApiCall: 0 });
+  SupremeChange.findOne = () => ({ sort: async () => null });
+  resetSnapshotState();
+  bhawService.__internal.resetCache();
+  watchBoardSnapshots();
+  return seen;
+}
+
+/** The feed hands over a snapshot, as the keep-warm stream does every 3 minutes. */
+const arrive = async (seen, fetchedAt, sources = FEED) => {
+  seen.payload = { fetched_at: fetchedAt, next_fetch_at: new Date(Date.now() + 180_000).toISOString(), sources };
+  bhawService.__internal.resetCache();
+  await bhawService.prefetch();
+};
+
+const quiet = async (fn) => {
+  const { log } = console;
+  console.log = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.log = log;
+  }
+};
+
+test('a new snapshot writes the MCX and the supreme rates at once; the same snapshot, or the timer after it, writes nothing more', async () => {
+  const seen = armSnapshots();
+  try {
+    await quiet(async () => {
+      await arrive(seen, '2026-10-16T10:00:00Z');
+      assert.ok(await waitFor(() => seen.writes.length === 1), 'stored without waiting for the timer');
+      assert.equal(seen.writes[0].rate, BOARD_MAJORITY);
+      assert.equal(seen.supreme.length, 1);
+      assert.equal(seen.supreme[0].mcx, BOARD_MAJORITY);
+      assert.equal(seen.fetchRecords, 1, 'the same MCXFetch record as a timer fetch');
+
+      // The stream reconnects and sends the snapshot it already sent.
+      await arrive(seen, '2026-10-16T10:00:00Z');
+      // The trading-window timer comes round on the same board.
+      const timer = await fetchAndStoreMcxRate({ phase: 'scheduled' });
+      await sleep(30);
+      assert.equal(timer.success, true);
+      assert.equal(timer.alreadyStored, true);
+      assert.equal(seen.writes.length, 1, 'one write per snapshot');
+      assert.equal(seen.fetchRecords, 1);
+    });
+  } finally {
+    resetSnapshotState();
+    bhawService.__internal.resetCache();
+  }
+});
+
+test('each snapshot is written; only one that moves the MCX or a house line clears the computed rates', async () => {
+  const seen = armSnapshots();
+  try {
+    await quiet(async () => {
+      await arrive(seen, '2026-10-16T10:00:00Z');
+      assert.ok(await waitFor(() => seen.writes.length === 1));
+      assert.equal(seen.invalidations, 0, 'nothing stored before it to move from');
+
+      await arrive(seen, '2026-10-16T10:03:00Z');
+      assert.ok(await waitFor(() => seen.writes.length === 2), 'the next snapshot is written too');
+      assert.equal(seen.invalidations, 0, 'the same figures clear nothing');
+
+      const moved = FEED.map((house) => ({
+        ...house,
+        rows: house.rows.map((row) => (/mcx/i.test(row.label) && house.source !== 'jmd_patil'
+          ? { ...row, sell: String(BOARD_MAJORITY + 300) }
+          : row)),
+      }));
+      await arrive(seen, '2026-10-16T10:06:00Z', moved);
+      assert.ok(await waitFor(() => seen.writes.length === 3));
+      assert.equal(seen.writes[2].rate, BOARD_MAJORITY + 300);
+      assert.equal(seen.invalidations, 1, 'the MCX moved: the computed rates are cleared');
+      assert.equal(seen.fetchRecords, 3);
+    });
+  } finally {
+    resetSnapshotState();
+    bhawService.__internal.resetCache();
+  }
+});

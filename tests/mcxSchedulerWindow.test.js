@@ -9,7 +9,9 @@ const bhawService = require('../src/services/bhaw.service');
 
 const {
   initMcxScheduler,
+  watchBoardSnapshots,
   __internal: {
+    resetSnapshotState,
     isWithinTradingWindow,
     getIstParts,
     getNextScheduledExecutionUtc,
@@ -143,5 +145,74 @@ test('startup always performs exactly one immediate synchronization fetch', asyn
     bhawService.houseMcxLines = originalHouseMcxLines;
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
+    // initMcxScheduler also started storing each new board snapshot.
+    resetSnapshotState();
+  }
+});
+
+test('outside the trading window the timer sleeps, but a new board snapshot still stores the MCX at once', async () => {
+  const originals = {
+    axiosGet: axios.get,
+    getMcxCacheSnapshot: redisService.getMcxCacheSnapshot,
+    setMcxCache: redisService.setMcxCache,
+    setSupremeCache: redisService.setSupremeCache,
+    invalidateAll: redisService.invalidateAllGoldRatesCache,
+    findMcxFetch: MCXFetch.findOne,
+    findSupreme: SupremeChange.findOne,
+    tradingDays: [...schedulerConfig.tradingDays],
+    log: console.log,
+  };
+  const stored = [];
+  const supreme = [];
+  try {
+    // No trading day at all: every moment, this one included, is outside the
+    // window, as on a weekend or at night.
+    schedulerConfig.tradingDays.clear();
+    assert.equal(isWithinTradingWindow(getIstParts(new Date())), false);
+
+    const line = (sell) => ({ label: 'Gold Future MCX', buy: String(sell - 20), sell: String(sell) });
+    axios.get = async () => ({
+      data: {
+        fetched_at: new Date().toISOString(),
+        next_fetch_at: new Date(Date.now() + 180_000).toISOString(),
+        sources: [
+          { source: 'mega_bullion', rows: [line(150720)] },
+          { source: 'shri_sai', rows: [line(150720)] },
+          { source: 'jmd_patil', rows: [line(153273)] },
+        ],
+      },
+    });
+    redisService.getMcxCacheSnapshot = async () => null;
+    redisService.setMcxCache = async (snapshot) => { stored.push(snapshot); };
+    redisService.setSupremeCache = async (data) => { supreme.push(data); };
+    redisService.invalidateAllGoldRatesCache = async () => {};
+    MCXFetch.findOne = async () => ({ save: async () => {}, numberOfApiCall: 0 });
+    SupremeChange.findOne = () => ({ sort: async () => null });
+    console.log = () => {};
+
+    resetSnapshotState();
+    bhawService.__internal.resetCache();
+    watchBoardSnapshots();
+    await bhawService.prefetch();
+
+    const deadline = Date.now() + 5_000;
+    while (stored.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(stored.length, 1, 'the snapshot was stored without the timer');
+    assert.equal(stored[0].rate, 150720);
+    assert.equal(supreme[0].mcx, 150720);
+  } finally {
+    axios.get = originals.axiosGet;
+    redisService.getMcxCacheSnapshot = originals.getMcxCacheSnapshot;
+    redisService.setMcxCache = originals.setMcxCache;
+    redisService.setSupremeCache = originals.setSupremeCache;
+    redisService.invalidateAllGoldRatesCache = originals.invalidateAll;
+    MCXFetch.findOne = originals.findMcxFetch;
+    SupremeChange.findOne = originals.findSupreme;
+    for (const day of originals.tradingDays) schedulerConfig.tradingDays.add(day);
+    console.log = originals.log;
+    resetSnapshotState();
+    bhawService.__internal.resetCache();
   }
 });

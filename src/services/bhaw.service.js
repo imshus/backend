@@ -145,6 +145,39 @@ const freshUntilOf = (snapshot, now) => {
   return Math.max(nextFetch + NEXT_FETCH_GRACE_MS, now + CACHE_TTL_MS);
 };
 
+/** Who hears of each new snapshot (the MCX scheduler stores it in Redis). */
+const snapshotListeners = new Set();
+
+/**
+ * What the board in hand is: its fetched_at, or the moment a snapshot
+ * without one was received. Null with no board.
+ */
+const snapshotStamp = () => {
+  if (!cache.rows) return null;
+  return cache.fetchedAt || `received:${cache.receivedAt}`;
+};
+
+/**
+ * Calls `listener(stamp)` each time a snapshot that is new (a fetched_at not
+ * held before) becomes the board: every 3 minutes off the stream, any hour of
+ * any day. The same snapshot sent again (a reconnect) is not new. Returns the
+ * function that stops it.
+ */
+const onSnapshot = (listener) => {
+  snapshotListeners.add(listener);
+  return () => snapshotListeners.delete(listener);
+};
+
+const announce = (stamp) => {
+  for (const listener of snapshotListeners) {
+    setImmediate(() => {
+      Promise.resolve()
+        .then(() => listener(stamp))
+        .catch((error) => console.warn('[Bhaw] A snapshot listener failed:', error.message));
+    });
+  }
+};
+
 /**
  * Makes a snapshot the board, unless an older one arrives after a newer.
  * Returns whether it did.
@@ -156,6 +189,7 @@ const store = (snapshot) => {
   if (!snapshot.rows.length) {
     console.warn(`[Bhaw] Every house on the 3-minute snapshot ${snapshot.fetchedAt || ''} is marked down; none is live until the next one.`);
   }
+  const isNew = !cache.rows || !snapshot.fetchedAt || snapshot.fetchedAt !== cache.fetchedAt;
   const now = Date.now();
   cache = {
     rows: snapshot.rows,
@@ -165,6 +199,7 @@ const store = (snapshot) => {
     nextFetchAt: snapshot.nextFetchAt,
     retryAfter: 0,
   };
+  if (isNew) announce(snapshotStamp());
   return true;
 };
 
@@ -579,8 +614,10 @@ module.exports = {
   houseMcxLines,
   majorityMcx,
   normalizePayload,
+  onSnapshot,
   prefetch,
   readSnapshot,
+  snapshotStamp,
   startKeepWarm,
   stopKeepWarm,
   __internal: {
