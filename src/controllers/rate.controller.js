@@ -105,6 +105,25 @@ const normalizeCarat = (value) => {
 
 // === GOLD RATES ===
 
+/**
+ * The saved karat row as the app shows it, with its computed rates. A save
+ * has already gone through when this runs, so a live-rate outage
+ * (RATES_UNAVAILABLE: no board MCX and no stored MCX) must not turn it into
+ * a failure: the saved row comes back as it is, with ratesUnavailable set.
+ */
+const savedGoldRateRow = async (req, savedRow) => {
+  try {
+    const live = await getLiveGoldRates(req.user.businessId, settingsScope(req.user));
+    const computed = Array.isArray(live?.karatRates)
+      ? live.karatRates.find((row) => row.carat === savedRow.carat)
+      : null;
+    return { data: computed || savedRow };
+  } catch (error) {
+    if (error?.code !== 'RATES_UNAVAILABLE') throw error;
+    return { data: savedRow, ratesUnavailable: true };
+  }
+};
+
 const updateGoldRate = async (req, res) => {
   try {
     const { carat, purity, increaseByAmount, increaseByType } = req.body;
@@ -135,12 +154,7 @@ const updateGoldRate = async (req, res) => {
     await redisService.invalidateGoldRatesCache(businessId.toString());
 
     // Return computed shape (with finalRate/mcxRate/cashRate/rtgsRate) expected by frontend
-    const live = await getLiveGoldRates(businessId, settingsScope(req.user));
-    const updatedComputed = Array.isArray(live?.karatRates)
-      ? live.karatRates.find((row) => row.carat === normalizedCarat)
-      : null;
-
-    res.status(200).json({ success: true, data: updatedComputed || goldRate });
+    res.status(200).json({ success: true, ...(await savedGoldRateRow(req, goldRate)) });
   } catch (error) {
     console.error('Update Gold Rate Error:', error);
     res.status(500).json({ success: false, message: error.message || 'Server Error' });
@@ -184,12 +198,7 @@ const updateGoldRateVisibility = async (req, res) => {
 
     await redisService.invalidateGoldRatesCache(businessId.toString());
 
-    const live = await getLiveGoldRates(businessId, settingsScope(req.user));
-    const updatedComputed = Array.isArray(live?.karatRates)
-      ? live.karatRates.find((row) => row.carat === updated.carat)
-      : null;
-
-    return res.status(200).json({ success: true, data: updatedComputed || updated });
+    return res.status(200).json({ success: true, ...(await savedGoldRateRow(req, updated)) });
   } catch (error) {
     console.error('Update Gold Rate Visibility Error:', error);
     return res.status(500).json({ success: false, message: error.message || 'Server Error' });

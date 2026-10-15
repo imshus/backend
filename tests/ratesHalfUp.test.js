@@ -6,7 +6,9 @@
  *     1,53,252.50 is 1,53,253 (it was kept unrounded), and 1,20,125 at 91.6%
  *     (1,10,034.50) is 1,10,035 (the float product rounded down);
  *   - with no board MCX and no stored MCX there is no rate at all
- *     (RATES_UNAVAILABLE), where it used to be worked out on Rs 1,60,000.
+ *     (RATES_UNAVAILABLE), where it used to be worked out on Rs 1,60,000;
+ *     the supreme rates show no MCX rather than Rs 1,60,000, and a karat
+ *     row saved meanwhile is still a successful save.
  * The real mcx.service and rateCalculation.service; the feed, Redis and the
  * database are stood in for.
  */
@@ -33,6 +35,9 @@ const state = {
     { carat: '9Kt', purity: 39 },
   ],
   cacheWrites: 0,
+  supreme: null,
+  supremeCacheWrites: [],
+  savedGoldRows: [],
 };
 
 const stub = (request, exports) => {
@@ -50,6 +55,8 @@ stub('./redis.service', {
   getGoldRatesGeneration: async () => 0,
   bumpGoldRatesGeneration: async () => {},
   invalidateGoldRatesCache: async () => {},
+  invalidateAllGoldRatesCache: async () => {},
+  setSupremeCache: async (data) => { state.supremeCacheWrites.push(data); },
 });
 stub('./bhaw.service', {
   SOURCES: { JMD_PATIL: 'jmd_patil', MEGA_BULLION: 'mega_bullion' },
@@ -63,8 +70,20 @@ stub('../models/goldTaxSetting.model', { findOne: async (query) => (query.userId
 function GoldRateStub(doc) { Object.assign(this, doc); }
 GoldRateStub.prototype.save = async function save() { return this; };
 GoldRateStub.find = async () => state.karatRows.map((row) => ({ ...row, increaseByAmount: 0 }));
+GoldRateStub.findOneAndUpdate = async (query, update) => {
+  const saved = new GoldRateStub({ businessId: query.businessId, userId: query.userId, ...update.$set });
+  state.savedGoldRows.push(saved);
+  return saved;
+};
+GoldRateStub.findOne = async (query) => new GoldRateStub({ ...query, purity: 91.6, isHidden: false });
 stub('../models/goldRate.model', GoldRateStub);
-stub('../models/supremeChange.model', { findOne: () => ({ sort: async () => null }) });
+stub('../models/supremeChange.model', {
+  findOne: () => ({ sort: async () => state.supreme }),
+  findOneAndUpdate: async (query, update) => {
+    state.supreme = { ...(state.supreme || {}), ...update.$set };
+    return state.supreme;
+  },
+});
 stub('../models/dashboardMetrics.model', { findOne: async () => null });
 stub('../models/bullionSource.model', { findOne: async () => null });
 
@@ -81,8 +100,18 @@ const reset = (overrides = {}) => {
     bhaw: { cashBhaw: 900, rtgsBhaw: 1100, name: 'JMD Patil' },
     tax: null,
     cacheWrites: 0,
+    supreme: null,
+    supremeCacheWrites: [],
+    savedGoldRows: [],
   }, overrides);
 };
+
+const responder = () => ({
+  statusCode: null,
+  body: null,
+  status(code) { this.statusCode = code; return this; },
+  json(payload) { this.body = payload; return this; },
+});
 
 const quietly = async (fn) => {
   const { warn, error } = console;
@@ -170,4 +199,70 @@ test('#7 either MCX is enough: the board line with no stored MCX, or the stored 
   reset({ mcx: 149000, houseMcx: null });
   rates = await getLiveGoldRates(BIZ);
   assert.equal(rates.taxSettings.rtgsFinalRate, 150100);
+});
+
+// ── Follow-ups: the supreme rates and karat-row saves during an outage ────
+
+test('the supreme rates show no MCX when none is stored, never Rs 1,60,000 as if it were live', async () => {
+  const settingsController = require(path.join(CONTROLLERS, 'settings.controller.js'));
+  const SUPER = { businessId: BIZ, role: 'SUPER', userId: 'u-super' };
+
+  reset({ mcx: null, supreme: { rtgsChange: 1100, cashChange: 900 } });
+  let res = responder();
+  await quietly(() => settingsController.getSupremeRates({ user: SUPER }, res));
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.data, {
+    mcx: null, rtgsChange: 1100, cashChange: 900, supremeRtgs: null, supremeCash: null, ratesUnavailable: true,
+  });
+
+  // Saving the changes still caches them (pricing reads them there), with
+  // no MCX and no rate made up from one.
+  res = responder();
+  await quietly(() => settingsController.updateSupremeRates({ user: SUPER, body: { rtgsChange: 1200, cashChange: 950 } }, res));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.data.mcx, null);
+  assert.equal(res.body.data.supremeRtgs, null);
+  assert.equal(res.body.data.rtgsChange, 1200);
+  assert.deepEqual(state.supremeCacheWrites, [{ rtgsChange: 1200, cashChange: 950 }]);
+
+  // With a stored MCX, the rates are worked out on it as before.
+  reset({ mcx: 152340, supreme: { rtgsChange: 1100, cashChange: 900 } });
+  res = responder();
+  await settingsController.getSupremeRates({ user: SUPER }, res);
+  assert.deepEqual(res.body.data, {
+    mcx: 152340, rtgsChange: 1100, cashChange: 900, supremeRtgs: 153440, supremeCash: 153240,
+  });
+  res = responder();
+  await settingsController.updateSupremeRates({ user: SUPER, body: { rtgsChange: 1000 } }, res);
+  assert.deepEqual(state.supremeCacheWrites.at(-1), {
+    mcx: 152340, supremeRtgs: 153340, supremeCash: 153240, rtgsChange: 1000, cashChange: 900,
+  });
+});
+
+test('a karat row saved while rates are unavailable answers 200 with the saved row, not a 500', async () => {
+  reset({ mcx: null, houseMcx: null, bhaw: null });
+  const OWNER = { businessId: BIZ, role: 'OWNER', userId: 'u1' };
+
+  let res = responder();
+  await quietly(() => rateController.updateGoldRate({ user: OWNER, body: { carat: '22KT', purity: 91.6 } }, res));
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(res.body.success, true);
+  assert.equal(res.body.ratesUnavailable, true);
+  assert.equal(res.body.data.carat, '22Kt');
+  assert.equal(res.body.data.purity, 91.6);
+  assert.equal(state.savedGoldRows.length, 1, 'the save went through');
+
+  res = responder();
+  await quietly(() => rateController.updateGoldRateVisibility({ user: OWNER, body: { carat: '22KT', hidden: true } }, res));
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(res.body.ratesUnavailable, true);
+  assert.equal(res.body.data.isHidden, true);
+
+  // With live rates the computed row comes back, as before.
+  reset();
+  res = responder();
+  await quietly(() => rateController.updateGoldRate({ user: OWNER, body: { carat: '22KT', purity: 91.6 } }, res));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ratesUnavailable, undefined);
+  assert.equal(typeof res.body.data.rtgsRate, 'number');
 });

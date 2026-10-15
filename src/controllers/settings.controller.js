@@ -476,21 +476,28 @@ const updateBullionSources = async (req, res) => {
   }
 };
 
+/**
+ * The supreme rates as they stand: the stored MCX (24K per 10 g) and that
+ * plus each change. With no stored MCX there is no MCX to show and no rate
+ * built on it: mcx, supremeRtgs and supremeCash are null and
+ * ratesUnavailable is true. It used to show Rs 1,60,000 as if it were live.
+ */
+const supremeFigures = (mcx, rtgsChange, cashChange) => (mcx === null
+  ? { mcx: null, rtgsChange, cashChange, supremeRtgs: null, supremeCash: null, ratesUnavailable: true }
+  : { mcx, rtgsChange, cashChange, supremeRtgs: mcx + rtgsChange, supremeCash: mcx + cashChange });
+
 const getSupremeRates = async (req, res) => {
   try {
-    const redisService = require('../services/redis.service');
+    const mcxService = require('../services/mcx.service');
     const SupremeChange = require('../models/supremeChange.model');
 
-    const mcx = await redisService.getMcxCache() || 160000;
+    const mcx = await mcxService.getLiveMcxRate24K();
     const supreme = await SupremeChange.findOne().sort({ updatedAt: -1, createdAt: -1 });
 
     const rtgsChange = supreme && typeof supreme.rtgsChange === 'number' ? supreme.rtgsChange : 0;
     const cashChange = supreme && typeof supreme.cashChange === 'number' ? supreme.cashChange : 0;
 
-    const supremeRtgs = mcx + rtgsChange;
-    const supremeCash = mcx + cashChange;
-
-    res.status(200).json({ success: true, data: { mcx, rtgsChange, cashChange, supremeRtgs, supremeCash } });
+    res.status(200).json({ success: true, data: supremeFigures(mcx, rtgsChange, cashChange) });
   } catch (error) {
     console.error('Get Supreme Rates Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
@@ -527,16 +534,29 @@ const updateSupremeRates = async (req, res) => {
       { new: true, upsert: true, sort: { updatedAt: -1, createdAt: -1 } }
     );
 
-    const mcx = await redisService.getMcxCache() || 160000;
-    const supremeRtgs = mcx + (supreme.rtgsChange || 0);
-    const supremeCash = mcx + (supreme.cashChange || 0);
+    const mcxService = require('../services/mcx.service');
+    const mcx = await mcxService.getLiveMcxRate24K();
+    const figures = supremeFigures(mcx, supreme.rtgsChange || 0, supreme.cashChange || 0);
 
-    await redisService.setSupremeCache({ mcx, supremeRtgs, supremeCash, rtgsChange: supreme.rtgsChange, cashChange: supreme.cashChange });
+    // The changes are what pricing reads from this cache, so they are cached
+    // either way; the MCX and the rates built on it only when there is one.
+    await redisService.setSupremeCache(mcx === null
+      ? { rtgsChange: supreme.rtgsChange, cashChange: supreme.cashChange }
+      : {
+        mcx,
+        supremeRtgs: figures.supremeRtgs,
+        supremeCash: figures.supremeCash,
+        rtgsChange: supreme.rtgsChange,
+        cashChange: supreme.cashChange,
+      });
 
     // Invalidate per-business computed caches so owners see updated rates
     await redisService.invalidateAllGoldRatesCache();
 
-    res.status(200).json({ success: true, data: { mcx, rtgsChange: supreme.rtgsChange, cashChange: supreme.cashChange, supremeRtgs, supremeCash } });
+    res.status(200).json({
+      success: true,
+      data: { ...figures, rtgsChange: supreme.rtgsChange, cashChange: supreme.cashChange },
+    });
   } catch (error) {
     console.error('Update Supreme Rates Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
