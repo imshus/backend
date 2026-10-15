@@ -1031,6 +1031,11 @@ ABSOLUTE RULES
    80. Stone weights under 1 ct are often printed with a leading dot and no
    zero; never turn that dot into a digit.
 
+3c. A STONE WEIGHT'S UNIT.
+   Put the unit printed with each stone's weight into that stone's "unit":
+   "g" for grams (g, gm, gms, grm), "ct" for carats (ct, cts, crt). Leave it
+   "" when no unit is printed. Never convert the weight itself.
+
 4. NEVER convert purity values.
    Examples:
    - Do NOT convert 750 → 18K
@@ -1258,6 +1263,8 @@ Do not wrap fields in objects.
 
         "weight": ["", 0],
 
+        "unit": ["", 0],
+
         "pieces": ["", 0],
 
         "rate": ["", 0],
@@ -1275,6 +1282,8 @@ Do not wrap fields in objects.
         "type": ["", 0],
 
         "weight": ["", 0],
+
+        "unit": ["", 0],
 
         "pieces": ["", 0],
 

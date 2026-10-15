@@ -25,6 +25,11 @@ const calculateMRP = async (req, res, next) => {
       if (error?.code === 'EMPLOYEE_NOT_FOUND') {
         return res.status(403).json({ success: false, message: 'Unauthorized' });
       }
+      // A body that cannot be priced (400, naming the field) and no live
+      // rate to price on (503): said plainly, never a made-up price.
+      if (error?.code === 'INVALID_PRICING_INPUT' || error?.code === 'RATES_UNAVAILABLE') {
+        return res.status(error.statusCode).json({ success: false, error: error.code, message: error.message });
+      }
       throw error;
     }
     const { resultData, resolvedScanId, scan, snapshot, resolvedMode } = computed;

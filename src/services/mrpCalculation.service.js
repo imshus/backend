@@ -11,8 +11,21 @@ const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const Employee = require('../models/employee.model');
 const pyCalcEngine = require('./pyCalcEngine');
 const { assertScanAccess } = require('../utils/scanAccess');
+const { roundHalfUp } = require('../utils/money');
 const { settingsScope, findScopedSetting, findScopedRows } = require('./userScope.service');
-const { findDiamondRateMatch, normalizeKey } = require('./diamondRateLookup.service');
+const { findDiamondRateMatch } = require('./diamondRateLookup.service');
+const { LABOUR_UNIT_PERCENT } = require('./pricingMath');
+const {
+  ratesUnavailable,
+  readFigure,
+  resolveKaratFromReading,
+  stoneUnitOf,
+  stoneUnitInText,
+  findItemOnTag,
+  findColorstoneRateMatch,
+  parseTagLabour,
+  validateCalculationInput,
+} = require('./pricingInputs');
 
 /**
  * The MRP calculation, shared by the calculate endpoint the review card
@@ -100,6 +113,7 @@ function prefetchPricingReads(user) {
       ? Employee.findById(user.userId).select('permissions').exec()
       : Promise.resolve(null),
     wastageRows: findScopedRows(WastageCode, scope),
+    itemRows: findScopedRows(ItemCode, scope),
     liveRatesWarm: rateCalculationService.getLiveGoldRates(user?.businessId, scope),
   };
   // Nothing may count as unhandled while the model is still answering.
@@ -107,32 +121,104 @@ function prefetchPricingReads(user) {
   return reads;
 }
 
+/** Blank and repeated (ignoring case) identifiers dropped, the order kept. */
+function distinctIdentifiers(values) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of values) {
+    const value = String(raw ?? '').trim();
+    if (!value) continue;
+    const key = value.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+/**
+ * The labour a price charges, first that applies:
+ *   1. the figure the request carries: rupees per gram or per 10 g, or a
+ *      percent of the gold value ("12%", or the unit 'Percent');
+ *   2. the matched item's own labour in Masters -> Item Code, in rupees per
+ *      gram;
+ *   3. the shop's labour charge: an AMOUNT per its own unit, or a PERCENTAGE
+ *      of the gold value.
+ * The weight a per-gram charge runs on is the request's when it names one,
+ * else the one the shop's labour charge was saved against.
+ */
+function resolveLabour({ manualLabour, labourWeightBasis, itemRow, globalLabour }) {
+  const basis = labourWeightBasis || (globalLabour?.weightBasis === 'gross' ? 'gross' : 'net');
+  if (manualLabour) {
+    return {
+      ratePerUnit: manualLabour.amount,
+      unit: manualLabour.unit,
+      basis,
+      chargeType: manualLabour.unit === LABOUR_UNIT_PERCENT ? 'PERCENTAGE_MANUAL' : 'AMOUNT_MANUAL',
+    };
+  }
+  const itemLabour = itemRow?.labour;
+  if (typeof itemLabour === 'number' && Number.isFinite(itemLabour) && itemLabour >= 0) {
+    return { ratePerUnit: itemLabour, unit: 'Per Gram', basis, chargeType: 'AMOUNT_ITEM' };
+  }
+  if (globalLabour) {
+    const value = Math.max(0, toNumber(globalLabour.value));
+    if (globalLabour.chargeType === 'PERCENTAGE') {
+      return { ratePerUnit: value, unit: LABOUR_UNIT_PERCENT, basis, chargeType: 'PERCENTAGE_GLOBAL' };
+    }
+    return {
+      ratePerUnit: value,
+      unit: globalLabour.rupeesUnit === 'Per 10 Gram' ? 'Per 10 Gram' : 'Per Gram',
+      basis,
+      chargeType: `${globalLabour.chargeType || 'AMOUNT'}_GLOBAL`,
+    };
+  }
+  return { ratePerUnit: 0, unit: 'Per Gram', basis, chargeType: 'NONE' };
+}
+
+/**
+ * The 24K rate per 10 g a price is worked on, in the mode chosen. With no
+ * live rate there is no price: RATES_UNAVAILABLE, never a gold line at Rs 0.
+ */
+function selectGoldRatePer10g(liveRatesData, mode) {
+  const taxSettings = liveRatesData?.taxSettings || {};
+  let rate = mode === 'cash' ? taxSettings.cashFinalRate : taxSettings.rtgsFinalRate;
+
+  // A cached entry from a build that did not store the final rates.
+  if ((rate === undefined || rate === null) && liveRatesData?.mcxLiveRate) {
+    const mcxFinalRate =
+      taxSettings.mcxFinalRate ??
+      liveRatesData.mcxFinalRate ??
+      (liveRatesData.mcxLiveRate + (taxSettings.mcxChangeBy || 0));
+    const supremeChange =
+      mode === 'cash'
+        ? (liveRatesData.supremeChanges?.cashChange || 0)
+        : (liveRatesData.supremeChanges?.rtgsChange || 0);
+    const businessChange =
+      mode === 'cash' ? (taxSettings.cashChangeBy || 0) : (taxSettings.rtgsChangeBy || 0);
+    rate = roundHalfUp(mcxFinalRate + supremeChange + businessChange);
+  }
+
+  if (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) {
+    throw ratesUnavailable(`no ${mode === 'cash' ? 'cash' : 'RTGS'} gold rate`);
+  }
+  return rate;
+}
+
 /**
  * Computes the MRP for one set of inputs. `scan` may be passed in when the
  * caller already holds the session (the analysis does), which skips the
- * lookup. `prefetched` is what prefetchPricingReads started. Throws an error
- * with statusCode 403 for an employee without a roster record.
+ * lookup. `prefetched` is what prefetchPricingReads started. Throws:
+ *   INVALID_PRICING_INPUT (400) for a body that cannot be priced, before
+ *     anything is read;
+ *   EMPLOYEE_NOT_FOUND (403) for an employee without a roster record;
+ *   RATES_UNAVAILABLE (503) when there is no live gold rate to price on.
  */
 async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan = null, prefetched = null }) {
-  const {
-    jewelleryType,
-    netWt,
-    purityKarat,
-    customPurityPercent,
-    diamonds,
-    colorstones,
-    labourChargeAmount,
-    labourChargeUnit,
-    labourWeightBasis,
-    grossWt,
-    otherCharges,
-    calculationMode,
-    itemCode,
-    wastagePercent,
-    tagIdentifiers,
-  } = input || {};
+  const request = validateCalculationInput(input);
 
   const businessId = user.businessId;
+  const scope = settingsScope(user);
 
   // These reads are independent. Running them together keeps the preview
   // calculation bounded by the slowest lookup instead of their combined
@@ -141,92 +227,49 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     || (user?.role === 'EMP'
       ? Employee.findById(user.userId).select('permissions')
       : Promise.resolve(null));
-  // The wastage a shop charges belongs to the item, not to the scan: it is
-  // kept against the item code in Masters and matched here by the code the
-  // tag printed. A figure sent with the request overrides it, for a scan
-  // where this piece is an exception.
-  const itemCodePromise = itemCode
-    ? findScopedRows(ItemCode, settingsScope(user), { code: String(itemCode).trim() })
+  // Every identifier on the tag, the item number first, then each number the
+  // reader set aside. The item they name in Masters -> Item Code carries the
+  // shop's wastage and labour for it; a code in Masters -> Wastage is the
+  // scan's wastage code.
+  const identifiers = distinctIdentifiers([request.itemCode, ...request.tagIdentifiers]);
+  const itemRowsPromise = identifiers.length
+    ? prefetched?.itemRows || findScopedRows(ItemCode, scope)
     : Promise.resolve([]);
-  // Every identifier on the tag looked up in Masters -> Wastage (the item
-  // number first, then each number the reader set aside): a code there is
-  // the scan's wastage code, and its percent is the wastage charged.
-  const wastageCandidates = [itemCode, ...(Array.isArray(tagIdentifiers) ? tagIdentifiers : [])]
-    .map((value) => String(value ?? '').trim())
-    .filter(Boolean);
-  const wastageCodePromise = wastageCandidates.length
-    ? prefetched?.wastageRows || findScopedRows(WastageCode, settingsScope(user))
+  const wastageRowsPromise = identifiers.length
+    ? prefetched?.wastageRows || findScopedRows(WastageCode, scope)
     : Promise.resolve([]);
   // Once the warm-up has settled, this is a cache hit that still checks the
   // board has not moved since.
   const liveRatesPromise = prefetched?.liveRatesWarm
     ? prefetched.liveRatesWarm
       .catch(() => {})
-      .then(() => rateCalculationService.getLiveGoldRates(businessId, settingsScope(user)))
-    : rateCalculationService.getLiveGoldRates(businessId, settingsScope(user));
+      .then(() => rateCalculationService.getLiveGoldRates(businessId, scope))
+    : rateCalculationService.getLiveGoldRates(businessId, scope);
   const [liveRatesData, globalLabourDoc, scanResolution, employee, itemRows, wastageRows] = await Promise.all([
     liveRatesPromise,
     // The calculating account's own labour charge when saved, else the
     // shop's; a stored NONE row means explicitly no labour charge.
-    prefetched?.labour || findScopedSetting(LabourRate, settingsScope(user)),
+    prefetched?.labour || findScopedSetting(LabourRate, scope),
     knownScan
       ? Promise.resolve({ resolvedScanId: scanId, scan: knownScan })
       : resolveScanForCalculation(scanId, sessionContext),
     employeePromise,
-    itemCodePromise,
-    wastageCodePromise,
+    itemRowsPromise,
+    wastageRowsPromise,
   ]);
   const globalLabour = globalLabourDoc && globalLabourDoc.chargeType !== 'NONE' ? globalLabourDoc : null;
   const { resolvedScanId, scan } = scanResolution;
 
-  // Find the karat purity from the database rows (normalize '14K' vs '14Kt')
-  const normalizedKarat = purityKarat ? purityKarat.replace(/t$/i, '').toUpperCase() : '';
-  const karatData = liveRatesData.karatRates.find(r => r.carat.replace(/t$/i, '').toUpperCase() === normalizedKarat);
-  const karatPurityPercent = karatData ? karatData.purity : 0;
-
-  // If DB lookup failed, the purity falls back to one derived from the karat
-  // value (pricingMath: karat/24 * 100); this is that karat as a number.
-  let karatNumber = 0;
-  if (purityKarat) {
-    const numericKarat = Number(String(purityKarat).replace(/[^0-9.]/g, ''));
-    if (Number.isFinite(numericKarat) && numericKarat > 0) {
-      karatNumber = numericKarat;
-    }
-  }
-
-  const labourCharge = globalLabour
-    ? { type: globalLabour.chargeType, value: globalLabour.value, rupeesUnit: globalLabour.rupeesUnit }
+  // The karat's purity in the shop's gold rows ('22Kt' is 22K); a karat with
+  // no row (23K, 21K, 15K, 10K) is priced at karat/24 by pricingMath.
+  const karatRows = Array.isArray(liveRatesData?.karatRates) ? liveRatesData.karatRates : [];
+  const karatData = request.purityKarat
+    ? karatRows.find((row) => String(row?.carat ?? '').replace(/t$/i, '').toUpperCase() === request.purityKarat)
     : null;
+  const karatPurityPercent = karatData ? toNumber(karatData.purity) : 0;
+  const karatNumber = request.purityKarat ? Number(request.purityKarat.slice(0, -1)) : 0;
 
-  const hasCustomPurityPercent =
-    customPurityPercent !== undefined &&
-    customPurityPercent !== null &&
-    String(customPurityPercent).trim() !== '';
-
-  // Stone rows as numbers; pricingMath prices them line by line.
-  const diamondRows = Array.isArray(diamonds)
-    ? diamonds.map((dia) => ({
-        weight: toNumber(dia.weight),
-        rate: toNumber(dia.rate),
-        discountPercent: toNumber(dia.discountPercent),
-      }))
-    : [];
-  const colorstoneRows = Array.isArray(colorstones)
-    ? colorstones.map((cs) => ({ weight: toNumber(cs.weight), rate: toNumber(cs.rate) }))
-    : [];
-
-  const numericNetWt = toNumber(netWt);
-  const numericGrossWt = toNumber(grossWt);
-
-  const hasManualLabourRate =
-    labourChargeAmount !== undefined && labourChargeAmount !== null && String(labourChargeAmount).trim() !== '';
-  const labourRatePerUnit = hasManualLabourRate
-    ? toNumber(labourChargeAmount)
-    : toNumber(labourCharge?.value);
-  const resolvedLabourUnit = labourChargeUnit || labourCharge?.rupeesUnit || 'Per Gram';
-  const resolvedLabourWeightBasis = labourWeightBasis === 'gross' ? 'gross' : 'net';
-
-  let resolvedMode = calculationMode || scan?.calculationMode || 'rtgs';
+  let resolvedMode = request.calculationMode || scan?.calculationMode || 'rtgs';
 
   if (user?.role === 'EMP') {
     if (!employee) {
@@ -252,74 +295,61 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     resolvedMode = resolvedMode === 'cash' ? 'cash' : 'rtgs';
   }
 
-  // Gold amount
-  let baseGoldRatePer10g = resolvedMode === 'cash'
-    ? liveRatesData.taxSettings.cashFinalRate
-    : liveRatesData.taxSettings.rtgsFinalRate;
+  const goldRatePer10g = selectGoldRatePer10g(liveRatesData, resolvedMode);
 
-  // Fallback if cache is old and doesn't contain pre-calculated final rates
-  if (baseGoldRatePer10g === undefined && liveRatesData.mcxLiveRate) {
-    const mcxFinalRate =
-      liveRatesData.taxSettings?.mcxFinalRate ??
-      liveRatesData.mcxFinalRate ??
-      (liveRatesData.mcxLiveRate + (liveRatesData.taxSettings?.mcxChangeBy || 0));
-
-    const supremeChange =
-      resolvedMode === 'cash'
-        ? (liveRatesData.supremeChanges?.cashChange || 0)
-        : (liveRatesData.supremeChanges?.rtgsChange || 0);
-    const businessChange =
-      resolvedMode === 'cash'
-        ? (liveRatesData.taxSettings?.cashChangeBy || 0)
-        : (liveRatesData.taxSettings?.rtgsChangeBy || 0);
-
-    baseGoldRatePer10g = mcxFinalRate + supremeChange + businessChange;
-  }
-
-  const otherChargesAmount = toNumber(otherCharges);
-
-  const itemRow = Array.isArray(itemRows) && itemRows.length > 0 ? itemRows[0] : null;
+  // The item the tag's number names: GR10286 is item GR, the code followed
+  // by the piece's running number (the app's rule). The identifier that
+  // named it is tried first for a wastage code too, as the app sends it.
+  const itemMatch = findItemOnTag(identifiers, itemRows);
+  const itemRow = itemMatch?.row || null;
+  const wastageCandidates = itemMatch
+    ? [itemMatch.identifier, ...identifiers.filter((value) => value !== itemMatch.identifier)]
+    : identifiers;
   const wastageRow = findWastageRow(wastageRows, wastageCandidates);
-  const wastage = resolveWastage({ manualPercent: wastagePercent, wastageRow, itemRow });
+  const wastage = resolveWastage({ manualPercent: request.wastagePercent, wastageRow, itemRow });
 
-  const labourChargeType = hasManualLabourRate
-    ? 'AMOUNT_MANUAL'
-    : labourCharge
-      ? `${labourCharge.type || 'AMOUNT'}_GLOBAL`
-      : 'NONE';
+  const labour = resolveLabour({
+    manualLabour: request.manualLabour,
+    labourWeightBasis: request.labourWeightBasis,
+    itemRow,
+    globalLabour,
+  });
 
   // The arithmetic itself: pricingMath, in the Python worker when
   // CALC_ENGINE=python and it answers in time, else in Node.
   const priced = await pyCalcEngine.computePricing({
-    netWt: numericNetWt,
-    grossWt: numericGrossWt,
-    customPurityPercent: hasCustomPurityPercent ? toNumber(customPurityPercent) : null,
+    netWt: request.netWt,
+    grossWt: request.grossWt,
+    customPurityPercent: request.customPurityPercent,
     karatPurityPercent,
     karatNumber,
-    goldRatePer10g: baseGoldRatePer10g,
-    diamonds: diamondRows,
-    colorstones: colorstoneRows,
-    labourRatePerUnit,
-    labourUnit: resolvedLabourUnit,
-    labourWeightBasis: resolvedLabourWeightBasis,
+    goldRatePer10g,
+    diamonds: request.diamonds,
+    colorstones: request.colorstones,
+    labourRatePerUnit: labour.ratePerUnit,
+    labourUnit: labour.unit,
+    labourWeightBasis: labour.basis,
     wastagePercent: wastage.percent,
-    otherCharges: otherChargesAmount,
-    labourChargeType,
+    otherCharges: request.otherCharges,
+    labourChargeType: labour.chargeType,
     wastageCode: wastage.code,
   });
-  const { breakdown, finalMRP, effectivePurityPercent } = priced;
+  const { breakdown, finalMRP, finalMRPRounded, effectivePurityPercent } = priced;
 
   console.info('[MRP_CALC_AUDIT]', JSON.stringify({
     scanId: resolvedScanId || scanId,
-    selectedKarat: purityKarat || '',
+    selectedKarat: request.purityKarat,
     effectivePurityPercent,
-    netWeight: numericNetWt,
+    netWeight: breakdown.netWeightUsed,
+    netWeightEstimated: breakdown.netWeightEstimated,
     pureWeight: breakdown.pureWeight,
     selected24kGoldRatePerGram: breakdown.goldRateApplied,
     purityAdjustedGoldRatePerGram: priced.purityAdjustedGoldRatePerGram,
     goldAmount: breakdown.goldAmount,
     diamondLineItems: priced.diamondLineItems,
     colorstoneLineItems: priced.colorstoneLineItems,
+    itemCode: itemRow ? String(itemRow.code || '') : '',
+    labourChargeType: breakdown.labourChargeType,
     labourAmount: breakdown.labourAmount,
     wastagePercent: breakdown.wastagePercent,
     wastageWeightGrams: breakdown.wastageWeightGrams,
@@ -327,19 +357,22 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     otherChargesAmount: breakdown.otherCharges,
     subtotal: breakdown.subtotal,
     finalMRP,
+    finalMRPRounded,
   }));
 
-  const resultData = { breakdown, finalMRP };
+  // finalMRP as worked out; finalMRPRounded is the price to the rupee,
+  // commercial half-up, the figure to show and bill.
+  const resultData = { breakdown, finalMRP, finalMRPRounded };
 
   const snapshot = {
-    jewelleryType,
-    netWt: numericNetWt,
-    grossWt: numericGrossWt,
-    purityKarat,
-    customPurityPercent: hasCustomPurityPercent ? effectivePurityPercent : null,
-    diamonds,
-    colorstones,
-    otherCharges: otherChargesAmount,
+    jewelleryType: request.jewelleryType,
+    netWt: request.netWt,
+    grossWt: request.grossWt,
+    purityKarat: request.purityKarat,
+    customPurityPercent: request.customPurityPercent !== null ? effectivePurityPercent : null,
+    diamonds: request.diamonds,
+    colorstones: request.colorstones,
+    otherCharges: request.otherCharges,
     calculationMode: resolvedMode,
   };
 
@@ -347,50 +380,6 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
 }
 
 // ── Deriving inputs from a fresh reading ──────────────────────────────
-
-/** Fineness standards (per mille) and the karat each stands for. */
-const FINENESS_STANDARDS = [
-  [999, '24K'], [958, '23K'], [916, '22K'], [875, '21K'], [833, '20K'],
-  [750, '18K'], [625, '15K'], [585, '14K'], [417, '10K'], [375, '9K'],
-];
-
-/** "18K", "18 KT", "18k" → "18K"; anything else → "". */
-function normalizeKarat(value) {
-  const match = String(value ?? '').match(/(\d{1,2})\s*k/i);
-  return match ? `${Number(match[1])}K` : '';
-}
-
-/** "750", "75", "91.6" → the nearest standard karat, or "". */
-function karatFromFineness(value) {
-  const digits = String(value ?? '').replace(/[^0-9.]/g, '');
-  if (!digits) return '';
-  const parsed = Number.parseFloat(digits);
-  if (!Number.isFinite(parsed) || parsed <= 0) return '';
-  const perMille = parsed <= 100 ? parsed * 10 : parsed;
-  if (perMille < 300 || perMille > 1000) return '';
-  let closest = '';
-  let distance = Number.POSITIVE_INFINITY;
-  for (const [standard, karat] of FINENESS_STANDARDS) {
-    const gap = Math.abs(perMille - standard);
-    if (gap < distance) {
-      distance = gap;
-      closest = karat;
-    }
-  }
-  return closest;
-}
-
-/** The karat a reading implies, the way the app reads it; 14K when nothing does. */
-function resolveKaratFromReading(structuredData) {
-  const data = structuredData || {};
-  return (
-    normalizeKarat(data.karat) ||
-    normalizeKarat(data.purity) ||
-    karatFromFineness(data.karat) ||
-    karatFromFineness(data.purity) ||
-    '14K'
-  );
-}
 
 function parseStoneList(raw) {
   if (raw == null) return [];
@@ -411,12 +400,33 @@ const stoneField = (stone, key) => {
   return String(value ?? '').trim();
 };
 
+const plainRows = (rows) =>
+  (Array.isArray(rows) ? rows : []).map((row) => (typeof row?.toObject === 'function' ? row.toObject() : row));
+
+/** A stone's weight off the tag and the unit it is in: the reader's unit, else one printed after the figure, else carats. */
+const stoneWeightOf = (stone) => {
+  const text = stoneField(stone, 'weight');
+  return {
+    weight: readFigure(text),
+    unit: stoneUnitOf(stoneField(stone, 'unit')) || stoneUnitInText(text) || 'ct',
+  };
+};
+
 /**
- * Builds the calculation input straight from a reading: weights and karat
- * from the tag, stone rates looked up in the account's own rate tables (or
- * the shop's), labour left to the shop's global charge, the mode from the
- * scan session. Mirrors what the app derives on its side for the first
- * price, so the two agree in the normal case.
+ * Builds the calculation input straight from a reading, the way the app
+ * builds its own request from the same reading (utils/pricingPrefetch.ts and
+ * the review card's set-up), so the first price and the card's agree:
+ *   - weights, rates and other charges are the first figure in each field;
+ *     a blank net weight stays 0 and pricingMath works it out from the
+ *     gross weight;
+ *   - the karat from the karat field, the purity (tunch) or a fineness;
+ *   - stone weights in their printed unit; rates from the account's own
+ *     tables (or the shop's), a stone's packet code first;
+ *   - labour the tag prints (on the net weight, as the app charges it);
+ *     otherwise computeMrp charges the item's labour or the shop's, on the
+ *     weight the shop's charge was saved against;
+ *   - the item code and every identifier on the tag, for the Masters item
+ *     and wastage code; the mode from the scan session.
  */
 async function deriveInputFromReading({ user, structuredData, scan, prefetched = null }) {
   const data = structuredData || {};
@@ -426,12 +436,13 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
     prefetched?.colorstoneRows || findScopedRows(ColorstoneRate, scope),
     prefetched?.taxSettings || findScopedSetting(GoldTaxSetting, scope),
   ]);
-  const diamondRowsPlain = diamondRows.map((row) => (typeof row.toObject === 'function' ? row.toObject() : row));
+  const diamondRowsPlain = plainRows(diamondRows);
+  const colorstoneRowsPlain = plainRows(colorstoneRows);
 
   const globalPacketCode = stoneField(data, 'packetCode');
   const diamonds = parseStoneList(data.diamonds)
     .map((stone) => {
-      const weight = toNumber(stoneField(stone, 'weight'));
+      const { weight, unit } = stoneWeightOf(stone);
       if (weight <= 0) return null;
       const match = findDiamondRateMatch(diamondRowsPlain, {
         color: stoneField(stone, 'color'),
@@ -441,35 +452,53 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
       });
       return {
         weight,
-        rate: match ? toNumber(match.rate) : toNumber(stoneField(stone, 'rate')),
-        discountPercent: toNumber(stoneField(stone, 'discountPercent')),
+        rate: match ? readFigure(match.rate) : readFigure(stoneField(stone, 'rate')),
+        discountPercent: Math.min(100, readFigure(stoneField(stone, 'discountPercent'))),
+        unit,
       };
     })
     .filter(Boolean);
 
   const colorstones = parseStoneList(data.colorstones)
     .map((stone) => {
-      const weight = toNumber(stoneField(stone, 'weight'));
+      const { weight, unit } = stoneWeightOf(stone);
       if (weight <= 0) return null;
-      const colorKey = normalizeKey(stoneField(stone, 'color'));
-      const clarityKey = normalizeKey(stoneField(stone, 'clarity'));
-      const match = colorstoneRows.find(
-        (row) => normalizeKey(row.color) === colorKey && normalizeKey(row.clarity) === clarityKey,
-      );
-      return { weight, rate: match ? toNumber(match.rate) : toNumber(stoneField(stone, 'rate')) };
+      const match = findColorstoneRateMatch(colorstoneRowsPlain, {
+        packetCode: stoneField(stone, 'packetCode') || globalPacketCode,
+        color: stoneField(stone, 'color'),
+        clarity: stoneField(stone, 'clarity'),
+      });
+      return { weight, rate: match ? readFigure(match.rate) : readFigure(stoneField(stone, 'rate')), unit };
     })
     .filter(Boolean);
 
+  const tagLabour = parseTagLabour(stoneField(data, 'labour'));
+  let labourFields = {};
+  if (tagLabour?.unit === LABOUR_UNIT_PERCENT) {
+    labourFields = { labourChargeAmount: String(tagLabour.amount), labourChargeUnit: LABOUR_UNIT_PERCENT };
+  } else if (tagLabour) {
+    labourFields = {
+      labourChargeAmount: String(tagLabour.amount),
+      labourChargeUnit: tagLabour.unit,
+      labourWeightBasis: 'net',
+    };
+  }
+
+  const serialNumber = stoneField(data, 'serialNumber');
+
   return {
-    jewelleryType: scan?.jewelleryType || data.jewelleryType || '',
-    netWt: toNumber(stoneField(data, 'netWeight')),
-    grossWt: toNumber(stoneField(data, 'grossWeight')),
+    jewelleryType: scan?.jewelleryType || stoneField(data, 'jewelleryType'),
+    netWt: readFigure(stoneField(data, 'netWeight')),
+    grossWt: readFigure(stoneField(data, 'grossWeight')),
     purityKarat: resolveKaratFromReading(data),
     diamonds,
     colorstones,
-    otherCharges: 0,
-    // So the price worked out with the reading finds a Masters -> Wastage
-    // code printed anywhere on the tag, as the app's own pricing does.
+    ...labourFields,
+    otherCharges: readFigure(stoneField(data, 'otherCharges')),
+    ...(serialNumber ? { itemCode: serialNumber } : {}),
+    // So the price worked out with the reading finds the Masters item and
+    // a Masters -> Wastage code printed anywhere on the tag, as the app's
+    // own pricing does.
     tagIdentifiers: tagIdentifiersOf({
       structuredData: data,
       unknownFields: scan?.analysisResult?.unknownFields,

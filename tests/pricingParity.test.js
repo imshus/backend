@@ -5,10 +5,12 @@
  * cases, and computeMrp's response is the same object whichever engine
  * priced it.
  *
- * pricingMath rounds nothing (no Math.round, no toFixed: the only rounding
- * on the way to a price is Math.round inside getLiveGoldRates, which stays in
- * Node and reaches both engines as the same number), so identity of plain
- * IEEE double arithmetic is what is held here.
+ * pricingMath rounds twice, both with src/utils/money.js roundHalfUp (the
+ * MRP to the rupee, an estimated net weight to the milligram), which the
+ * worker reproduces with the same six-place snap; everything else is plain
+ * IEEE double arithmetic, and identity is what is held here. The rates are
+ * rounded in getLiveGoldRates, which stays in Node and reaches both engines
+ * as the same number. One case in ten is an MRP of exactly x.50 on paper.
  *
  * Needs python with calc/requirements.txt; skipped, saying so, without it.
  */
@@ -20,7 +22,7 @@ const { spawnSync } = require('child_process');
 
 const { computePricing } = require('../src/services/pricingMath');
 const pyCalcEngine = require('../src/services/pyCalcEngine');
-const { seeded, realisticInputs } = require('./fixtures/pycalc/realisticInputs');
+const { seeded, realisticInputs, tieInputs } = require('./fixtures/pycalc/realisticInputs');
 
 const PYTHON_BIN = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
 const pythonCheck = spawnSync(PYTHON_BIN, ['-c', 'import numpy, pandas'], { encoding: 'utf8', windowsHide: true });
@@ -122,6 +124,29 @@ const EDGE_CASES = {
   },
   'tiny subnormal figures': { ...EDGE_BASE, netWt: 5e-324, otherCharges: 5e-324, goldRatePer10g: 3 },
   'unicode codes pass through': { ...EDGE_BASE, wastageCode: 'वेस्ट-८', labourChargeType: 'AMOUNT_GLOBAL' },
+  'percent labour is a share of the gold amount': {
+    ...EDGE_BASE, labourUnit: 'Percent', labourRatePerUnit: 8, labourChargeType: 'PERCENTAGE_GLOBAL',
+  },
+  'stones in grams are five carats a gram': {
+    ...EDGE_BASE,
+    diamonds: [{ weight: 0.1, rate: 50000, discountPercent: 5, unit: 'g' }],
+    colorstones: [{ weight: 0.4, rate: 2000, unit: 'g' }, { weight: 0.4, rate: 2000, unit: 'ct' }, { weight: 0.4, rate: 2000, unit: null }],
+  },
+  'a blank net weight is gross less 0.2 g a carat': {
+    ...EDGE_BASE, netWt: 0, grossWt: 8.208, diamonds: [{ weight: 0.54, rate: 55000, discountPercent: 0 }],
+    wastagePercent: 8, labourUnit: 'Per Gram', labourRatePerUnit: 500,
+  },
+  'an estimated net weight is never below 0': {
+    ...EDGE_BASE, netWt: 0, grossWt: 0.05, colorstones: [{ weight: 1, rate: 100, unit: 'g' }],
+  },
+  'an estimated net weight is rounded half-up to the milligram': {
+    ...EDGE_BASE, netWt: 0, grossWt: 5.0005, colorstones: [],
+  },
+  'an MRP of exactly x.50 rounds up': {
+    ...EDGE_BASE, netWt: 24.575, grossWt: 0, karatPurityPercent: 75, goldRatePer10g: 132400,
+    labourUnit: 'Per Gram', labourRatePerUnit: 610,
+  },
+  'a negative MRP rounds away from zero': { ...EDGE_BASE, netWt: 0, grossWt: 0, otherCharges: -2.5 },
 };
 
 test('parity: edge cases give Node\'s figures whichever engine answers', { skip }, async () => {
@@ -142,9 +167,111 @@ test('parity: edge cases give Node\'s figures whichever engine answers', { skip 
     const zeros = (await engine.computePricingDetailed(EDGE_CASES['signed zeros survive the wire'])).result;
     assert.ok(Object.is(zeros.colorstoneLineItems[0].amount, -0));
     assert.ok(Object.is(zeros.colorstoneLineItems[1].amount, 0));
+    // The new branches, from Python, with the figures they must have.
+    const viaPython = async (name) => {
+      const answer = await engine.computePricingDetailed(EDGE_CASES[name]);
+      assert.equal(answer.source, 'python', name);
+      return answer.result;
+    };
+    const tie = await viaPython('an MRP of exactly x.50 rounds up');
+    assert.equal(tie.finalMRP, 259020.49999999997);
+    assert.equal(tie.finalMRPRounded, 259021);
+    assert.equal((await viaPython('a negative MRP rounds away from zero')).finalMRPRounded, -3);
+    const blankNet = (await viaPython('a blank net weight is gross less 0.2 g a carat')).breakdown;
+    assert.equal(blankNet.netWeightUsed, 8.1);
+    assert.equal(blankNet.netWeightEstimated, true);
+    assert.equal((await viaPython('an estimated net weight is never below 0')).breakdown.netWeightUsed, 0);
+    assert.equal((await viaPython('an estimated net weight is rounded half-up to the milligram')).breakdown.netWeightUsed, 5.001);
+    const grams = await viaPython('stones in grams are five carats a gram');
+    assert.deepEqual(grams.colorstoneLineItems.map((line) => line.amount), [4000, 800, 800]);
+    assert.equal(grams.diamondLineItems[0].weight, 0.5);
+    const percent = await viaPython('percent labour is a share of the gold amount');
+    assert.equal(percent.breakdown.labourAmount, percent.breakdown.goldAmount * 0.08);
   } finally {
     engine.stop();
   }
+});
+
+test('parity: MRPs of exactly x.50 round up to the same rupee in Python and Node, and correctly', { skip }, async () => {
+  const engine = pyCalcEngine.createPyCalcEngine({ engine: 'python', logger: quietLogger });
+  try {
+    assert.equal(await engine.warm(), true);
+    const rnd = seeded(5050);
+    const ties = Array.from({ length: 3000 }, () => tieInputs(rnd));
+    const answers = [];
+    for (let start = 0; start < ties.length; start += BATCH) {
+      const batch = ties.slice(start, start + BATCH);
+      answers.push(...await Promise.all(batch.map(({ inputs }) => engine.computePricingDetailed(inputs))));
+    }
+    let floatBelowTie = 0;
+    answers.forEach((answer, i) => {
+      assert.equal(answer.source, 'python');
+      assert.equal(pyCalcEngine.firstDifference(answer.result, computePricing(ties[i].inputs)), null);
+      assert.equal(answer.result.finalMRPRounded, ties[i].exact, JSON.stringify(ties[i].inputs));
+      if (Math.round(answer.result.finalMRP) !== ties[i].exact) floatBelowTie += 1;
+    });
+    // These are the cases Math.round (and Python's round / np.round, which
+    // also take ties to even) got wrong; half-up on the snapped figure gets
+    // every one right.
+    assert.ok(floatBelowTie > 100, `${floatBelowTie} ties sat below the half in a float`);
+  } finally {
+    engine.stop();
+  }
+});
+
+test('parity: the worker\'s round_half_up is money.js roundHalfUp, bit for bit; Python\'s round() is not', { skip }, () => {
+  const { roundHalfUp } = require('../src/utils/money');
+  const rnd = seeded(33);
+  const values = [];
+  const add = (value, decimals) => values.push([value, decimals]);
+  // MRPs of exactly x.50 as the float has them, and their neighbours.
+  for (let i = 0; i < 2000; i += 1) {
+    const mrp = computePricing(tieInputs(rnd).inputs).finalMRP;
+    add(mrp, 0);
+    add(mrp * (1 + Number.EPSILON), 0);
+    add(mrp * (1 - Number.EPSILON), 0);
+  }
+  // Karat rows (rate × purity) and rates with a paisa change, to the rupee.
+  for (let i = 0; i < 3000; i += 1) {
+    const rate = 80000 + Math.floor(rnd() * 120000);
+    add(rate * ([91.6, 85, 75, 58.5, 39][i % 5] / 100), 0);
+    add(rate + Math.floor(rnd() * 100) / 4, 0);
+  }
+  // Estimated net weights to the milligram, and paise.
+  for (let i = 0; i < 3000; i += 1) {
+    add(Math.floor(rnd() * 150000) / 1000 - 0.2 * (Math.floor(rnd() * 5000) / 1000), 3);
+    add(Math.floor(rnd() * 20000000) / 1000 + 0.0005, 3);
+    add((Math.floor(rnd() * 1e7) / 100) * 1.5, 2);
+  }
+  for (const [value, decimals] of [
+    [2048.055, 2], [23607.499999999996, 0], [259020.49999999997, 0], [5.0005, 3], [-2.5, 0], [-0.0004, 3],
+    [0.5, 0], [1.5, 0], [2.5, 0], [0, 0], [1e21, 0], [1.5e21, 0], [4503599627370495.5, 0], [5e-324, 3],
+  ]) add(value, decimals);
+
+  const script = [
+    'import json, sys',
+    `sys.path.insert(0, ${JSON.stringify(require('path').dirname(pyCalcEngine.WORKER_PATH))})`,
+    'import calc_worker as w',
+    'pairs = json.loads(sys.stdin.read())',
+    'out = [[w.round_half_up(v, d), float(round(v, d))] for v, d in pairs]',
+    'w.REPLIES.write(json.dumps(out).encode("utf-8"))',
+    'w.REPLIES.flush()',
+  ].join('\n');
+  const run = spawnSync(PYTHON_BIN, ['-c', script], {
+    input: JSON.stringify(values), encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const answers = JSON.parse(run.stdout);
+  let pythonRoundDiffers = 0;
+  answers.forEach(([worker, builtin], i) => {
+    const [value, decimals] = values[i];
+    const expected = roundHalfUp(value, decimals);
+    assert.ok(Object.is(worker, expected), `round_half_up(${value}, ${decimals}) = ${worker}, money.js ${expected}`);
+    if (!Object.is(builtin, expected)) pythonRoundDiffers += 1;
+  });
+  // Ties to even, and floats a hair below the tie: the reason the worker
+  // must not use round() or np.round.
+  assert.ok(pythonRoundDiffers > 100, `round() differs on ${pythonRoundDiffers}`);
 });
 
 test('parity: inputs JSON cannot carry exactly are priced in Node, not sent', { skip }, async () => {
@@ -211,19 +338,29 @@ test('computeMrp: the response is identical with CALC_ENGINE=python and CALC_ENG
   });
   assert.equal(await python.warm(), true);
 
+  // Bodies /calculate accepts: the engine-level edge values the generator
+  // also makes (a discount of 120, a purity of -2, a 'Per Piece' unit) are
+  // refused with a 400 there, and are held identical by the tests above.
+  const SENT_UNITS = new Set(['Per Gram', 'Per 10 Gram', 'Percent']);
   const rnd = seeded(7);
   const bodies = Array.from({ length: 200 }, () => {
     const inputs = realisticInputs(rnd);
+    const unit = SENT_UNITS.has(inputs.labourUnit) ? inputs.labourUnit : 'Per Gram';
+    const custom = inputs.customPurityPercent;
+    const labourRate = unit === 'Percent' ? Math.min(100, inputs.labourRatePerUnit) : inputs.labourRatePerUnit;
     return {
       jewelleryType: 'DIAMOND',
       netWt: String(inputs.netWt),
       grossWt: inputs.grossWt,
       purityKarat: `${inputs.karatNumber}K`,
-      customPurityPercent: inputs.customPurityPercent ?? undefined,
-      diamonds: inputs.diamonds,
+      customPurityPercent: custom !== null && custom > 0 && custom <= 100 ? custom : undefined,
+      diamonds: inputs.diamonds.map((stone) => ({
+        ...stone,
+        discountPercent: Math.max(0, Math.min(100, stone.discountPercent)),
+      })),
       colorstones: inputs.colorstones.map((stone) => ({ ...stone, weight: String(stone.weight) })),
-      labourChargeAmount: rnd() < 0.5 ? String(inputs.labourRatePerUnit) : undefined,
-      labourChargeUnit: inputs.labourUnit,
+      labourChargeAmount: rnd() < 0.5 ? String(labourRate) : undefined,
+      labourChargeUnit: unit,
       labourWeightBasis: inputs.labourWeightBasis,
       wastagePercent: inputs.wastagePercent || undefined,
       otherCharges: inputs.otherCharges,

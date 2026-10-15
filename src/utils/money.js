@@ -70,6 +70,39 @@ const roundPaiseToRupee = (paise) => divHalfUp(paise, 100) * 100;
 /** A percentage as basis points (hundredths of a per cent): 3 -> 300, 1.5 -> 150. */
 const toBasisPoints = (percent) => toPaise(percent);
 
+/** `value` × 10^decimals as a whole number, half-up, sign kept: (91.6, 4) -> 916000. */
+function toScaledInteger(value, decimals) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n === 0) return 0;
+  const scaled = Math.floor(snappedMagnitude(n, decimals) + 0.5);
+  return n < 0 ? -scaled : scaled;
+}
+
+/**
+ * rupees × percent / 100 in whole rupees, half-up, exactly: the rupees to the
+ * paisa and the percent to four decimals become integers first. A karat row:
+ * 1,20,125 at 91.6% is 1,10,034.50 on paper and comes out 1,10,035 (the
+ * float product 110034.49999999999 used to round down).
+ */
+function percentOfRupeesHalfUp(rupees, percent) {
+  const product = toScaledInteger(rupees, 2) * toScaledInteger(percent, 4);
+  if (!Number.isSafeInteger(product)) return roundHalfUp(Number(rupees) * (Number(percent) / 100));
+  return divHalfUp(product, 100000000);
+}
+
+/**
+ * rupees ÷ (1 + percent/100) in whole rupees, half-up, exactly: RTGS Rate 2,
+ * the board figure with the Tax box's percent taken out of it.
+ */
+function rupeesLessPercentHalfUp(rupees, percent) {
+  const numerator = toScaledInteger(rupees, 2) * 10000;
+  const denominator = 1000000 + toScaledInteger(percent, 4);
+  if (denominator <= 0 || !Number.isSafeInteger(numerator) || !Number.isSafeInteger(denominator)) {
+    return roundHalfUp(Number(rupees) / (1 + Number(percent) / 100));
+  }
+  return divHalfUp(numerator, denominator);
+}
+
 module.exports = {
   roundHalfUp,
   toPaise,
@@ -77,4 +110,7 @@ module.exports = {
   divHalfUp,
   roundPaiseToRupee,
   toBasisPoints,
+  toScaledInteger,
+  percentOfRupeesHalfUp,
+  rupeesLessPercentHalfUp,
 };

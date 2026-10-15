@@ -147,6 +147,10 @@ const errorHandler = (err, req, res, next) => {
     statusCode = errorMapping[err.message].status;
     errorKey = err.message;
     displayMessage = errorMapping[err.message].msg;
+  } else if (err.expose && err.code) {
+    // An error written to be shown (RATES_UNAVAILABLE, INVALID_PRICING_INPUT):
+    // its code is the key and its message says what to do.
+    errorKey = err.code;
   }
 
   res.status(statusCode).json({

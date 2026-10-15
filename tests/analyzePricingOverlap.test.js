@@ -212,15 +212,18 @@ for (const [label, user, reading] of [
     }
     // Nothing was looked up twice but the live rates, re-read once after the
     // reading (a cache hit on the current board in production); only the
-    // wastage codes are fetched ahead for a tag that turns out to carry no
-    // identifier.
+    // wastage and item codes are fetched ahead for a tag that turns out to
+    // carry no identifier.
     const made = countsOf(overlapped);
     for (const [name, times] of needed) {
       const expectedTimes = name.startsWith('goldRates:') ? times + 1 : times;
       assert.equal(made.get(name), expectedTimes, `${name} made ${expectedTimes} time(s)`);
     }
     const extra = [...made.keys()].filter((name) => !needed.has(name));
-    assert.deepEqual(extra.filter((name) => !name.startsWith('wastageCodes:')), []);
+    assert.deepEqual(
+      extra.filter((name) => !name.startsWith('wastageCodes:') && !name.startsWith('itemCodes:')),
+      [],
+    );
     // The record is written before the response leaves.
     assert.deepEqual(events, ['analysis-and-record-done', 'response']);
   });
@@ -230,6 +233,10 @@ test('the cash/RTGS choice and the wastage come out of the prefetched reads', as
   const scan = scanFor(OWNER, READING_WITH_CODES);
   const { res } = await analyzeThroughController(OWNER, scan);
   const { pricing, pricingInput } = res.body.data;
+  // The karat is read off the reader's { value, confidence } field: 18K,
+  // not the 14K default (String() of the field object matched nothing).
+  assert.equal(pricingInput.purityKarat, '18K');
+  assert.equal(pricing.breakdown.pureWeight, 8.1 * 0.75);
   // The shop's tax settings choose cash for scanner pricing.
   assert.equal(pricingInput.calculationMode, 'cash');
   assert.equal(pricing.breakdown.goldRateApplied, 148357 / 10);
@@ -252,6 +259,7 @@ test("an employee's analyze prefetches in the employee's own scope", async () =>
     `diamondRates:${EMPLOYEE.userId}`,
     `colorstoneRates:${EMPLOYEE.userId}`,
     `wastageCodes:${EMPLOYEE.userId}`,
+    `itemCodes:${EMPLOYEE.userId}`,
     `employee:${EMPLOYEE.userId}`,
   ]) {
     assert.ok(lookupsDuringRead.includes(name), `${name} ran during the read`);

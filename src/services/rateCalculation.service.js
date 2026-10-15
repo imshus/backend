@@ -8,6 +8,10 @@ const BullionSource = require('../models/bullionSource.model');
 const bhawService = require('./bhaw.service');
 const { findScopedSetting } = require('./userScope.service');
 const { RUNNING_COMMIT } = require('../utils/runningCommit');
+const { roundHalfUp, percentOfRupeesHalfUp, rupeesLessPercentHalfUp } = require('../utils/money');
+const { ratesUnavailable } = require('./pricingInputs');
+
+const isLiveRate = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0;
 
 const toNumber = (value) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -183,7 +187,14 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // only for a house with no line. The house line is read whenever the
   // house has one, live bhaw or not.
   const houseMcx = await bhawService.houseMcxSell(selectedBhawSource);
-  const shownMcxRate = houseMcx ?? mcxLiveRate;
+  // No board MCX and no stored MCX: there is no rate to show or to price on.
+  // Answered as RATES_UNAVAILABLE (and never cached), not worked out on a
+  // made-up MCX.
+  const shownMcxRate = isLiveRate(houseMcx) ? houseMcx : isLiveRate(mcxLiveRate) ? mcxLiveRate : null;
+  if (shownMcxRate === null) throw ratesUnavailable();
+  // The market figure shown as MCX, the house's line standing in while the
+  // stored one is missing.
+  const marketMcxRate = isLiveRate(mcxLiveRate) ? mcxLiveRate : shownMcxRate;
   const mcxFinalRate = shownMcxRate + businessMcxChange;
   const pricingMcxRate = shownMcxRate + businessMcxChange;
   // RTGS Rate 1 is the house's board RTGS (its line + its premium: its own
@@ -194,7 +205,10 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // bhaw still gets the stored fallback here; the screens show a blank for
   // it instead.
   const rtgsBaseRate = pricingMcxRate + supremeRtgsChange + businessRtgsChange;
-  const rtgsRate1FinalRate = Math.round(rtgsBaseRate);
+  // Every per-10 g rate is a whole rupee, commercial half-up on the decimal
+  // the figure stands for (1,53,452.50 is 1,53,453), the same way in Node,
+  // the Python worker and by hand.
+  const rtgsRate1FinalRate = roundHalfUp(rtgsBaseRate);
   // Rate 2 is the board figure less the percent in its Tax box. A saved
   // number is what the shop chose; a field never saved reads as the
   // default 0, the board figure itself.
@@ -205,12 +219,15 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // Rate 2 (without tax) is Rate 1's figure (the board RTGS plus the shop's
   // change) with the Tax box's percent taken out of it: divided by
   // 1 + percent/100, so 3 divides by 1.03 and 4 by 1.04, at the shop's
-  // asking; 0 leaves it as Rate 1. One rounding, at the end, as the app does.
-  const rtgsRate2FinalRate = Math.round(rtgsBaseRate / (1 + rtgsTaxPercent / 100));
+  // asking; 0 leaves it as Rate 1. One rounding, at the end, half-up and
+  // exact (in paise, not a float quotient).
+  const rtgsRate2FinalRate = rupeesLessPercentHalfUp(rtgsBaseRate, rtgsTaxPercent);
   // Rate 1 is ticked unless the shop ticked Rate 2.
   const rtgsVariant = taxSettings.rtgsVariant === 'plain' ? 'plain' : 'taxed';
   const rtgsFinalRate = rtgsVariant === 'taxed' ? rtgsRate1FinalRate : rtgsRate2FinalRate;
-  const cashFinalRate = pricingMcxRate + supremeCashChange + businessCashChange;
+  // Cash is a whole rupee too: a shop change of Rs 12.50 used to leave
+  // 1,53,252.50 unrounded beside a rounded RTGS.
+  const cashFinalRate = roundHalfUp(pricingMcxRate + supremeCashChange + businessCashChange);
 
   // 5. Determine Base Rate for Karat Calculations
   const baseRate = taxSettings.scannerCalculationUse === 'cash' ? cashFinalRate : rtgsFinalRate;
@@ -269,10 +286,12 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       }
     }
 
-    // Compute all three rates explicitly for the UI dashboard
-    const mcxRate = Math.round(mcxFinalRate * (row.purity / 100));
-    const cashRate = Math.round(cashFinalRate * (row.purity / 100));
-    const rtgsRate = Math.round(rtgsFinalRate * (row.purity / 100));
+    // All three rates for the UI dashboard: rate × purity in whole rupees,
+    // half-up and exact (1,20,125 at 91.6% is 1,10,034.50: 1,10,035, where
+    // the float product 110034.49999999999 rounded down).
+    const mcxRate = percentOfRupeesHalfUp(mcxFinalRate, row.purity);
+    const cashRate = percentOfRupeesHalfUp(cashFinalRate, row.purity);
+    const rtgsRate = percentOfRupeesHalfUp(rtgsFinalRate, row.purity);
 
     return {
       _id: row._id,
@@ -281,7 +300,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
       increaseByAmount: row.increaseByAmount,
       increaseByType: row.increaseByType,
       isHidden: !!row.isHidden,
-      finalRate: Math.round(finalRate * 100) / 100, // Legacy fallback
+      finalRate: roundHalfUp(finalRate, 2), // Legacy fallback
       mcxRate,
       cashRate,
       rtgsRate
@@ -294,14 +313,14 @@ const getLiveGoldRates = async (businessId, scope = null) => {
 
   // 8. Compile the Final Rich Response
   const responseData = {
-    mcxLiveRate,
+    mcxLiveRate: marketMcxRate,
     mcxFinalRate,
     bhawSource,
     supremeChanges: {
       rtgsChange: supremeRtgsChange,
       cashChange: supremeCashChange,
-      supremeRtgs: mcxLiveRate + supremeRtgsChange,
-      supremeCash: mcxLiveRate + supremeCashChange
+      supremeRtgs: marketMcxRate + supremeRtgsChange,
+      supremeCash: marketMcxRate + supremeCashChange
     },
     taxSettings: {
       mcxChange: { operation: mcxChange.operation, amount: mcxChange.amount },

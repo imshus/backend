@@ -56,18 +56,22 @@ const NUMBER_INPUTS = [
 ];
 const STRING_INPUTS = ['labourUnit', 'labourWeightBasis', 'labourChargeType', 'wastageCode'];
 
-// The breakdown as the app reads it, in today's key order.
-const BREAKDOWN_KEYS = [
-  'diamondAmount', 'colorstoneAmount', 'pureWeight', 'goldRateApplied', 'goldAmount',
-  'labourAmount', 'labourChargeType', 'wastageCode', 'wastagePercent', 'wastageWeightGrams',
-  'wastageAmount', 'otherCharges', 'subtotal',
+// The breakdown as the app reads it, in today's key order, with each value's type.
+const BREAKDOWN_FIELDS = [
+  ['diamondAmount', 'number'], ['colorstoneAmount', 'number'], ['pureWeight', 'number'],
+  ['goldRateApplied', 'number'], ['goldAmount', 'number'], ['labourAmount', 'number'],
+  ['labourChargeType', 'string'], ['wastageCode', 'string'], ['wastagePercent', 'number'],
+  ['wastageWeightGrams', 'number'], ['wastageAmount', 'number'], ['otherCharges', 'number'],
+  ['subtotal', 'number'], ['netWeightUsed', 'number'], ['netWeightEstimated', 'boolean'],
 ];
-const BREAKDOWN_STRINGS = new Set(['labourChargeType', 'wastageCode']);
+const RESULT_NUMBERS = ['finalMRP', 'finalMRPRounded', 'effectivePurityPercent', 'purityAdjustedGoldRatePerGram'];
 const DIAMOND_ITEM_KEYS = ['index', 'weight', 'rate', 'discountPercent', 'amount'];
 const COLORSTONE_ITEM_KEYS = ['index', 'weight', 'rate', 'amount'];
 
 // The price the worker must get exactly right before it is trusted: 18K,
-// both stone kinds with a discount, labour per 10 g on gross, wastage.
+// both stone kinds with a discount, a colour stone weighed in grams, labour
+// per 10 g on gross, wastage, and an MRP rounded to the rupee. A worker from
+// before stone units or the rounded MRP fails it and is never used.
 const PROBE_INPUTS = {
   netWt: 12.345,
   grossWt: 13.871,
@@ -77,9 +81,9 @@ const PROBE_INPUTS = {
   goldRatePer10g: 152340.5,
   diamonds: [
     { weight: 0.235, rate: 65000, discountPercent: 12.5 },
-    { weight: 0.018, rate: 48000, discountPercent: 0 },
+    { weight: 0.018, rate: 48000, discountPercent: 0, unit: 'ct' },
   ],
-  colorstones: [{ weight: 1.27, rate: 3500 }],
+  colorstones: [{ weight: 1.27, rate: 3500 }, { weight: 0.4, rate: 2000, unit: 'g' }],
   labourRatePerUnit: 1450,
   labourUnit: 'Per 10 Gram',
   labourWeightBasis: 'gross',
@@ -96,12 +100,16 @@ const isPlainObject = (value) => value !== null && typeof value === 'object' && 
 /** A number JSON carries exactly both ways: finite, and not -0 (which JSON writes as 0). */
 const isWireNumber = (value) => typeof value === 'number' && Number.isFinite(value) && !Object.is(value, -0);
 
+// A stone's unit: absent, null or a string ('g' is grams, anything else carats).
+const isWireUnit = (unit) => unit === undefined || unit === null || typeof unit === 'string';
+
 const rowsAreWireSafe = (rows, keys) =>
-  Array.isArray(rows) && rows.every((row) => isPlainObject(row) && keys.every((key) => isWireNumber(row[key])));
+  Array.isArray(rows)
+  && rows.every((row) => isPlainObject(row) && keys.every((key) => isWireNumber(row[key])) && isWireUnit(row.unit));
 
 const UNSUPPORTED = {
   kind: 'unsupported-input',
-  detail: 'an input JSON cannot carry exactly (non-finite, -0 or not a number)',
+  detail: 'an input JSON cannot carry exactly (non-finite, -0, not a number, or a unit that is not text)',
 };
 
 /**
@@ -151,23 +159,21 @@ function readItems(raw, expectedLength, keys) {
 function readResult(raw, inputs) {
   if (!isPlainObject(raw) || !isPlainObject(raw.breakdown)) return null;
   const breakdown = {};
-  for (const key of BREAKDOWN_KEYS) {
+  for (const [key, type] of BREAKDOWN_FIELDS) {
     const value = raw.breakdown[key];
-    if (typeof value !== (BREAKDOWN_STRINGS.has(key) ? 'string' : 'number')) return null;
+    if (typeof value !== type) return null;
     breakdown[key] = value;
   }
-  const { finalMRP, effectivePurityPercent, purityAdjustedGoldRatePerGram } = raw;
-  if (![finalMRP, effectivePurityPercent, purityAdjustedGoldRatePerGram].every((v) => typeof v === 'number')) {
-    return null;
-  }
+  if (!RESULT_NUMBERS.every((key) => typeof raw[key] === 'number')) return null;
   const diamondLineItems = readItems(raw.diamondLineItems, inputs.diamonds.length, DIAMOND_ITEM_KEYS);
   const colorstoneLineItems = readItems(raw.colorstoneLineItems, inputs.colorstones.length, COLORSTONE_ITEM_KEYS);
   if (!diamondLineItems || !colorstoneLineItems) return null;
   return {
     breakdown,
-    finalMRP,
-    effectivePurityPercent,
-    purityAdjustedGoldRatePerGram,
+    finalMRP: raw.finalMRP,
+    finalMRPRounded: raw.finalMRPRounded,
+    effectivePurityPercent: raw.effectivePurityPercent,
+    purityAdjustedGoldRatePerGram: raw.purityAdjustedGoldRatePerGram,
     diamondLineItems,
     colorstoneLineItems,
   };

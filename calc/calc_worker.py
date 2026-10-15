@@ -17,8 +17,10 @@ identical to the last bit rather than close:
     differently;
   - Math.min / Math.max keep their signed-zero rules, and `x || y` on a
     number treats 0, -0 and NaN as false;
-  - pricingMath rounds nothing (no Math.round, no toFixed), so neither does
-    this.
+  - the two roundings pricingMath does (the MRP to the rupee, an estimated
+    net weight to the milligram) are src/utils/money.js roundHalfUp: snap to
+    six decimals the way Number(x.toFixed(6)) does, then floor(x + 0.5).
+    Never round() or np.round, which round a tie to even.
 A figure that is not finite cannot cross JSON; such a request is answered as
 an error and the bridge prices it in Node.
 """
@@ -28,6 +30,7 @@ import math
 import os
 import platform
 import sys
+from decimal import ROUND_HALF_UP, Context, Decimal
 
 
 def _claim_stdout():
@@ -64,6 +67,10 @@ NUMBER_INPUTS = (
 STRING_INPUTS = ("labourUnit", "labourWeightBasis", "labourChargeType", "wastageCode")
 DIAMOND_COLUMNS = ("weight", "rate", "discountPercent")
 COLORSTONE_COLUMNS = ("weight", "rate")
+# pricingMath's constants.
+CARATS_PER_GRAM = 5.0
+GRAMS_PER_CARAT = 0.2
+LABOUR_UNIT_PERCENT = "Percent"
 # aggregateJewelleryMrp's order, which is the order the subtotal adds them in.
 COMPONENTS = ("gold", "diamond", "colorstone", "labour", "wastage", "other")
 # Built once: a DataFrame made on these costs a fifth of one made from lists.
@@ -114,6 +121,43 @@ def sum_from_zero(values):
     return float(np.add.accumulate(np.concatenate(([0.0], values)))[-1])
 
 
+# ── money.js roundHalfUp ─────────────────────────────────────────────────
+
+_SNAP_QUANTUM = Decimal("0.000001")
+# Room for any double below 1e21 to six places, the range toFixed rounds in.
+_SNAP_CONTEXT = Context(prec=60, rounding=ROUND_HALF_UP)
+# JavaScript's 10 ** decimals for the places pricingMath rounds to.
+_POWERS_OF_TEN = {0: 1.0, 2: 100.0, 3: 1000.0}
+
+
+def js_to_fixed6(x):
+    """Number(x.toFixed(6)) for x >= 0. toFixed picks, of the two nearest
+    multiples of 1e-6, the larger on an exact tie of the double's exact
+    value: ROUND_HALF_UP on Decimal(x), which is exact. Number() of the
+    digits is the nearest double, as float() of the Decimal is. From 1e21 up
+    toFixed writes the number as it is."""
+    if not math.isfinite(x) or x >= 1e21:
+        return x
+    return float(Decimal(x).quantize(_SNAP_QUANTUM, context=_SNAP_CONTEXT))
+
+
+def round_half_up(value, decimals=0):
+    """src/utils/money.js roundHalfUp: `value` to `decimals` places, a tie
+    away from zero, on the decimal the float stands for (2048.055 -> 2048.06,
+    23607.499999999996 -> 23608)."""
+    n = value
+    if not math.isfinite(n) or n == 0:
+        return 0.0
+    scale = _POWERS_OF_TEN[decimals]
+    snapped = js_to_fixed6(abs(n) * scale)
+    if math.isfinite(snapped):
+        rounded = math.floor(snapped + 0.5) / scale
+    else:
+        # Math.floor(Infinity + 0.5) / scale is Infinity.
+        rounded = snapped / scale
+    return -rounded if n < 0 else rounded
+
+
 # ── Inputs ───────────────────────────────────────────────────────────────
 
 
@@ -150,6 +194,18 @@ def _rows(value, name, columns):
     return table
 
 
+def _gram_rows(value, name):
+    """Which rows' weights are in grams: unit 'g'. A missing or null unit is
+    carats; any other unit must at least be a string."""
+    grams = []
+    for i, row in enumerate(value):
+        unit = row.get("unit")
+        if unit is not None and not isinstance(unit, str):
+            raise ValueError(f"{name}[{i}].unit must be a string")
+        grams.append(unit == "g")
+    return np.array(grams, dtype=bool)
+
+
 def read_inputs(inputs):
     if not isinstance(inputs, dict):
         raise ValueError("inputs must be an object")
@@ -162,6 +218,8 @@ def read_inputs(inputs):
     values["customPurityPercent"] = None if custom is None else _number(custom, "customPurityPercent")
     values["diamonds"] = _rows(inputs.get("diamonds"), "diamonds", DIAMOND_COLUMNS)
     values["colorstones"] = _rows(inputs.get("colorstones"), "colorstones", COLORSTONE_COLUMNS)
+    values["diamondGrams"] = _gram_rows(inputs["diamonds"], "diamonds")
+    values["colorstoneGrams"] = _gram_rows(inputs["colorstones"], "colorstones")
     return values
 
 
@@ -170,7 +228,7 @@ def read_inputs(inputs):
 
 def compute_pricing(raw_inputs):
     p = read_inputs(raw_inputs)
-    net = p["netWt"]
+    given_net = p["netWt"]
     gross = p["grossWt"]
 
     karat_number = p["karatNumber"]
@@ -181,18 +239,29 @@ def compute_pricing(raw_inputs):
         purity = p["karatPurityPercent"] if js_truthy(p["karatPurityPercent"]) else fallback_purity
     purity = js_max(0.0, js_min(100.0, purity))
 
-    # Stone rows, all at once: weight x rate, less the clamped discount.
+    # Stone rows, all at once: the weight in carats (a weight in grams is
+    # five times as many), x rate, less the clamped discount.
     diamonds = p["diamonds"]
-    d_weight, d_rate = diamonds[:, 0], diamonds[:, 1]
+    d_weight = np.where(p["diamondGrams"], diamonds[:, 0] * CARATS_PER_GRAM, diamonds[:, 0])
+    d_rate = diamonds[:, 1]
     d_discount = clamp_percent(diamonds[:, 2])
     d_base = d_weight * d_rate
     d_amount = d_base - d_base * (d_discount / 100.0)
     diamond_amount = sum_from_zero(d_amount)
 
     colorstones = p["colorstones"]
-    c_weight, c_rate = colorstones[:, 0], colorstones[:, 1]
+    c_weight = np.where(p["colorstoneGrams"], colorstones[:, 0] * CARATS_PER_GRAM, colorstones[:, 0])
+    c_rate = colorstones[:, 1]
     c_amount = c_weight * c_rate
     colorstone_amount = sum_from_zero(c_amount)
+
+    # No net weight but a gross one: gross less the stones at 0.2 g a carat,
+    # to the milligram, never below 0.
+    net_estimated = not (given_net > 0) and gross > 0
+    net = given_net
+    if net_estimated:
+        stone_carats = sum_from_zero(np.concatenate((d_weight, c_weight)))
+        net = js_max(0.0, round_half_up(gross - GRAMS_PER_CARAT * stone_carats, 3))
 
     pure_weight = net * (purity / 100.0)
 
@@ -200,18 +269,21 @@ def compute_pricing(raw_inputs):
         labour_weight = gross if gross > 0 else net
     else:
         labour_weight = net
-    labour_rate = p["labourRatePerUnit"]
-    labour_amount = 0.0
-    if labour_rate > 0:
-        if p["labourUnit"] == "Per 10 Gram":
-            labour_amount = labour_weight * (labour_rate / 10.0)
-        else:
-            labour_amount = labour_weight * labour_rate
 
     gold_rate_10g = p["goldRatePer10g"]
     rate_per_gram = (gold_rate_10g if js_truthy(gold_rate_10g) else 0.0) / 10.0
     purity_adjusted_rate = rate_per_gram * (purity / 100.0)
     gold_amount = pure_weight * rate_per_gram
+
+    labour_rate = p["labourRatePerUnit"]
+    labour_amount = 0.0
+    if labour_rate > 0:
+        if p["labourUnit"] == LABOUR_UNIT_PERCENT:
+            labour_amount = gold_amount * (labour_rate / 100.0)
+        elif p["labourUnit"] == "Per 10 Gram":
+            labour_amount = labour_weight * (labour_rate / 10.0)
+        else:
+            labour_amount = labour_weight * labour_rate
 
     wastage_percent = p["wastagePercent"]
     wastage_weight = net * (wastage_percent / 100.0) if wastage_percent > 0 else 0.0
@@ -244,6 +316,8 @@ def compute_pricing(raw_inputs):
         "wastageAmount": line["wastage"],
         "otherCharges": line["other"],
         "subtotal": subtotal,
+        "netWeightUsed": net,
+        "netWeightEstimated": net_estimated,
     }
     diamond_items = [
         {"index": i + 1, "weight": w, "rate": r, "discountPercent": d, "amount": a}
@@ -258,6 +332,7 @@ def compute_pricing(raw_inputs):
     return {
         "breakdown": breakdown,
         "finalMRP": subtotal,
+        "finalMRPRounded": round_half_up(subtotal),
         "effectivePurityPercent": purity,
         "purityAdjustedGoldRatePerGram": purity_adjusted_rate,
         "diamondLineItems": diamond_items,

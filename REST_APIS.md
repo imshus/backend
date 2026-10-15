@@ -133,6 +133,32 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
 - Auth: JWT required (`authenticateJWT`)
 - Controller: `calculationController.calculateMRP`
 - Description: Calculate final MRP using scan + rates (protected route for pricing/calculation).
+- Body (all optional; figures as numbers or numeric text):
+  - `netWt`, `grossWt` (grams, 0-1,00,000). A net weight of 0 with a gross
+    weight is worked out as gross less 0.2 g per stone carat (never below 0);
+    the breakdown then says `netWeightEstimated: true` (low confidence).
+  - `purityKarat`: "22K", "22KT", 22, or a fineness ("916", "958" = 23K);
+    1K-24K. `customPurityPercent`: 0-100, 0 meaning not set.
+  - `diamonds[]` `{ weight, rate, discountPercent (0-100), unit }`,
+    `colorstones[]` `{ weight, rate, unit }`; `unit` "ct" (default) or "g"
+    (grams, priced as 5 ct per gram).
+  - `labourChargeAmount` with `labourChargeUnit` "Per Gram" | "Per 10 Gram" |
+    "Percent" (a percent of the gold value; "12%" in the amount means the
+    same). Without an amount: the matched Masters item's labour (Rs/gram),
+    else the shop's labour charge (AMOUNT per its unit, or PERCENTAGE of the
+    gold value). `labourWeightBasis` "net" | "gross", default the basis the
+    shop's labour charge was saved with.
+  - `wastagePercent` (0-100), `otherCharges` (>= 0), `calculationMode`,
+    `itemCode`, `tagIdentifiers[]`. The Masters item is found from them as
+    the app does: exact, then ignoring case/punctuation, then the longest
+    saved code (2+ characters) the tag number starts with, followed by
+    digits (GR10286 is item GR).
+- Response `data`: `{ breakdown, finalMRP, finalMRPRounded }`; `finalMRPRounded`
+  is the MRP to the rupee, commercial half-up (2,59,020.50 is 2,59,021).
+- Errors: 400 `INVALID_PRICING_INPUT` naming the field (wrong type, negative,
+  out of range); 503 `RATES_UNAVAILABLE` when there is no live gold rate (no
+  board MCX and no stored MCX). The analyze response carries the same as
+  `pricingError` when it could not price the reading.
 
 
 3. Rates & Pricing

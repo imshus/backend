@@ -95,6 +95,9 @@ const analyzeScan = async (req, res, next) => {
     // failure leaves pricing out; the card then prices itself as before.
     let pricing = null;
     let pricingInput = null;
+    // Why there is no price, when the reason is one the card can say
+    // (no live rate, a reading that cannot be priced); null otherwise.
+    let pricingError = null;
     try {
       pricingInput = await deriveInputFromReading({
         user: req.user,
@@ -111,8 +114,11 @@ const analyzeScan = async (req, res, next) => {
         prefetched: pricingReads,
       });
       pricing = computed.resultData;
-    } catch (pricingError) {
-      console.warn('[ANALYZE_PRICING_SKIPPED]', { scanId, message: pricingError?.message });
+    } catch (error) {
+      console.warn('[ANALYZE_PRICING_SKIPPED]', { scanId, message: error?.message });
+      if (error?.code === 'RATES_UNAVAILABLE' || error?.code === 'INVALID_PRICING_INPUT') {
+        pricingError = { code: error.code, message: error.message };
+      }
     }
 
     sendSuccess(res, {
@@ -130,6 +136,7 @@ const analyzeScan = async (req, res, next) => {
         billing: updated.billing || { billed: false },
         pricing,
         pricingInput,
+        pricingError,
     });
   } catch (err) {
     next(err);

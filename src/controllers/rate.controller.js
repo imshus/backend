@@ -217,6 +217,10 @@ const getGoldRates = async (req, res) => {
       },
     });
   } catch (error) {
+    if (error?.code === 'RATES_UNAVAILABLE') {
+      // No board MCX and no stored MCX: no rates rather than made-up ones.
+      return res.status(503).json({ success: false, error: error.code, message: error.message });
+    }
     console.error('Get Gold Rates Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
   }

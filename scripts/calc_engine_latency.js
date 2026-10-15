@@ -61,11 +61,16 @@ async function main() {
   });
   redisService.getScan = async () => ({ scanId: 's1', ownerUserId: 'u1', businessId: 'b1', status: 'READY_FOR_REVIEW' });
   LabourRate.findOne = async () => ({ chargeType: 'AMOUNT', value: 1450, rupeesUnit: 'Per 10 Gram' });
+  // Bodies /calculate accepts: the generator's engine-level edge discounts
+  // (120, -5) are refused there with a 400.
   const bodies = cases.slice(0, 2000).map((inputs) => ({
     netWt: inputs.netWt,
     grossWt: inputs.grossWt,
     purityKarat: `${inputs.karatNumber}K`,
-    diamonds: inputs.diamonds,
+    diamonds: inputs.diamonds.map((stone) => ({
+      ...stone,
+      discountPercent: Math.max(0, Math.min(100, stone.discountPercent)),
+    })),
     colorstones: inputs.colorstones,
     otherCharges: inputs.otherCharges,
     wastagePercent: inputs.wastagePercent,
