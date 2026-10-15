@@ -3,7 +3,10 @@
  * price: a worker that is killed mid-request, hangs, writes garbage, errors,
  * answers the wrong shape, crashes or is missing altogether gives way to
  * Node's pricingMath (the same figures), restarts with backoff, and one bad
- * request never spoils the others. With CALC_ENGINE=js no worker is started.
+ * request never spoils the others: a request too big to send, an over-long
+ * reply or a backlog costs only the prices concerned, never the worker, and
+ * a worker that cannot start logs its error once, not on every retry. With
+ * CALC_ENGINE=js no worker is started.
  *
  * Misbehaving workers are tests/fixtures/pycalc/fakeWorker.js run by node;
  * the tests that need the real calc_worker.py skip, saying so, without
@@ -81,12 +84,15 @@ function assertNodeFigures(answer, inputs) {
 }
 
 test('a fake worker that behaves is used once it has priced the probe', async () => {
-  const { engine } = fakeEngine('ok');
+  const { engine, logger } = fakeEngine('ok');
   try {
     assert.equal(await engine.warm(), true);
     const answer = await engine.computePricingDetailed(inputsFor(3));
     assert.equal(answer.source, 'python');
     assertNodeFigures(answer, inputsFor(3));
+    // What it wrote to stderr while starting is logged once it is ready.
+    await waitFor(() => logger.lines.info.some((line) => /^\[CALC_WORKER\] fake_worker ready pid=\d+ mode=ok$/.test(line)),
+      'the worker\'s startup line in the log');
   } finally {
     engine.stop();
   }
@@ -227,6 +233,106 @@ test('a worker whose first price differs from Node is turned off, not restarted'
   }
 });
 
+test('a worker that cannot start logs its error once, not again on every retry', async () => {
+  const { engine, logger } = fakeEngine('exit-early', { backoffMs: [10] });
+  try {
+    const answer = await engine.computePricingDetailed(inputsFor(1));
+    assertNodeFigures(answer, inputsFor(1));
+    await waitFor(() => engine.stats().spawns >= 6, 'several retries');
+    // Each attempt's traceback carries its own pid; it is still the same failure.
+    const logged = logger.lines.info.filter((line) => line.startsWith('[CALC_WORKER]'));
+    assert.equal(logged.filter((line) => line.includes('No module named')).length, 1, logged.join('\n'));
+    assert.equal(logged.filter((line) => line.includes('Traceback')).length, 1, logged.join('\n'));
+    assert.equal(logger.lines.warn.filter((line) => line.includes('unavailable')).length, 1);
+  } finally {
+    engine.stop();
+  }
+});
+
+test('a request too big for the worker is priced in Node, and the worker carries on', async () => {
+  const { engine, logger } = fakeEngine('ok');
+  try {
+    assert.equal(await engine.warm(), true);
+    const manyRows = {
+      ...inputsFor(3),
+      diamonds: Array.from({ length: 600 }, (_, i) => ({ weight: 0.01 + i / 1e4, rate: 60000, discountPercent: 5 })),
+    };
+    const longText = { ...inputsFor(4), wastageCode: 'W'.repeat(200 * 1024) };
+    assert.equal(pyCalcEngine.isWireSafe(manyRows), false);
+    const normal = Array.from({ length: 20 }, (_, n) => inputsFor(n));
+    const [rows, text, ...rest] = await Promise.all(
+      [manyRows, longText, ...normal].map((one) => engine.computePricingDetailed(one)),
+    );
+    for (const [answer, inputs] of [[rows, manyRows], [text, longText]]) {
+      assert.equal(answer.source, 'fallback');
+      assert.equal(answer.kind, 'oversized');
+      assertNodeFigures(answer, inputs);
+    }
+    rest.forEach((answer, n) => {
+      assert.equal(answer.source, 'python', `request ${n}: ${answer.kind}`);
+      assertNodeFigures(answer, normal[n]);
+    });
+    assert.equal(engine.stats().fallback.oversized, 2);
+    assert.equal(engine.stats().spawns, 1, 'the worker was never restarted');
+    assert.equal(logger.lines.warn.length, 1, logger.lines.warn.join('\n'));
+  } finally {
+    engine.stop();
+  }
+});
+
+test('an over-long reply line costs its own request alone, not the worker', async () => {
+  const { engine, logger } = fakeEngine('long-reply', { maxReplyChars: 1000 });
+  try {
+    assert.equal(await engine.warm(), true);
+    const inputs = Array.from({ length: 5 }, (_, n) => inputsFor(n + 1));
+    const answers = await Promise.all(inputs.map((one) => engine.computePricingDetailed(one)));
+    assert.equal(answers[0].source, 'fallback');
+    assert.equal(answers[0].kind, 'malformed');
+    answers.slice(1).forEach((answer) => assert.equal(answer.source, 'python', answer.kind));
+    answers.forEach((answer, n) => assertNodeFigures(answer, inputs[n]));
+    assert.ok(logger.lines.warn.some((line) => line.includes('longer than 1000 characters')), logger.lines.warn.join('\n'));
+    const after = await engine.computePricingDetailed(inputsFor(9));
+    assert.equal(after.source, 'python');
+    assert.equal(engine.stats().spawns, 1);
+    assert.equal(engine.stats().workerBacklog, 0);
+  } finally {
+    engine.stop();
+  }
+});
+
+test('a worker behind but still answering is kept: only the late prices go to Node', async () => {
+  // 100 ms a request against a 250 ms timeout: the third onwards are late.
+  const { engine } = fakeEngine('slow', { timeoutMs: 250 });
+  try {
+    assert.equal(await engine.warm(), true);
+    const inputs = Array.from({ length: 6 }, (_, n) => inputsFor(n + 10));
+    const answers = await Promise.all(inputs.map((one) => engine.computePricingDetailed(one)));
+    answers.forEach((answer, n) => assertNodeFigures(answer, inputs[n]));
+    assert.equal(answers[0].source, 'python');
+    assert.equal(answers[5].kind, 'timeout');
+    await waitFor(() => engine.stats().workerBacklog === 0, 'the worker to catch up', 5000);
+    assert.equal(engine.stats().spawns, 1, 'not restarted for being behind');
+    assert.equal((await engine.computePricingDetailed(inputsFor(20))).source, 'python');
+  } finally {
+    engine.stop();
+  }
+});
+
+test('past the backlog limit, prices go to Node at once instead of queueing', async () => {
+  const { engine } = fakeEngine('slow', { timeoutMs: 2000, maxOutstanding: 3 });
+  try {
+    assert.equal(await engine.warm(), true);
+    const inputs = Array.from({ length: 6 }, (_, n) => inputsFor(n));
+    const answers = await Promise.all(inputs.map((one) => engine.computePricingDetailed(one)));
+    answers.forEach((answer, n) => assertNodeFigures(answer, inputs[n]));
+    assert.deepEqual(answers.map((answer) => answer.kind || answer.source),
+      ['python', 'python', 'python', 'busy', 'busy', 'busy']);
+    assert.equal(engine.stats().spawns, 1);
+  } finally {
+    engine.stop();
+  }
+});
+
 test('shadow mode logs a difference and prices with Node\'s figures', async () => {
   const { engine, logger } = fakeEngine('wrong', { shadow: true });
   try {
@@ -299,6 +405,33 @@ test('real worker: one bad request among 200 does not spoil the others', { skip:
     });
     assert.equal(engine.stats().fallback['worker-error'], 20);
     assert.equal(engine.stats().spawns, 1, 'the worker never went down');
+  } finally {
+    engine.stop();
+  }
+});
+
+test('real worker: a 60,000-row price goes to Node, the 20 beside it stay in Python', { skip: skipPython }, async () => {
+  const engine = createPyCalcEngine({ engine: 'python', logger: capturingLogger() });
+  try {
+    assert.equal(await engine.warm(), true);
+    const pid = engine.workerProcess().pid;
+    // About 3.5 MB of JSON, as a /calculate body could carry.
+    const huge = {
+      ...inputsFor(1),
+      diamonds: Array.from({ length: 60000 }, () => ({ weight: 0.235, rate: 65000, discountPercent: 12.5 })),
+    };
+    const normal = Array.from({ length: 20 }, (_, n) => inputsFor(n));
+    const [big, ...rest] = await Promise.all([huge, ...normal].map((one) => engine.computePricingDetailed(one)));
+    assert.equal(big.source, 'fallback');
+    assert.equal(big.kind, 'oversized');
+    assertNodeFigures(big, huge);
+    rest.forEach((answer, n) => {
+      assert.equal(answer.source, 'python', `request ${n}: ${answer.kind}`);
+      assertNodeFigures(answer, normal[n]);
+    });
+    assert.equal(engine.workerProcess().pid, pid);
+    assert.equal(engine.stats().spawns, 1);
+    assert.equal(engine.stats().restarts, 0);
   } finally {
     engine.stop();
   }

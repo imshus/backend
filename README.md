@@ -14,6 +14,12 @@ slower than 1.5 s, crashes or answers wrongly, that price is worked out in Node
 instead, so pricing never fails because of Python. Each kind of failure is
 logged once (`[CALC_ENGINE] ...`).
 
+One worker serves all prices in turn, so none may tie it up: a price with more
+than 500 stone rows or a request over 128 KB is worked out in Node and never
+sent (`oversized`), and while 256 requests are already waiting on the worker
+further ones go to Node at once (`busy`). A worker that is behind but still
+answering is kept; it is restarted only after a whole timeout with no answer.
+
 ### EC2 setup (Amazon Linux)
 
 ```sh
@@ -38,6 +44,9 @@ At startup the log says, for example:
 
 `pm2 logs | grep CALC_` shows it. `python worker not ready` or `was not
 found` means prices are being worked out in Node; check the install above.
+Until the packages are installed the worker is retried (every minute at
+most); its error is logged on the first attempt only, and once installed it
+comes back by itself.
 
 ### Settings (.env)
 

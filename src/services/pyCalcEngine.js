@@ -8,7 +8,8 @@ const { computePricing: computePricingJs } = require('./pricingMath');
  * pricingMath's arithmetic in numpy and pandas.
  *
  * Pricing never fails or waits because of Python. Whenever the worker is
- * not ready, is restarting, answers late, answers wrong or not at all, the
+ * not ready, is restarting, is too far behind, answers late, answers wrong
+ * or not at all, or the request is too big to send (see MAX_WIRE_ROWS), the
  * request is priced in Node by pricingMath instead, the same figures to the
  * last bit, and each kind of failure is logged once.
  *
@@ -26,7 +27,24 @@ const STARTUP_TIMEOUT_MS = 30000;
 const RESTART_BACKOFF_MS = [250, 1000, 5000, 15000, 60000];
 // A worker that ran this long before dying restarts from the shortest delay.
 const STABLE_AFTER_MS = 60000;
-const MAX_LINE_CHARS = 4 * 1024 * 1024;
+
+// One worker serves every request in turn, so no single request may tie it
+// up. A tag has a few dozen stone rows at most; a price past either limit is
+// worked out in Node and never sent (500 rows take Python about 2 ms).
+const MAX_WIRE_ROWS = 500;
+const MAX_REQUEST_CHARS = 128 * 1024;
+// Requests written to the worker and not yet answered, including those
+// already priced in Node after a timeout. Past this, prices go to Node at
+// once instead of queueing towards the timeout.
+const MAX_OUTSTANDING = 256;
+// A reply line longer than this costs its own request alone: the rest of the
+// line is skipped and that price is worked out in Node.
+const MAX_REPLY_CHARS = 1024 * 1024;
+const MAX_STDERR_PARTIAL_CHARS = 64 * 1024;
+const MAX_LOGGED_LINE_CHARS = 2000;
+// Stderr of a worker that is still starting, kept back until it is ready or
+// has failed (see reportStartupStderr).
+const MAX_STARTUP_STDERR_LINES = 40;
 
 // Only what Python needs to start and find its packages: the server's own
 // secrets stay out of the child's environment.
@@ -81,15 +99,35 @@ const isWireNumber = (value) => typeof value === 'number' && Number.isFinite(val
 const rowsAreWireSafe = (rows, keys) =>
   Array.isArray(rows) && rows.every((row) => isPlainObject(row) && keys.every((key) => isWireNumber(row[key])));
 
-/** Whether the worker can price these inputs to the bit; anything else stays in Node. */
-function isWireSafe(inputs) {
-  if (!isPlainObject(inputs)) return false;
-  if (!NUMBER_INPUTS.every((key) => isWireNumber(inputs[key]))) return false;
-  if (inputs.customPurityPercent !== null && !isWireNumber(inputs.customPurityPercent)) return false;
-  if (!STRING_INPUTS.every((key) => typeof inputs[key] === 'string')) return false;
-  return rowsAreWireSafe(inputs.diamonds, ['weight', 'rate', 'discountPercent'])
-    && rowsAreWireSafe(inputs.colorstones, ['weight', 'rate']);
+const UNSUPPORTED = {
+  kind: 'unsupported-input',
+  detail: 'an input JSON cannot carry exactly (non-finite, -0 or not a number)',
+};
+
+/**
+ * Why these inputs stay in Node, as { kind, detail }, or null when the
+ * worker can price them to the bit. The row count is checked first, so a
+ * huge stone list costs no more than its length to turn away.
+ */
+function wireProblem(inputs) {
+  if (!isPlainObject(inputs)) return UNSUPPORTED;
+  const { diamonds, colorstones } = inputs;
+  if (Array.isArray(diamonds) && Array.isArray(colorstones)) {
+    const rows = diamonds.length + colorstones.length;
+    if (rows > MAX_WIRE_ROWS) {
+      return { kind: 'oversized', detail: `${rows} stone rows, more than the ${MAX_WIRE_ROWS} sent to Python` };
+    }
+  }
+  if (!NUMBER_INPUTS.every((key) => isWireNumber(inputs[key]))) return UNSUPPORTED;
+  if (inputs.customPurityPercent !== null && !isWireNumber(inputs.customPurityPercent)) return UNSUPPORTED;
+  if (!STRING_INPUTS.every((key) => typeof inputs[key] === 'string')) return UNSUPPORTED;
+  const rowsSafe = rowsAreWireSafe(diamonds, ['weight', 'rate', 'discountPercent'])
+    && rowsAreWireSafe(colorstones, ['weight', 'rate']);
+  return rowsSafe ? null : UNSUPPORTED;
 }
+
+/** Whether the worker may price these inputs; anything else stays in Node. */
+const isWireSafe = (inputs) => wireProblem(inputs) === null;
 
 function readItems(raw, expectedLength, keys) {
   if (!Array.isArray(raw) || raw.length !== expectedLength) return null;
@@ -198,6 +236,9 @@ function createPyCalcEngine({
   timeoutMs = REQUEST_TIMEOUT_MS,
   startupTimeoutMs = STARTUP_TIMEOUT_MS,
   backoffMs = RESTART_BACKOFF_MS,
+  maxRequestChars = MAX_REQUEST_CHARS,
+  maxReplyChars = MAX_REPLY_CHARS,
+  maxOutstanding = MAX_OUTSTANDING,
   logger = console,
 } = {}) {
   const usesWorker = engine === 'python' || Boolean(shadow);
@@ -210,6 +251,9 @@ function createPyCalcEngine({
     disabled: null,
     warned: new Set(),
     waiters: [],
+    // The last failed start's stderr, digits blanked out so that a pid in it
+    // does not make every attempt look like a new failure.
+    lastStartupStderr: null,
   };
   const counts = {
     python: 0,
@@ -263,12 +307,33 @@ function createPyCalcEngine({
     state.restartTimer.unref?.();
   }
 
+  const logWorkerLine = (line) => logger.info(`[CALC_WORKER] ${line.slice(0, MAX_LOGGED_LINE_CHARS)}`);
+
+  /**
+   * A worker that failed to start has its stderr logged the first time it
+   * fails that way. The same failure on each retry (numpy not installed is
+   * the same traceback every minute) is not logged again.
+   */
+  function reportStartupStderr(worker) {
+    const lines = worker.startupStderr;
+    if (worker.stderrBuffer.trim()) lines.push(worker.stderrBuffer.replace(/\r$/, ''));
+    worker.stderrBuffer = '';
+    if (!lines.length || state.stopped) return;
+    const signature = lines.join('\n').replace(/\d+/g, '#');
+    if (signature === state.lastStartupStderr) return;
+    state.lastStartupStderr = signature;
+    for (const line of lines) logWorkerLine(line);
+    if (worker.startupStderrDropped) logWorkerLine(`(${worker.startupStderrDropped} more lines)`);
+  }
+
   function workerGone(worker, kind, detail) {
     if (worker.gone) return;
     worker.gone = true;
+    clearTimeout(worker.stallTimer);
     liveChildren.delete(worker.child);
     if (state.worker === worker) state.worker = null;
     if (worker.readyAt && Date.now() - worker.readyAt > STABLE_AFTER_MS) state.failures = 0;
+    if (!worker.ready) reportStartupStderr(worker);
     for (const entry of [...worker.pending.values()]) {
       settle(worker, entry, { kind, detail });
     }
@@ -279,8 +344,34 @@ function createPyCalcEngine({
     scheduleRestart();
   }
 
+  /** A reply line arrived: the worker has moved on by one request. */
+  function noteAnswered(worker) {
+    worker.answered += 1;
+    worker.lastAnswerAt = Date.now();
+  }
+
+  /**
+   * Kept on a worker that has fallen behind: it is restarted only once it
+   * has gone a whole timeout with requests outstanding and no reply at all.
+   */
+  function watchForStall(worker) {
+    if (worker.stallTimer || worker.gone) return;
+    const wait = Math.max(1, worker.lastAnswerAt + timeoutMs - Date.now());
+    worker.stallTimer = setTimeout(() => {
+      worker.stallTimer = null;
+      if (worker.gone || worker.sent <= worker.answered) return;
+      if (Date.now() - worker.lastAnswerAt >= timeoutMs) {
+        killWorker(worker, 'timeout');
+      } else {
+        watchForStall(worker);
+      }
+    }, wait);
+    worker.stallTimer.unref?.();
+  }
+
   function handleLine(worker, line) {
     if (!line.trim()) return;
+    noteAnswered(worker);
     let message;
     try {
       message = JSON.parse(line);
@@ -311,32 +402,52 @@ function createPyCalcEngine({
   }
 
   function onStdout(worker, chunk) {
-    worker.stdoutBuffer += chunk;
-    let newline = worker.stdoutBuffer.indexOf('\n');
+    const data = worker.stdoutBuffer + chunk;
+    worker.stdoutBuffer = '';
+    let start = 0;
+    let newline = data.indexOf('\n');
     while (newline !== -1) {
-      const line = worker.stdoutBuffer.slice(0, newline).replace(/\r$/, '');
-      worker.stdoutBuffer = worker.stdoutBuffer.slice(newline + 1);
-      handleLine(worker, line);
-      newline = worker.stdoutBuffer.indexOf('\n');
+      if (worker.skippingLongLine) {
+        // The end of an over-long reply, already counted and priced in Node.
+        worker.skippingLongLine = false;
+      } else {
+        handleLine(worker, data.slice(start, newline).replace(/\r$/, ''));
+      }
+      start = newline + 1;
+      newline = data.indexOf('\n', start);
     }
-    if (worker.stdoutBuffer.length > MAX_LINE_CHARS) {
-      worker.stdoutBuffer = '';
-      const oldest = worker.pending.values().next().value;
-      if (oldest) settle(worker, oldest, { kind: 'malformed', detail: 'a reply line past 4 MB' });
-      killWorker(worker, 'malformed');
+    if (worker.skippingLongLine) return;
+    const rest = data.slice(start);
+    if (rest.length <= maxReplyChars) {
+      worker.stdoutBuffer = rest;
+      return;
     }
+    // Replies come in order, so this one is the oldest request's: that price
+    // goes to Node, the rest of the line is skipped, and the worker carries
+    // on with the requests behind it.
+    worker.skippingLongLine = true;
+    noteAnswered(worker);
+    const oldest = worker.pending.values().next().value;
+    if (oldest) settle(worker, oldest, { kind: 'malformed', detail: `a reply line longer than ${maxReplyChars} characters` });
   }
 
   function onStderr(worker, chunk) {
     worker.stderrBuffer += chunk;
     const lines = worker.stderrBuffer.split('\n');
-    worker.stderrBuffer = lines.pop().slice(-MAX_LINE_CHARS);
+    worker.stderrBuffer = lines.pop().slice(-MAX_STDERR_PARTIAL_CHARS);
     for (const raw of lines) {
       const line = raw.replace(/\r$/, '');
       if (!line.trim()) continue;
       worker.stderrTail.push(line.slice(0, 300));
       if (worker.stderrTail.length > 5) worker.stderrTail.shift();
-      logger.info(`[CALC_WORKER] ${line}`);
+      if (worker.ready) {
+        logWorkerLine(line);
+      } else if (worker.startupStderr.length < MAX_STARTUP_STDERR_LINES) {
+        // Logged once it is ready, or by reportStartupStderr if it fails.
+        worker.startupStderr.push(line.slice(0, MAX_LOGGED_LINE_CHARS));
+      } else {
+        worker.startupStderrDropped += 1;
+      }
     }
   }
 
@@ -344,20 +455,31 @@ function createPyCalcEngine({
   function send(worker, inputs, waitMs, done, { unrefTimer = false } = {}) {
     const id = state.nextId;
     state.nextId += 1;
-    const entry = { id, inputs, done, timer: null };
+    const line = `${JSON.stringify({ id, inputs })}\n`;
+    if (line.length > maxRequestChars) {
+      done({ kind: 'oversized', detail: `a request of ${line.length} characters, more than the ${maxRequestChars} sent to Python` });
+      return;
+    }
+    const entry = { id, inputs, done, timer: null, answeredBefore: worker.answered };
     worker.pending.set(id, entry);
     entry.timer = setTimeout(() => {
       // A reply already sitting in the pipe is read before this decides.
       setImmediate(() => {
         if (!worker.pending.has(id)) return;
         settle(worker, entry, { kind: 'timeout', detail: `no answer within ${waitMs} ms` });
-        // Late or hung, it is restarted; the requests behind it go to Node.
-        killWorker(worker, 'timeout');
+        if (worker.answered === entry.answeredBefore) {
+          // Not one reply since this request was written: hung, so restarted.
+          killWorker(worker, 'timeout');
+        } else {
+          // Still answering, only behind: kept, and watched.
+          watchForStall(worker);
+        }
       });
     }, waitMs);
     if (unrefTimer) entry.timer.unref?.();
     try {
-      worker.child.stdin.write(`${JSON.stringify({ id, inputs })}\n`);
+      worker.child.stdin.write(line);
+      worker.sent += 1;
     } catch (error) {
       settle(worker, entry, { kind: 'crash', detail: `write failed: ${error.message}` });
     }
@@ -385,9 +507,18 @@ function createPyCalcEngine({
       startedAt: Date.now(),
       gone: false,
       pending: new Map(),
+      // Lines written and lines read back: the worker answers each request
+      // with one line, in order, so the difference is its backlog.
+      sent: 0,
+      answered: 0,
+      lastAnswerAt: Date.now(),
+      stallTimer: null,
       stdoutBuffer: '',
+      skippingLongLine: false,
       stderrBuffer: '',
       stderrTail: [],
+      startupStderr: [],
+      startupStderrDropped: 0,
     };
     state.worker = worker;
     liveChildren.add(child);
@@ -418,7 +549,7 @@ function createPyCalcEngine({
 
     // Trusted only once it has priced the probe exactly as Node does.
     send(worker, PROBE_INPUTS, startupTimeoutMs, (outcome) => {
-      if (worker.gone) return;
+      if (worker.gone || state.stopped) return;
       if (!outcome.result) {
         warnOnce(`startup-${outcome.kind}`, `python worker failed its first price (${outcome.detail}); restarting it`);
         killWorker(worker, 'unavailable');
@@ -434,6 +565,9 @@ function createPyCalcEngine({
       }
       worker.ready = true;
       worker.readyAt = Date.now();
+      state.lastStartupStderr = null;
+      for (const line of worker.startupStderr) logWorkerLine(line);
+      worker.startupStderr = [];
       logger.info(`[CALC_ENGINE] python worker ready (pid ${child.pid}, ${worker.readyAt - worker.startedAt} ms)`);
       settleWaiters(true);
     }, { unrefTimer: true });
@@ -449,14 +583,16 @@ function createPyCalcEngine({
 
   /** { result } from Python, or { kind, detail } saying why not. Never rejects. */
   function viaWorker(inputs) {
-    if (!isWireSafe(inputs)) {
-      return Promise.resolve({ kind: 'unsupported-input', detail: 'an input JSON cannot carry exactly (non-finite, -0 or not a number)' });
-    }
+    const problem = wireProblem(inputs);
+    if (problem) return Promise.resolve(problem);
     const worker = readyWorker();
     if (!worker) {
       if (state.disabled) return Promise.resolve({ kind: 'disabled', detail: state.disabled });
       if (!usesWorker) return Promise.resolve({ kind: 'off', detail: 'CALC_ENGINE=js' });
       return Promise.resolve({ kind: 'starting', detail: 'the worker is starting or restarting' });
+    }
+    if (worker.sent - worker.answered >= maxOutstanding) {
+      return Promise.resolve({ kind: 'busy', detail: `${maxOutstanding} requests already waiting on the worker` });
     }
     return new Promise((resolve) => {
       send(worker, inputs, timeoutMs, (outcome) => {
@@ -563,6 +699,7 @@ function createPyCalcEngine({
       fallback: { ...counts.fallback },
       workerPid: state.worker?.child?.pid ?? null,
       workerReady: Boolean(state.worker?.ready),
+      workerBacklog: state.worker ? Math.max(0, state.worker.sent - state.worker.answered) : 0,
       disabled: state.disabled,
     };
   }
