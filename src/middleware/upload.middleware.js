@@ -12,8 +12,12 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 const storage = multer.diskStorage({
+  // Made sure of on every upload, not only at startup: the folder is not in
+  // git, so a deploy or `git clean` on the server removed it under a running
+  // backend and every scan failed with a raw ENOENT (15 Oct 2026). mkdir with
+  // recursive is a no-op when the folder is there.
   destination: (req, file, cb) => {
-    cb(null, uploadDir);
+    fs.mkdir(uploadDir, { recursive: true }, (err) => cb(err || null, uploadDir));
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
