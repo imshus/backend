@@ -14,7 +14,7 @@ const envVarsSchema = joi.object({
   MSG91_TEMPLATE_ID: joi.string().required().description('MSG91 Template ID'),
   OPENAI_API_KEY: joi.string().required().description('OpenAI API Key'),
   OPENAI_SERVICE_TIER: joi.string().valid('auto', 'default', 'flex', 'scale', 'priority').optional()
-    .description('OpenAI service tier; priority ~1.3s faster at ~2x token cost'),
+    .description('OpenAI service tier for scan reads; default priority (~1.3s faster per call at ~2x token cost, owner\'s choice for the 4 s target). Set "default" to opt out'),
   // The Luna levels; the default reader, gpt-5.6-luna, takes "none" and "low".
   // "minimal" (GPT-5) is still accepted and read as "none".
   OPENAI_REASONING_EFFORT: joi.string().valid('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max').optional()
@@ -125,7 +125,10 @@ module.exports = {
   },
   openai: {
     apiKey: envVars.OPENAI_API_KEY,
-    serviceTier: envVars.OPENAI_SERVICE_TIER || null,
+    // Priority by default, at the owner's asking (2026-10-15): a scan should
+    // answer within ~4 s of Calculate, and every model step is ~1.3 s faster
+    // on it. OPENAI_SERVICE_TIER=default turns it off.
+    serviceTier: envVars.OPENAI_SERVICE_TIER || 'priority',
     reasoningEffort: envVars.OPENAI_REASONING_EFFORT || 'low',
   },
   razorpay: {
