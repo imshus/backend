@@ -8,6 +8,7 @@
  *    short grace that a request in flight outlasts; a session nothing was
  *    read into is not finished by an invoice;
  *  - idle 30 minutes: dropped (on read, and by the sweeper); a hard cap;
+ *    the empty session the scanner opens ahead of the photo is kept 24 hours;
  *  - an unknown or dropped scan id is 404 SCAN_EXPIRED, "Please scan again",
  *    on the analysis, the review card and the calculation alike.
  * This file sets SCAN_STORE itself, so the suite does not depend on it.
@@ -247,8 +248,8 @@ test('an invoice finishes the scan it was made from, never an empty session', as
 
 test('idle for 30 minutes: dropped on read and by the sweeper; the newest are kept under the cap', async () => {
   const t0 = Date.now();
-  await redisService.setScan('idle-1', { scanId: 'idle-1', status: 'WAITING_FOR_SCAN' });
-  await redisService.setScan('idle-2', { scanId: 'idle-2', status: 'WAITING_FOR_SCAN' });
+  await redisService.setScan('idle-1', { scanId: 'idle-1', status: 'FRONT_IMAGE_RECEIVED', frontImagePath: photo() });
+  await redisService.setScan('idle-2', { scanId: 'idle-2', status: 'ANALYSIS_COMPLETED', analysisResult: { structuredData: {} } });
   try {
     Date.now = () => t0 + scanStore.limits.IDLE_MS - 1000;
     assert.ok(await redisService.getScan('idle-1'), 'touched just in time: kept, and its clock restarts');
@@ -265,11 +266,44 @@ test('idle for 30 minutes: dropped on read and by the sweeper; the newest are ke
 
   scanStore.__internal.reset();
   for (let i = 0; i < scanStore.limits.MAX_ENTRIES + 5; i += 1) {
-    await quietly(() => redisService.setScan(`cap-${i}`, { scanId: `cap-${i}` }));
+    // Empty sessions: the cap holds them too, long-lived as they are.
+    await quietly(() => redisService.setScan(`cap-${i}`, { scanId: `cap-${i}`, status: 'WAITING_FOR_SCAN' }));
   }
   assert.equal(scanStore.size(), scanStore.limits.MAX_ENTRIES);
   assert.equal(scanStore.peek('cap-0'), null, 'the least recently used went first');
   assert.ok(scanStore.peek(`cap-${scanStore.limits.MAX_ENTRIES + 4}`));
+});
+
+test('the session the scanner opens outlasts a quiet half hour; once a photo is in, the 30 minutes apply', async () => {
+  const user = { userId: 'u-quiet', businessId: 'b1', role: 'OWNER' };
+  const t0 = Date.now();
+  const session = await quietly(() => scanService.createScan('GOLD', 'SINGLE_SIDE', user));
+  try {
+    // The capture screen sat open (or the phone locked) for 31 minutes.
+    Date.now = () => t0 + scanStore.limits.IDLE_MS + 60 * 1000;
+    await quietly(() => scanStore.sweep());
+    assert.ok(scanStore.__internal.entry(session.scanId), 'the sweeper keeps an empty session');
+    const saved = await quietly(() => scanService.saveImage(session.scanId, photo(), 'front', user, {}));
+    assert.equal(saved.status, 'FRONT_IMAGE_RECEIVED', 'the next photo goes into it');
+    assert.equal(await redisService.getLatestScanIdForUser('b1', 'u-quiet'), session.scanId);
+
+    // With a photo in it, it is a scan in progress: 30 idle minutes drop it.
+    Date.now = () => t0 + (2 * scanStore.limits.IDLE_MS) + 2 * 60 * 1000;
+    await quietly(() => scanStore.sweep());
+    assert.equal(scanStore.__internal.entry(session.scanId), null);
+
+    // An empty session nobody comes back to goes after the old Redis TTL.
+    const t1 = Date.now();
+    const forgotten = await quietly(() => scanService.createScan('GOLD', 'SINGLE_SIDE', user));
+    Date.now = () => t1 + scanStore.limits.EMPTY_SESSION_MS - 1000;
+    await quietly(() => scanStore.sweep());
+    assert.ok(scanStore.__internal.entry(forgotten.scanId));
+    Date.now = () => t1 + scanStore.limits.EMPTY_SESSION_MS + 1000;
+    await quietly(() => scanStore.sweep());
+    assert.equal(scanStore.__internal.entry(forgotten.scanId), null);
+  } finally {
+    Date.now = original.now;
+  }
 });
 
 test('an unknown or dropped scan id is 404 SCAN_EXPIRED, "Please scan again", wherever it is used', async () => {

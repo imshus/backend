@@ -13,6 +13,10 @@
  *     same login on a second phone, a card still open behind the invoice)
  *     still completes;
  *   - idle: nothing has read or written it for IDLE_MS (30 minutes);
+ *   - an empty session (opened, nothing sent to it yet) is kept as Redis
+ *     kept it, EMPTY_SESSION_MS (24 hours): the capture screen opens one as
+ *     soon as it comes to the front and holds it until the next photo, so a
+ *     quiet half hour at the counter must not cost the next scan its session;
  *   - over the cap: the least recently used record goes first.
  *
  * Records are kept as JSON text, exactly as Redis held them, so every read
@@ -40,9 +44,11 @@ const count = (value, fallback) => {
 const IDLE_MS = minutes(process.env.SCAN_STORE_IDLE_MINUTES, 30 * 60 * 1000);
 const FINISHED_GRACE_MS = seconds(process.env.SCAN_STORE_FINISHED_GRACE_SECONDS, 2 * 60 * 1000);
 const MAX_ENTRIES = count(process.env.SCAN_STORE_MAX_ENTRIES, 2000);
+// The 24-hour TTL these records had in Redis.
+const EMPTY_SESSION_MS = 24 * 60 * 60 * 1000;
 const SWEEP_EVERY_MS = 60 * 1000;
 
-/** scanId -> { json, owner, touchedAt, finishedAt } in least-recently-used order. */
+/** scanId -> { json, owner, empty, touchedAt, finishedAt } in least-recently-used order. */
 const records = new Map();
 /** `${businessId}:${userId}` -> scanId: the scan each person started last. */
 const latest = new Map();
@@ -51,7 +57,16 @@ let sweeper = null;
 
 const ownerKey = (businessId, userId) => `${businessId}:${userId}`;
 
-const limitOf = (entry) => (entry.finishedAt ? FINISHED_GRACE_MS : IDLE_MS);
+/** A session the scanner opened that nothing has been sent to or read into yet. */
+const isEmptySession = (data) => data?.status === 'WAITING_FOR_SCAN'
+  && !data.frontImagePath
+  && !data.backImagePath
+  && !data.analysisResult;
+
+const limitOf = (entry) => {
+  if (entry.finishedAt) return FINISHED_GRACE_MS;
+  return entry.empty ? EMPTY_SESSION_MS : IDLE_MS;
+};
 
 const isExpired = (entry, now) => now - entry.touchedAt > limitOf(entry);
 
@@ -127,6 +142,7 @@ const set = (scanId, data) => {
   const entry = {
     json: JSON.stringify(data),
     owner: owner || existing?.owner || null,
+    empty: isEmptySession(data),
     touchedAt: Date.now(),
     finishedAt: existing?.finishedAt || null,
   };
@@ -181,7 +197,7 @@ module.exports = {
   setLatest,
   sweep,
   size: () => records.size,
-  limits: { IDLE_MS, FINISHED_GRACE_MS, MAX_ENTRIES },
+  limits: { IDLE_MS, FINISHED_GRACE_MS, EMPTY_SESSION_MS, MAX_ENTRIES },
   __internal: {
     reset: () => {
       records.clear();
