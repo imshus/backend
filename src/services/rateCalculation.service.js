@@ -39,6 +39,22 @@ const normalizeMcxChange = (mcxChange) => {
  */
 const RTGS_RATE2_DEFAULT_TAX_PERCENT = 0;
 
+/**
+ * The two MCX figures a rate is built on that the feedStamp does not hold:
+ * the market MCX (mcx.service: the board's majority, the stored one only
+ * with no board) and the house's own line, which prices a house whose bhaw
+ * is off. Both are read off the board this process holds.
+ */
+const mcxStampFrom = (marketMcx, houseLine) => `${marketMcx ?? null}|${houseLine ?? null}`;
+
+const mcxStampOf = async (source) => {
+  const [marketMcx, houseLine] = await Promise.all([
+    mcxService.getLiveMcxRate24K(),
+    bhawService.houseMcxSell(source),
+  ]);
+  return mcxStampFrom(marketMcx, houseLine);
+};
+
 const getLiveGoldRates = async (businessId, scope = null) => {
   if (!businessId) throw new Error('Business ID is required');
 
@@ -62,12 +78,20 @@ const getLiveGoldRates = async (businessId, scope = null) => {
     cachedData
     && cachedData.bhawSource
     && cachedData.feedStamp !== undefined
+    && cachedData.mcxStamp !== undefined
     && cachedData.build === RUNNING_COMMIT
   ) {
     // Served only while the followed house's board still reads as it did
-    // when this was computed: a bhaw or MCX-line move is a new rate.
-    const stampNow = await bhawService.feedStamp(cachedData.bhawSource.key);
-    if (stampNow === cachedData.feedStamp) return cachedData;
+    // when this was computed: a bhaw or MCX-line move is a new rate. So is a
+    // move in the market MCX or in the house's line while its bhaw is off
+    // (mcxStamp), checked here off the board in memory, not left to the
+    // scheduler's clearing, which waits on Redis and is skipped when Redis
+    // fails.
+    const [stampNow, mcxStampNow] = await Promise.all([
+      bhawService.feedStamp(cachedData.bhawSource.key),
+      mcxStampOf(cachedData.bhawSource.key),
+    ]);
+    if (stampNow === cachedData.feedStamp && mcxStampNow === cachedData.mcxStamp) return cachedData;
   }
   // The generation read before anything else: a save that lands while this
   // computes bumps it, and the result is then not cached.
@@ -351,6 +375,8 @@ const getLiveGoldRates = async (businessId, scope = null) => {
     karatRates: computedKaratRates,
     // What bhawService.feedStamp reads: the house line and both premiums.
     feedStamp: vendorBhaw ? `${houseMcx}|${vendorBhaw.cashBhaw}|${vendorBhaw.rtgsBhaw}` : 'off',
+    // What mcxStampOf reads: the market MCX and the house line used here.
+    mcxStamp: mcxStampFrom(mcxLiveRate, houseMcx),
     build: RUNNING_COMMIT
   };
 

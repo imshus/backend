@@ -6,9 +6,10 @@
  *    and no rate at all (never a made-up one) when there is neither;
  *  - the supreme rates screen shows that same board MCX;
  *  - the worked-out rates are served from memory per business and per
- *    employee while the board reads the same (feedStamp) and no settings
- *    save or board move has cleared them (the generation): a cache hit costs
- *    no Redis, no database and no network;
+ *    employee while the board reads the same (feedStamp, and the market MCX
+ *    and house line: mcxStamp) and no settings save or board move has
+ *    cleared them (the generation): a cache hit costs no Redis, no database
+ *    and no network, and a move is seen without the scheduler's clearing;
  *  - a compute a settings save overtakes is not cached.
  * The Redis client, the database and the board's feed are stood in for.
  */
@@ -274,4 +275,69 @@ test('a compute a settings save overtakes is not cached', async () => {
       return { mcxChange: { operation: '+', amount: 0 }, rtgsChangeBy: 0, cashChangeBy: 0, scannerCalculationUse: 'rtgs' };
     };
   }
+});
+
+/** A board on which JMD Patil (the default house) quotes no bhaw: off. */
+const offBoard = ({ jmdLine = null, market = MAJORITY } = {}) => ({
+  fetched_at: new Date(Date.now() + 1000 + Math.floor(Math.random() * 1000)).toISOString(),
+  next_fetch_at: new Date(Date.now() + 180_000).toISOString(),
+  sources: [
+    { source: 'jmd_patil', name: 'JMD Patil', cash_bhaw: null, rtgs_bhaw: null,
+      rows: jmdLine ? [{ label: 'Gold Future MCX', buy: String(jmdLine - 27), sell: String(jmdLine) }] : [] },
+    ...['mega_bullion', 'shri_sai', 'shri_ganesh'].map((source) => ({
+      source, name: source, cash_bhaw: null, rtgs_bhaw: null,
+      rows: [{ label: 'Gold Future MCX', buy: String(market - 20), sell: String(market) }],
+    })),
+  ],
+});
+
+const newOffBoard = async (options) => {
+  feed.payload = offBoard(options);
+  bhawService.__internal.resetCache();
+  await bhawService.prefetch();
+};
+
+test('the market MCX moving is a new rate at once, with no clearing from the scheduler (Redis may be down)', async () => {
+  await newOffBoard({ market: MAJORITY });
+  await redisService.invalidateAllGoldRatesCache();
+  await redisService.setSupremeCache({ rtgsChange: 500, cashChange: -200 });
+  reads.tax = 0;
+
+  // The followed house has no line and no bhaw: it is priced on the market MCX.
+  const first = await quietly(() => rateCalculation.getLiveGoldRates('biz-off'));
+  assert.equal(first.feedStamp, 'off');
+  assert.equal(first.taxSettings.rtgsFinalRate, MAJORITY + 500);
+
+  // A new snapshot that reads the same is still a cache hit.
+  await newOffBoard({ market: MAJORITY });
+  redisCalls.length = 0;
+  await rateCalculation.getLiveGoldRates('biz-off');
+  assert.equal(reads.tax, 1, 'nothing moved: served from memory');
+  assert.deepEqual(redisCalls, []);
+
+  // The market moves; nothing clears the cache (the scheduler's store, which
+  // would, never runs here, as when Redis fails).
+  await newOffBoard({ market: MAJORITY + 300 });
+  const moved = await quietly(() => rateCalculation.getLiveGoldRates('biz-off'));
+  assert.equal(reads.tax, 2, 'worked out again');
+  assert.equal(moved.mcxLiveRate, MAJORITY + 300);
+  assert.equal(moved.taxSettings.rtgsFinalRate, MAJORITY + 300 + 500);
+  assert.deepEqual(redisCalls, [], 'and that took no Redis call');
+});
+
+test('the house line moving while its bhaw is off is a new rate at once', async () => {
+  const LINE = 153273;
+  await newOffBoard({ jmdLine: LINE });
+  await redisService.invalidateAllGoldRatesCache();
+  await redisService.setSupremeCache({ rtgsChange: 500, cashChange: -200 });
+  reads.tax = 0;
+
+  const first = await quietly(() => rateCalculation.getLiveGoldRates('biz-line'));
+  assert.equal(first.feedStamp, 'off', 'the house quotes no bhaw');
+  assert.equal(first.taxSettings.rtgsFinalRate, LINE + 500, 'priced on its own line');
+
+  await newOffBoard({ jmdLine: LINE + 100 });
+  const moved = await quietly(() => rateCalculation.getLiveGoldRates('biz-line'));
+  assert.equal(reads.tax, 2);
+  assert.equal(moved.taxSettings.rtgsFinalRate, LINE + 100 + 500);
 });

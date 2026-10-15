@@ -222,16 +222,23 @@ test('a Tax box saved at 0 prices Rate 2 at Rate 1 itself; 4 divides it by 1.04'
 
 test('a cached rate is served while the board reads the same, dropped once it moves', async () => {
   reset('jmd_patil');
-  state.cached = {
+  const sameBoard = {
     mcxLiveRate: 1, bhawSource: { key: 'jmd_patil', name: 'JMD Patil', live: true },
-    feedStamp: `${JMD_LINE}|-3100|2100`, build: RUNNING_COMMIT,
+    feedStamp: `${JMD_LINE}|-3100|2100`, mcxStamp: `${MCX}|${JMD_LINE}`, build: RUNNING_COMMIT,
   };
+  state.cached = sameBoard;
   assert.equal((await getLiveGoldRates(BIZ)).mcxLiveRate, 1, 'same board: served');
   assert.equal(state.writes.length, 0);
 
-  state.cached = { ...state.cached, feedStamp: `${JMD_LINE}|-3000|2100` };
+  state.cached = { ...sameBoard, feedStamp: `${JMD_LINE}|-3000|2100` };
   assert.equal((await getLiveGoldRates(BIZ)).mcxLiveRate, MCX, 'bhaw moved: recomputed');
   assert.equal(state.writes.length, 1);
+
+  // Worked out on another market MCX: recomputed, with the scheduler's
+  // clearing nowhere in sight.
+  state.cached = { ...sameBoard, mcxStamp: `${MCX - 300}|${JMD_LINE}` };
+  assert.equal((await getLiveGoldRates(BIZ)).mcxLiveRate, MCX, 'market MCX moved: recomputed');
+  assert.equal(state.writes.length, 2);
 });
 
 test('a cached rate from another deployment is worked out again, not served', async () => {
