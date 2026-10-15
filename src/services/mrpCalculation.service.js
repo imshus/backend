@@ -72,7 +72,19 @@ const resolveScanForCalculation = async (requestedScanId, session) => {
     return { resolvedScanId: requestedScanId, scan };
   }
 
-  // No record: 404 SCAN_EXPIRED ("Please scan again").
+  // Held in memory, a record is dropped once its scan is over (scanStore),
+  // while its card can still be open. The card sends every input a price
+  // needs; the record only lends the cash/RTGS fallback and the place the
+  // snapshot is kept. So it is priced from the request alone and nothing is
+  // written: not a 404, which every build's card ignores (keeping the old
+  // MRP beside the edited inputs), and never another scan's record.
+  if (redisService.scansInMemory()) {
+    console.info('[MRP_CALC_WITHOUT_SCAN]', { scanId: String(requestedScanId) });
+    return { resolvedScanId: null, scan: null };
+  }
+
+  // Redis: no record is 404 SCAN_EXPIRED ("Please scan again"), unless the
+  // caller has a newer scan.
   if (!session?.businessId || !session?.userId) {
     throw scanExpiredError();
   }
@@ -280,7 +292,12 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   const karatPurityPercent = karatData ? toNumber(karatData.purity) : 0;
   const karatNumber = request.purityKarat ? Number(request.purityKarat.slice(0, -1)) : 0;
 
-  let resolvedMode = request.calculationMode || scan?.calculationMode || 'rtgs';
+  // With no scan record (one dropped from memory), the shop's scanner
+  // setting, as the analysis chose it (deriveInputFromReading).
+  const recordMode = scan
+    ? scan.calculationMode
+    : (liveRatesData?.taxSettings?.scannerCalculationUse === 'cash' ? 'cash' : null);
+  let resolvedMode = request.calculationMode || recordMode || 'rtgs';
 
   if (user?.role === 'EMP') {
     if (!employee) {

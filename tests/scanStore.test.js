@@ -74,6 +74,11 @@ const original = {
   now: Date.now,
 };
 
+const stubbedRates = async () => ({
+  karatRates: [{ carat: '18Kt', purity: 75 }],
+  taxSettings: { rtgsFinalRate: 150000, cashFinalRate: 149000 },
+});
+
 test.before(() => {
   openaiService.analyzeImages = async () => ({
     provider: 'openai-test',
@@ -82,10 +87,7 @@ test.before(() => {
   });
   ocrPreprocessCache.beginWarm = () => ({ commit() {}, discard() {} });
   scanBillingService.billCompletedScan = async () => ({ totalScanCharge: 1, billedAt: new Date() });
-  rateCalculationService.getLiveGoldRates = async () => ({
-    karatRates: [{ carat: '18Kt', purity: 75 }],
-    taxSettings: { rtgsFinalRate: 150000, cashFinalRate: 149000 },
-  });
+  rateCalculationService.getLiveGoldRates = stubbedRates;
   LabourRate.findOne = async () => null;
 });
 
@@ -138,7 +140,10 @@ const answerFor = (error) => {
   return res;
 };
 
-const calculate = async (scanId, user = OWNER) => {
+/** What the review card sends: every input a price needs. */
+const CARD = { jewelleryType: 'GOLD', netWt: 10, grossWt: 10, purityKarat: '18K', diamonds: [], colorstones: [], otherCharges: 0, calculationMode: 'rtgs' };
+
+const calculate = async (scanId, user = OWNER, body = CARD) => {
   const res = {
     statusCode: 200,
     body: null,
@@ -150,7 +155,7 @@ const calculate = async (scanId, user = OWNER) => {
     {
       params: { scanId },
       user,
-      body: { jewelleryType: 'GOLD', netWt: 10, grossWt: 10, purityKarat: '18K', diamonds: [], colorstones: [], otherCharges: 0, calculationMode: 'rtgs' },
+      body,
     },
     res,
     (error) => { failure = error; },
@@ -306,13 +311,12 @@ test('the session the scanner opens outlasts a quiet half hour; once a photo is 
   }
 });
 
-test('an unknown or dropped scan id is 404 SCAN_EXPIRED, "Please scan again", wherever it is used', async () => {
+test('an unknown or dropped scan id is 404 SCAN_EXPIRED, "Please scan again", on the scan itself', async () => {
   const expired = 'no-such-scan';
   const failures = [
     await scanService.analyzeScan(expired, {}, 'b1', OWNER).catch((error) => error),
     await scanService.getReviewData(expired, OWNER).catch((error) => error),
     await scanService.saveImage(expired, photo(), 'front', OWNER, {}).catch((error) => error),
-    (await quietly(() => calculate(expired, { userId: 'u-nobody', businessId: 'b1', role: 'OWNER' }))).failure,
   ];
   for (const failure of failures) {
     const answer = answerFor(failure);
@@ -324,5 +328,79 @@ test('an unknown or dropped scan id is 404 SCAN_EXPIRED, "Please scan again", wh
     });
     // The words every build's review card already reads as a stale scan.
     assert.match(answer.body.message, /scan not found/i);
+  }
+});
+
+test('a card whose scan was dropped while it sat open is still priced, from its own inputs, with nothing written', async () => {
+  const user = { userId: 'u-haggle', businessId: 'b1', role: 'OWNER' };
+  const sold = await quietly(() => fullScan(user));
+  const t0 = Date.now();
+  try {
+    // A 35-minute negotiation, then the shop edits the net weight.
+    Date.now = () => t0 + scanStore.limits.IDLE_MS + 5 * 60 * 1000;
+    await quietly(() => scanStore.sweep());
+    assert.equal(scanStore.__internal.entry(sold.scanId), null, 'the record is gone');
+
+    const edited = await quietly(() => calculate(sold.scanId, user, { ...CARD, netWt: 12 }));
+    assert.equal(edited.failure, null, 'not a 404 the card would ignore');
+    assert.equal(edited.res.statusCode, 200);
+    assert.ok(edited.res.body.data.finalMRP > sold.priced.res.body.data.finalMRP, 'the new weight is priced');
+    assert.equal(scanStore.__internal.entry(sold.scanId), null, 'and no record is made up for it');
+
+    // The card's cash/RTGS choice when it sends one; the shop's scanner
+    // setting when it does not (the record's own choice is gone with it).
+    rateCalculationService.getLiveGoldRates = async () => ({
+      karatRates: [{ carat: '18Kt', purity: 75 }],
+      taxSettings: { rtgsFinalRate: 150000, cashFinalRate: 149000, scannerCalculationUse: 'cash' },
+    });
+    const { calculationMode, ...noMode } = CARD;
+    assert.equal(calculationMode, 'rtgs');
+    const shopSetting = await quietly(() => calculate(sold.scanId, user, noMode));
+    assert.equal(shopSetting.res.body.data.breakdown.goldRateApplied, 14900, 'the shop prices on cash');
+    const cardChoice = await quietly(() => calculate(sold.scanId, user, CARD));
+    assert.equal(cardChoice.res.body.data.breakdown.goldRateApplied, 15000, 'the card asked for RTGS');
+  } finally {
+    Date.now = original.now;
+    rateCalculationService.getLiveGoldRates = stubbedRates;
+  }
+});
+
+test('a dropped scan\'s card never prices against, or writes into, the same person\'s newer scan', async () => {
+  const user = { userId: 'u-two-phones', businessId: 'b1', role: 'OWNER' };
+  const first = await quietly(() => fullScan(user));
+  // The same login opens the scanner again (another phone, or back to capture).
+  const second = await quietly(() => fullScan(user));
+  const secondBefore = await redisService.getScan(second.scanId);
+  assert.equal(await redisService.getLatestScanIdForUser('b1', 'u-two-phones'), second.scanId);
+
+  const t0 = Date.now();
+  try {
+    // Past the grace a superseded scan gets; the newer one is read on its own phone.
+    Date.now = () => t0 + scanStore.limits.FINISHED_GRACE_MS + 1000;
+    assert.ok(await redisService.getScan(second.scanId));
+    const late = await quietly(() => calculate(first.scanId, user, { ...CARD, netWt: 3, calculationMode: 'cash' }));
+    assert.equal(late.failure, null, 'priced from the card it came from');
+    assert.equal(late.res.statusCode, 200);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const secondAfter = await redisService.getScan(second.scanId);
+    assert.deepEqual(secondAfter.calculation, secondBefore.calculation, 'the newer scan\'s figures are untouched');
+    assert.deepEqual(secondAfter.calculationInputSnapshot, secondBefore.calculationInputSnapshot);
+    assert.equal(secondAfter.calculationMode, secondBefore.calculationMode, 'and so is its cash/RTGS choice');
+    assert.equal(secondAfter.status, secondBefore.status);
+  } finally {
+    Date.now = original.now;
+  }
+});
+
+test('SCAN_STORE=redis: a missing scan is 404 SCAN_EXPIRED on the calculation, as before', async () => {
+  process.env.SCAN_STORE = 'redis';
+  try {
+    const { failure } = await quietly(() => calculate('no-such-scan', { userId: 'u-nobody', businessId: 'b1', role: 'OWNER' }));
+    const answer = answerFor(failure);
+    assert.equal(answer.statusCode, 404);
+    assert.equal(answer.body.error, 'SCAN_EXPIRED');
+  } finally {
+    process.env.SCAN_STORE = 'memory';
   }
 });

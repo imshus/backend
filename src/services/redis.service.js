@@ -556,6 +556,7 @@ const getSupremeCache = async () => {
 };
 
 module.exports = {
+  scansInMemory,
   setScan,
   getScan,
   deleteScan,
