@@ -107,6 +107,8 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
 - Auth: optional
 - Controller: `scanController.analyzeScan`
 - Description: Trigger AI processing (OpenAI/Gemini) for the uploaded images; updates scan state.
+- Also prices the reading (`pricing`, `pricingInput`, `pricingError`) from the
+  inputs the asking build's card will send, by its `X-Pricing-Rules` (see 2.9).
 
 2.5 GET /api/v1/scans/:scanId/clarification
 - Auth: optional
@@ -133,6 +135,10 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
 - Auth: JWT required (`authenticateJWT`)
 - Controller: `calculationController.calculateMRP`
 - Description: Calculate final MRP using scan + rates (protected route for pricing/calculation).
+- Header `X-Pricing-Rules`: `2` from the app from 1.0.367 (prefix item match,
+  item wastage and labour, stone units, percent labour). No header (builds up
+  to 1.0.366): the Masters item is the one whose code is exactly `itemCode`
+  and its labour is not charged, as those builds invoice.
 - Body (all optional; figures as numbers or numeric text):
   - `netWt`, `grossWt` (grams, 0-1,00,000). A net weight of 0 with a gross
     weight is worked out as gross less 0.2 g per stone carat (never below 0);
@@ -144,9 +150,11 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
     (grams, priced as 5 ct per gram).
   - `labourChargeAmount` with `labourChargeUnit` "Per Gram" | "Per 10 Gram" |
     "Percent" (a percent of the gold value; "12%" in the amount means the
-    same). Without an amount: the matched Masters item's labour (Rs/gram),
-    else the shop's labour charge (AMOUNT per its unit, or PERCENTAGE of the
-    gold value). `labourWeightBasis` "net" | "gross", default the basis the
+    same). Text around a figure ("MC 850") is read as its first number;
+    text with no number ("NIL") is no amount. Without an amount: the matched
+    Masters item's labour in its `labourUnit` (rules 2 only), else the
+    shop's labour charge (AMOUNT per its unit, or PERCENTAGE of the gold
+    value). `labourWeightBasis` "net" | "gross", default the basis the
     shop's labour charge was saved with.
   - `wastagePercent` (0-100), `otherCharges` (>= 0), `calculationMode`,
     `itemCode`, `tagIdentifiers[]`. The Masters item is found from them as
@@ -169,6 +177,8 @@ All rate endpoints are under `/api/v1/rates` (router mounted at `/api/v1/rates`)
 - GET /api/v1/rates/gold — list computed gold rates (uses caching via `redis.service`)
 - POST /api/v1/rates/gold — update business gold rate rows (permission `editRateGold` required)
 - PATCH /api/v1/rates/gold/visibility — toggle visibility (permission `editRateGold`)
+  - Both answer 200 with the saved row; while live rates are unavailable it
+    comes back without computed rates and with `ratesUnavailable: true`.
 - GET /api/v1/rates/gold/tax-settings — fetch tax settings
 - POST /api/v1/rates/gold/tax-settings — update tax settings (permission `editRateGold`)
 
@@ -237,6 +247,9 @@ All wishlist routes require JWT.
 6.3 Supreme rates
 - GET /api/v1/settings/supreme-rates (role SUPER)
 - PUT /api/v1/settings/supreme-rates (role SUPER)
+  - With no stored MCX: `mcx`, `supremeRtgs`, `supremeCash` are null and
+    `ratesUnavailable: true` (never Rs 1,60,000); the changes are saved and
+    cached either way.
 
 
 7. Employee management (OWNER only)

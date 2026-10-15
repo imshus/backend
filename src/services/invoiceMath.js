@@ -198,7 +198,8 @@ const readAmount = (value, what) => {
  *   (amountPaise), the gross Qty × Unit Price and discount the e-invoice
  *   registers, and its own CGST, SGST and IGST.
  * @throws {InvoiceInputError} for a negative figure, an HSN that is not
- *   jewellery, or a rate that is not the jewellery rate
+ *   jewellery, a rate that is not the jewellery rate, or a line sold by
+ *   weight (grams or carats) that bills an amount on no weight
  */
 function computeInvoiceFigures({ lineItems, gstRate = 3, intraState }) {
   if (!Array.isArray(lineItems)) {
@@ -235,6 +236,16 @@ function computeInvoiceFigures({ lineItems, gstRate = 3, intraState }) {
 
     const qty = roundHalfUp(qtyGiven, 3);
     const amountPaise = toPaise(amountGiven);
+    const uqc = uqcFor(item, kind, qty);
+    // Gold or a stone is sold by its weight. With none given it would be
+    // registered as one gram (or carat) at the whole amount, so the invoice
+    // is refused until the weight is on it: a piece priced on a net weight
+    // worked out from the gross has that weight to bill, not 0.
+    if ((uqc === 'GMS' || uqc === 'CTS') && !(qty > 0) && amountPaise > 0) {
+      throw new InvoiceInputError(
+        `${label} bills Rs ${paiseToRupees(amountPaise)} with no ${uqc === 'GMS' ? 'weight in grams' : 'weight in carats'}. Enter its weight on the card and generate the invoice again.`,
+      );
+    }
     // The e-invoice needs a quantity: a line billed by its amount alone
     // (labour, a charge) is one unit of it.
     const billedQty = qty > 0 && kind !== 'labour' ? qty : 1;
@@ -261,7 +272,7 @@ function computeInvoiceFigures({ lineItems, gstRate = 3, intraState }) {
       hsn,
       qty,
       billedQty,
-      uqc: uqcFor(item, kind, qty),
+      uqc,
       price,
       unitPrice,
       amountPaise,

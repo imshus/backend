@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const ItemCode = require('../models/itemCode.model');
+const { labourUnitOf, ITEM_LABOUR_UNITS } = require('../services/pricingInputs');
 const {
   settingsScope,
   findScopedRows,
@@ -37,14 +38,26 @@ const toOptionalNumber = (value, { max } = {}) => {
   return parsed;
 };
 
+/**
+ * The labour unit sent: 'Per Gram', 'Per 10 Gram' or 'Percent'; null when
+ * none is sent (a build before the unit existed), undefined when it is not
+ * one of those.
+ */
+const toLabourUnit = (value) => {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const unit = labourUnitOf(value);
+  return unit && ITEM_LABOUR_UNITS.includes(unit) ? unit : undefined;
+};
+
 /** Creates a code, or edits one when an id is sent along. */
 const saveItemCode = async (req, res) => {
   try {
     const scope = settingsScope(req.user);
-    const { id, code, description, wastage, labour } = req.body || {};
+    const { id, code, description, wastage, labour, labourUnit } = req.body || {};
     const normalized = normalizeCode(code);
     const parsedWastage = toOptionalNumber(wastage, { max: 100 });
     const parsedLabour = toOptionalNumber(labour);
+    const parsedLabourUnit = toLabourUnit(labourUnit);
 
     if (!normalized) {
       return res.status(400).json({ success: false, message: 'Item code is required' });
@@ -58,6 +71,9 @@ const saveItemCode = async (req, res) => {
     if (parsedLabour === undefined) {
       return res.status(400).json({ success: false, message: 'Labour must be a number that is not negative' });
     }
+    if (parsedLabourUnit === undefined) {
+      return res.status(400).json({ success: false, message: 'Labour unit must be "Per Gram", "Per 10 Gram" or "Percent"' });
+    }
 
     // An employee editing the shop's list for the first time gets their own
     // copy of the whole list, so one change never strands them with one row.
@@ -69,6 +85,9 @@ const saveItemCode = async (req, res) => {
       wastage: parsedWastage,
       labour: parsedLabour,
     };
+    // A build that does not send the unit leaves the saved one as it is (a
+    // new row is per gram).
+    if (parsedLabourUnit) set.labourUnit = parsedLabourUnit;
 
     let item;
     if (id && mongoose.Types.ObjectId.isValid(id)) {
@@ -78,9 +97,16 @@ const saveItemCode = async (req, res) => {
       if (!target) {
         return res.status(404).json({ success: false, message: 'Item code not found' });
       }
+      const unit = set.labourUnit || target.labourUnit || 'Per Gram';
+      if (unit === 'Percent' && parsedLabour !== null && parsedLabour > 100) {
+        return res.status(400).json({ success: false, message: 'A labour percentage must be between 0 and 100' });
+      }
       target.set(set);
       item = await target.save();
     } else {
+      if (set.labourUnit === 'Percent' && parsedLabour !== null && parsedLabour > 100) {
+        return res.status(400).json({ success: false, message: 'A labour percentage must be between 0 and 100' });
+      }
       item = await ItemCode.create({ businessId: scope.businessId, userId: scope.userId, ...set });
     }
 

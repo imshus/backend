@@ -47,6 +47,14 @@ const itemCodeSchema = new mongoose.Schema(
       default: null,
       min: 0,
     },
+    // The unit the labour is in: rupees per gram (what a row saved before
+    // the unit existed was priced as), per 10 g, or a percent of the gold
+    // value. Shown beside the figure in Masters and priced in it.
+    labourUnit: {
+      type: String,
+      enum: ['Per Gram', 'Per 10 Gram', 'Percent'],
+      default: 'Per Gram',
+    },
   },
   {
     timestamps: true,

@@ -77,12 +77,19 @@ const fieldText = (field) => {
 
 // ── Karat ────────────────────────────────────────────────────────────────
 
-/** Karats a tag may carry and the app can price (its SCANNABLE_KARATS, and 15K). */
-const SCANNABLE_KARAT_NUMBERS = new Set(['24', '23', '22', '21', '20', '18', '15', '14', '10', '9']);
+/**
+ * Karats a tag may carry and the app can price: exactly the app's
+ * SCANNABLE_KARATS (mrpscan-app utils/formulaUtils.ts). A karat the app
+ * cannot read falls to its 14K default and is asked about on the card, so a
+ * karat read here and not there (15K / 625 was one) made the first price and
+ * the card's disagree. tests/pricingFindings.test.js holds the two tables
+ * to each other.
+ */
+const SCANNABLE_KARAT_NUMBERS = new Set(['24', '23', '22', '21', '20', '18', '14', '10', '9']);
 
-/** Fineness standards (per mille) and the karat each stands for. */
+/** Fineness standards (per mille) and the karat each stands for: the app's FINENESS_STANDARDS. */
 const FINENESS_STANDARDS = [
-  [375, '9K'], [417, '10K'], [585, '14K'], [625, '15K'], [750, '18K'],
+  [375, '9K'], [417, '10K'], [585, '14K'], [750, '18K'],
   [833, '20K'], [875, '21K'], [916, '22K'], [958, '23K'], [999, '24K'],
 ];
 /** Parts per thousand a printed value may sit from a standard and still mean it (as the app). */
@@ -225,6 +232,18 @@ function findItemByCode(code, rows) {
 }
 
 /**
+ * The saved item whose code is exactly `code` (as stored: uppercase), the
+ * way the server found it before prefix matching, for the builds that bill
+ * by that rule (pricing rules 1). Same shape as findItemOnTag; null when none.
+ */
+function findItemExactly(code, rows) {
+  const wanted = String(code ?? '').trim();
+  if (!wanted) return null;
+  const row = (Array.isArray(rows) ? rows : []).find((item) => String(item?.code ?? '') === wanted);
+  return row ? { row, identifier: wanted } : null;
+}
+
+/**
  * The saved item any of a tag's identifiers names, trying them in order, and
  * the identifier that named it; null when none does (the app's findItemOnTag).
  */
@@ -306,6 +325,174 @@ function parseTagLabour(raw) {
   return null;
 }
 
+/** The units a Masters item's labour may be saved in: rupees per gram, per 10 g, or a percent of the gold value. */
+const ITEM_LABOUR_UNITS = ['Per Gram', 'Per 10 Gram', LABOUR_UNIT_PERCENT];
+
+/**
+ * The labour a Masters -> Item Code row carries, in the unit it was saved
+ * in (rupees per gram for a row saved before the unit existed); null when
+ * the shop gave none. A percent above 100 is no labour figure.
+ */
+function itemLabourOf(itemRow) {
+  const amount = itemRow?.labour;
+  if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) return null;
+  const unit = labourUnitOf(itemRow?.labourUnit) || 'Per Gram';
+  if (unit === LABOUR_UNIT_PERCENT && amount > 100) return null;
+  return { amount, unit };
+}
+
+// ── Which app build is asking ────────────────────────────────────────────
+
+/**
+ * The header an app build sends to say which pricing rules it prices and
+ * bills with. Builds up to 1.0.366 send none (rules 1); 1.0.367 sends 2.
+ *
+ * Rules 2: the Masters item is found from the tag number by prefix (GR10286
+ * is item GR) and its wastage and labour are charged; the app sends each
+ * stone's unit, a tag's "12%" labour as a percent, and the item's labour.
+ * Rules 1 (the builds already in shops): the item is found by its exact
+ * code only and its labour is not charged, as before. Those builds bill no
+ * wastage line (1.0.360-1.0.364) and never send a unit or percent labour,
+ * so charging the prefix item's wastage there invoiced less than the MRP
+ * the card quoted.
+ */
+const PRICING_RULES_HEADER = 'x-pricing-rules';
+const CURRENT_PRICING_RULES = 2;
+
+function pricingRulesOf(req) {
+  const raw = typeof req?.get === 'function'
+    ? req.get(PRICING_RULES_HEADER)
+    : req?.headers?.[PRICING_RULES_HEADER];
+  const rules = Number.parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(rules) && rules >= CURRENT_PRICING_RULES ? CURRENT_PRICING_RULES : 1;
+}
+
+// ── What the app's card starts with, per build ───────────────────────────
+
+/** The shop's labour charge as the app reads GET /rates/labour (ratesApi normalizeLabourRate). */
+function shopLabourAsApp(labourDoc) {
+  if (!labourDoc || (labourDoc.chargeType !== 'AMOUNT' && labourDoc.chargeType !== 'PERCENTAGE')) return null;
+  const value = Number(labourDoc.value);
+  if (!Number.isFinite(value)) return null;
+  return {
+    chargeType: labourDoc.chargeType,
+    value,
+    rupeesUnit: labourDoc.rupeesUnit === 'Per 10 Gram' ? 'Per 10 Gram' : (labourDoc.rupeesUnit ? 'Per Gram' : null),
+    weightBasis: labourDoc.weightBasis === 'net' ? 'net' : 'gross',
+  };
+}
+
+/** The old app's labourUtils.parseNumericLabourValue: ₹ , % and spaces dropped, then parseFloat. */
+function legacyLabourNumber(raw) {
+  const cleaned = String(raw ?? '').replace(/[₹,%\s]/g, '');
+  if (!cleaned) return null;
+  const n = Number.parseFloat(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The labour fields a build up to 1.0.366 fills from a tag's labour text
+ * (its labourUtils.parseLabourFromApi): "850|Per Gram"; a figure above 100
+ * is rupees per gram (per 10 g when the text says so); a figure up to 100,
+ * "12%" included, is filed as a labour purity that nothing prices; text it
+ * cannot read ("MC 850", "NIL") is sent as it stands. Null: nothing filled.
+ */
+function legacyAppTagLabour(raw) {
+  const text = String(raw ?? '');
+  if (!text.trim()) return null;
+  const parts = text.split('|');
+  if (parts.length === 2 && legacyLabourNumber(parts[0]) !== null) {
+    const unit = parts[1].trim();
+    return {
+      labourChargeAmount: String(legacyLabourNumber(parts[0])),
+      labourChargeUnit: unit === 'Per Gram' || unit === 'Per 10 Gram' ? unit : 'Per Gram',
+    };
+  }
+  const n = legacyLabourNumber(text);
+  if (n !== null && n > 0) {
+    if (n <= 100) return null;
+    return {
+      labourChargeAmount: String(n),
+      labourChargeUnit: /per\s*10\s*gram/i.test(text) ? 'Per 10 Gram' : 'Per Gram',
+    };
+  }
+  return { labourChargeAmount: text.trim(), labourChargeUnit: 'Per Gram' };
+}
+
+/**
+ * The labour fields the app's review card starts a reading with, and so
+ * sends with its first price (processing.tsx), for the build that asks:
+ *
+ *   rules 2 (1.0.367): the tag's labour (parseTagLabour: "12%" a percent of
+ *     the gold value) on the net weight; else the Masters item's labour in
+ *     its unit; else the shop's charge, AMOUNT per its unit or PERCENTAGE as
+ *     a percent; the shop's weight basis for both of those;
+ *   rules 1 (up to 1.0.366): the tag's labour as those builds read it (no
+ *     percent); else the shop's AMOUNT charge with its unit and basis; a
+ *     PERCENTAGE charge is left to the server (sent blank).
+ *
+ * Always the labourWeightBasis the card sends ('net' unless a shop charge
+ * set it), so the price worked out from these is the card's.
+ */
+function appLabourFields({ tagLabour, itemRow, labourDoc, rules }) {
+  const shop = shopLabourAsApp(labourDoc);
+  if (rules >= CURRENT_PRICING_RULES) {
+    const fromTag = parseTagLabour(tagLabour);
+    if (fromTag) {
+      return {
+        labourChargeAmount: String(fromTag.amount),
+        labourChargeUnit: fromTag.unit,
+        labourWeightBasis: 'net',
+      };
+    }
+    const basis = shop ? shop.weightBasis : 'net';
+    const fromItem = itemLabourOf(itemRow);
+    if (fromItem) {
+      return {
+        labourChargeAmount: String(fromItem.amount),
+        labourChargeUnit: fromItem.unit,
+        labourWeightBasis: basis,
+      };
+    }
+    if (shop) {
+      return {
+        labourChargeAmount: String(shop.value),
+        labourChargeUnit: shop.chargeType === 'PERCENTAGE' ? LABOUR_UNIT_PERCENT : (shop.rupeesUnit || 'Per Gram'),
+        labourWeightBasis: basis,
+      };
+    }
+    return { labourWeightBasis: 'net' };
+  }
+  const fromTag = legacyAppTagLabour(tagLabour);
+  if (fromTag) return { ...fromTag, labourWeightBasis: 'net' };
+  if (shop?.chargeType === 'AMOUNT') {
+    return {
+      labourChargeAmount: String(shop.value),
+      labourChargeUnit: shop.rupeesUnit || 'Per Gram',
+      labourWeightBasis: shop.weightBasis,
+    };
+  }
+  return { labourWeightBasis: 'net' };
+}
+
+/**
+ * The rate a colour stone ends up with on the card of a build up to
+ * 1.0.366 (its ratesApi lookupStoneRate): looked up only when the stone has
+ * both a colour and a clarity, on the first row with the same colour and
+ * clarity (ignoring case); a miss clears the printed rate. A stone without
+ * both keeps its printed rate.
+ */
+function legacyAppColorstoneRate(rows, { color, clarity, printedRate }) {
+  const wantColor = String(color ?? '').trim().toLowerCase();
+  const wantClarity = String(clarity ?? '').trim().toLowerCase();
+  if (!wantColor || !wantClarity) return printedRate;
+  const row = (Array.isArray(rows) ? rows : []).find((candidate) => (
+    String(candidate?.color ?? '').trim().toLowerCase() === wantColor
+    && String(candidate?.clarity ?? '').trim().toLowerCase() === wantClarity
+  ));
+  return row ? readFigure(row.rate) : 0;
+}
+
 // ── The /calculate body ──────────────────────────────────────────────────
 
 // Bounds no real piece reaches; past them a figure is a mistake, not a price.
@@ -362,6 +549,44 @@ function bodyStones(value, name, withDiscount) {
 }
 
 /**
+ * The labour figure a /calculate body carries, as { amount, unit }, or null
+ * when it carries no figure at all.
+ *
+ *   - A plain figure ("850", 850, "₹ 1,250", "12%") is read strictly: a
+ *     negative one is refused, and a percent above 100.
+ *   - Text around a figure ("MC 850", "Making 850 per 10 gram", "LBR 12%")
+ *     is read as the analysis reads a tag's labour: its first number, a "%"
+ *     making it a percent of the gold value. Builds up to 1.0.366 forward
+ *     tag text they cannot parse as it stands, and refusing it with a 400
+ *     failed every price the card asked for while the analysis priced it.
+ *   - Text with no number in it ("NIL") is no labour figure: the item's or
+ *     the shop's charge applies, as the analysis prices the same tag.
+ */
+function bodyLabour(raw, labourUnit) {
+  if (typeof raw !== 'string' && typeof raw !== 'number') {
+    throw invalidPricingInput('labourChargeAmount must be a number');
+  }
+  const text = String(raw);
+  const percentSign = text.includes('%');
+  const percent = percentSign || labourUnit === LABOUR_UNIT_PERCENT;
+  const max = percent ? 100 : MAX_RATE;
+  const unitFor = () => {
+    if (percent) return LABOUR_UNIT_PERCENT;
+    if (labourUnit) return labourUnit;
+    return /per\s*10\s*g/i.test(text) ? 'Per 10 Gram' : 'Per Gram';
+  };
+  const bare = text.replace(/%/g, '');
+  const cleaned = bare.replace(/[₹,\s]/g, '').replace(/^rs\.?/i, '');
+  if (typeof raw === 'number' || NUMERIC_TEXT.test(cleaned)) {
+    return { amount: bodyNumber(typeof raw === 'number' ? raw : bare, 'labourChargeAmount', max), unit: unitFor() };
+  }
+  if (!/\d/.test(text)) return null;
+  const amount = readFigure(text);
+  if (amount > max) throw invalidPricingInput(`labourChargeAmount cannot be more than ${max.toLocaleString('en-IN')}`);
+  return { amount, unit: unitFor() };
+}
+
+/**
  * The /calculate body (or the input the analysis derives), checked and read
  * into numbers before anything is looked up. Throws INVALID_PRICING_INPUT
  * (400) naming the field for a wrong type, a negative figure, a purity, a
@@ -400,15 +625,7 @@ function validateCalculationInput(input) {
     }
   }
   if (!isBlank(body.labourChargeAmount)) {
-    const raw = body.labourChargeAmount;
-    const percentSign = typeof raw === 'string' && raw.includes('%');
-    const percent = percentSign || labourUnit === LABOUR_UNIT_PERCENT;
-    const amount = bodyNumber(
-      percentSign ? raw.replace(/%/g, '') : raw,
-      'labourChargeAmount',
-      percent ? 100 : MAX_RATE,
-    );
-    out.manualLabour = { amount, unit: percent ? LABOUR_UNIT_PERCENT : (labourUnit || 'Per Gram') };
+    out.manualLabour = bodyLabour(body.labourChargeAmount, labourUnit);
   }
   if (!isBlank(body.labourWeightBasis)) {
     const basis = String(body.labourWeightBasis).trim().toLowerCase();
@@ -454,10 +671,21 @@ module.exports = {
   stoneUnitOf,
   stoneUnitInText,
   findItemByCode,
+  findItemExactly,
   findItemOnTag,
   findColorstoneRateMatch,
   labourUnitOf,
   parseTagLabour,
+  ITEM_LABOUR_UNITS,
+  itemLabourOf,
+  PRICING_RULES_HEADER,
+  CURRENT_PRICING_RULES,
+  pricingRulesOf,
+  appLabourFields,
+  legacyAppTagLabour,
+  legacyAppColorstoneRate,
   validateCalculationInput,
+  SCANNABLE_KARAT_NUMBERS,
+  FINENESS_STANDARDS,
   MAX_WEIGHT_GRAMS,
 };

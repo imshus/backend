@@ -1,12 +1,17 @@
 const { sendSuccess } = require('../utils/apiResponse');
 const redisService = require('../services/redis.service');
 const { computeMrp } = require('../services/mrpCalculation.service');
+const { pricingRulesOf } = require('../services/pricingInputs');
 const { toSessionContext } = require('../utils/scanAccess');
 
 /**
  * POST /scans/:scanId/calculate — the price for the inputs the review card
  * holds right now. The arithmetic lives in mrpCalculation.service, shared
  * with the analysis, which prices a fresh reading the moment it lands.
+ *
+ * Priced by the rules the asking build bills with (X-Pricing-Rules: 2 from
+ * 1.0.367; none from the builds before it), so the MRP a card quotes is the
+ * one its invoice bills.
  */
 const calculateMRP = async (req, res, next) => {
   try {
@@ -18,6 +23,7 @@ const calculateMRP = async (req, res, next) => {
         sessionContext: toSessionContext(req.user),
         scanId,
         input: req.body,
+        rules: pricingRulesOf(req),
       });
     } catch (error) {
       // An employee with no roster record answers 403 inline, as it always

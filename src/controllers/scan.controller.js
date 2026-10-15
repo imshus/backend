@@ -7,6 +7,7 @@ const {
   deriveInputFromReading,
   prefetchPricingReads,
 } = require('../services/mrpCalculation.service');
+const { pricingRulesOf } = require('../services/pricingInputs');
 const { sendSuccess } = require('../utils/apiResponse');
 const { toSessionContext } = require('../utils/scanAccess');
 const { tagIdentifiersOf } = require('../utils/tagIdentifiers');
@@ -98,12 +99,16 @@ const analyzeScan = async (req, res, next) => {
     // Why there is no price, when the reason is one the card can say
     // (no live rate, a reading that cannot be priced); null otherwise.
     let pricingError = null;
+    // The rules the asking build prices its card with, so the price made
+    // here is the one its card asks for first.
+    const rules = pricingRulesOf(req);
     try {
       pricingInput = await deriveInputFromReading({
         user: req.user,
         structuredData: updated.analysisResult.structuredData,
         scan: updated,
         prefetched: pricingReads,
+        rules,
       });
       const computed = await computeMrp({
         user: req.user,
@@ -112,6 +117,7 @@ const analyzeScan = async (req, res, next) => {
         input: pricingInput,
         scan: updated,
         prefetched: pricingReads,
+        rules,
       });
       pricing = computed.resultData;
     } catch (error) {

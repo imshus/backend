@@ -213,10 +213,12 @@ for (const [label, user, reading] of [
     // Nothing was looked up twice but the live rates, re-read once after the
     // reading (a cache hit on the current board in production); only the
     // wastage and item codes are fetched ahead for a tag that turns out to
-    // carry no identifier.
+    // carry no identifier. The labour row both the derivation (the labour
+    // the card starts with) and the price read is read once, where the
+    // sequential baseline reads it for each.
     const made = countsOf(overlapped);
-    for (const [name, times] of needed) {
-      const expectedTimes = name.startsWith('goldRates:') ? times + 1 : times;
+    for (const [name] of needed) {
+      const expectedTimes = name.startsWith('goldRates:') ? 2 : 1;
       assert.equal(made.get(name), expectedTimes, `${name} made ${expectedTimes} time(s)`);
     }
     const extra = [...made.keys()].filter((name) => !needed.has(name));

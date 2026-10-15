@@ -22,8 +22,12 @@ const {
   stoneUnitOf,
   stoneUnitInText,
   findItemOnTag,
+  findItemExactly,
   findColorstoneRateMatch,
-  parseTagLabour,
+  itemLabourOf,
+  appLabourFields,
+  legacyAppColorstoneRate,
+  CURRENT_PRICING_RULES,
   validateCalculationInput,
 } = require('./pricingInputs');
 
@@ -140,14 +144,20 @@ function distinctIdentifiers(values) {
  * The labour a price charges, first that applies:
  *   1. the figure the request carries: rupees per gram or per 10 g, or a
  *      percent of the gold value ("12%", or the unit 'Percent');
- *   2. the matched item's own labour in Masters -> Item Code, in rupees per
- *      gram;
+ *   2. the matched item's own labour in Masters -> Item Code, in the unit
+ *      it was saved in (per gram, per 10 g, or a percent of the gold value);
+ *      rules 2 only, as the builds before it never charged it;
  *   3. the shop's labour charge: an AMOUNT per its own unit, or a PERCENTAGE
  *      of the gold value.
  * The weight a per-gram charge runs on is the request's when it names one,
  * else the one the shop's labour charge was saved against.
+ *
+ * The app (1.0.367) fills the card's labour box with the tag's labour, else
+ * the item's, else the shop's, and sends it as the request's figure, so the
+ * box, the price and the invoice are one figure whatever the shop's labour
+ * type; 2 and 3 price a request that sends none.
  */
-function resolveLabour({ manualLabour, labourWeightBasis, itemRow, globalLabour }) {
+function resolveLabour({ manualLabour, labourWeightBasis, itemRow, globalLabour, rules }) {
   const basis = labourWeightBasis || (globalLabour?.weightBasis === 'gross' ? 'gross' : 'net');
   if (manualLabour) {
     return {
@@ -157,9 +167,14 @@ function resolveLabour({ manualLabour, labourWeightBasis, itemRow, globalLabour 
       chargeType: manualLabour.unit === LABOUR_UNIT_PERCENT ? 'PERCENTAGE_MANUAL' : 'AMOUNT_MANUAL',
     };
   }
-  const itemLabour = itemRow?.labour;
-  if (typeof itemLabour === 'number' && Number.isFinite(itemLabour) && itemLabour >= 0) {
-    return { ratePerUnit: itemLabour, unit: 'Per Gram', basis, chargeType: 'AMOUNT_ITEM' };
+  const itemLabour = rules >= CURRENT_PRICING_RULES ? itemLabourOf(itemRow) : null;
+  if (itemLabour) {
+    return {
+      ratePerUnit: itemLabour.amount,
+      unit: itemLabour.unit,
+      basis,
+      chargeType: itemLabour.unit === LABOUR_UNIT_PERCENT ? 'PERCENTAGE_ITEM' : 'AMOUNT_ITEM',
+    };
   }
   if (globalLabour) {
     const value = Math.max(0, toNumber(globalLabour.value));
@@ -208,13 +223,15 @@ function selectGoldRatePer10g(liveRatesData, mode) {
 /**
  * Computes the MRP for one set of inputs. `scan` may be passed in when the
  * caller already holds the session (the analysis does), which skips the
- * lookup. `prefetched` is what prefetchPricingReads started. Throws:
+ * lookup. `prefetched` is what prefetchPricingReads started. `rules` is the
+ * pricing rules the asking build prices and bills with (pricingInputs
+ * pricingRulesOf): 1, the default, for the builds already in shops. Throws:
  *   INVALID_PRICING_INPUT (400) for a body that cannot be priced, before
  *     anything is read;
  *   EMPLOYEE_NOT_FOUND (403) for an employee without a roster record;
  *   RATES_UNAVAILABLE (503) when there is no live gold rate to price on.
  */
-async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan = null, prefetched = null }) {
+async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan = null, prefetched = null, rules = 1 }) {
   const request = validateCalculationInput(input);
 
   const businessId = user.businessId;
@@ -300,7 +317,12 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   // The item the tag's number names: GR10286 is item GR, the code followed
   // by the piece's running number (the app's rule). The identifier that
   // named it is tried first for a wastage code too, as the app sends it.
-  const itemMatch = findItemOnTag(identifiers, itemRows);
+  // A build on rules 1 bills no wastage line for an item it did not name
+  // exactly, so there the item is the one whose code is exactly the item
+  // code sent, as it always was.
+  const itemMatch = rules >= CURRENT_PRICING_RULES
+    ? findItemOnTag(identifiers, itemRows)
+    : findItemExactly(request.itemCode, itemRows);
   const itemRow = itemMatch?.row || null;
   const wastageCandidates = itemMatch
     ? [itemMatch.identifier, ...identifiers.filter((value) => value !== itemMatch.identifier)]
@@ -313,6 +335,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     labourWeightBasis: request.labourWeightBasis,
     itemRow,
     globalLabour,
+    rules,
   });
 
   // The arithmetic itself: pricingMath, in the Python worker when
@@ -414,27 +437,46 @@ const stoneWeightOf = (stone) => {
 
 /**
  * Builds the calculation input straight from a reading, the way the app
- * builds its own request from the same reading (utils/pricingPrefetch.ts and
- * the review card's set-up), so the first price and the card's agree:
+ * build that asked (`rules`, pricingInputs pricingRulesOf) builds its own
+ * first request from the same reading (pricingPrefetch.derivePricingInput
+ * after processing.tsx and the review card's stone rows), so the first price
+ * and the card's agree:
  *   - weights, rates and other charges are the first figure in each field;
  *     a blank net weight stays 0 and pricingMath works it out from the
  *     gross weight;
  *   - the karat from the karat field, the purity (tunch) or a fineness;
- *   - stone weights in their printed unit; rates from the account's own
- *     tables (or the shop's), a stone's packet code first;
- *   - labour the tag prints (on the net weight, as the app charges it);
- *     otherwise computeMrp charges the item's labour or the shop's, on the
- *     weight the shop's charge was saved against;
+ *   - diamond rates from the account's own table (or the shop's), a stone's
+ *     packet code first, else its printed rate;
+ *   - rules 2: stone weights in their printed unit; a colour stone's rate
+ *     from its packet's row, else its colour and clarity's (non-packet) row,
+ *     else its printed rate;
+ *   - rules 1 (builds up to 1.0.366): stone weights in carats, which is all
+ *     they send; a colour stone's rate from the first row with its colour
+ *     and clarity, a miss clearing the printed rate, as those cards do;
+ *   - the labour the card starts with (pricingInputs appLabourFields): the
+ *     tag's, else (rules 2) the item's, else the shop's charge;
  *   - the item code and every identifier on the tag, for the Masters item
  *     and wastage code; the mode from the scan session.
  */
-async function deriveInputFromReading({ user, structuredData, scan, prefetched = null }) {
+async function deriveInputFromReading({ user, structuredData, scan, prefetched = null, rules = 1 }) {
   const data = structuredData || {};
   const scope = settingsScope(user);
-  const [diamondRows, colorstoneRows, taxSettings] = await Promise.all([
+  const currentRules = rules >= CURRENT_PRICING_RULES;
+  const serialNumber = stoneField(data, 'serialNumber');
+  const tagIdentifiers = tagIdentifiersOf({
+    structuredData: data,
+    unknownFields: scan?.analysisResult?.unknownFields,
+  });
+  const identifiers = distinctIdentifiers([serialNumber, ...tagIdentifiers]);
+  const [diamondRows, colorstoneRows, taxSettings, labourDoc, itemRows] = await Promise.all([
     prefetched?.diamondRows || findScopedRows(DiamondRate, scope),
     prefetched?.colorstoneRows || findScopedRows(ColorstoneRate, scope),
     prefetched?.taxSettings || findScopedSetting(GoldTaxSetting, scope),
+    prefetched?.labour || findScopedSetting(LabourRate, scope),
+    // Only the current app fills the labour box from the Masters item.
+    currentRules && identifiers.length
+      ? prefetched?.itemRows || findScopedRows(ItemCode, scope)
+      : Promise.resolve([]),
   ]);
   const diamondRowsPlain = plainRows(diamondRows);
   const colorstoneRowsPlain = plainRows(colorstoneRows);
@@ -454,7 +496,7 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
         weight,
         rate: match ? readFigure(match.rate) : readFigure(stoneField(stone, 'rate')),
         discountPercent: Math.min(100, readFigure(stoneField(stone, 'discountPercent'))),
-        unit,
+        unit: currentRules ? unit : 'ct',
       };
     })
     .filter(Boolean);
@@ -463,28 +505,31 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
     .map((stone) => {
       const { weight, unit } = stoneWeightOf(stone);
       if (weight <= 0) return null;
+      const printedRate = readFigure(stoneField(stone, 'rate'));
+      if (!currentRules) {
+        const rate = legacyAppColorstoneRate(colorstoneRowsPlain, {
+          color: stoneField(stone, 'color'),
+          clarity: stoneField(stone, 'clarity'),
+          printedRate,
+        });
+        return { weight, rate, unit: 'ct' };
+      }
       const match = findColorstoneRateMatch(colorstoneRowsPlain, {
         packetCode: stoneField(stone, 'packetCode') || globalPacketCode,
         color: stoneField(stone, 'color'),
         clarity: stoneField(stone, 'clarity'),
       });
-      return { weight, rate: match ? readFigure(match.rate) : readFigure(stoneField(stone, 'rate')), unit };
+      return { weight, rate: match ? readFigure(match.rate) : printedRate, unit };
     })
     .filter(Boolean);
 
-  const tagLabour = parseTagLabour(stoneField(data, 'labour'));
-  let labourFields = {};
-  if (tagLabour?.unit === LABOUR_UNIT_PERCENT) {
-    labourFields = { labourChargeAmount: String(tagLabour.amount), labourChargeUnit: LABOUR_UNIT_PERCENT };
-  } else if (tagLabour) {
-    labourFields = {
-      labourChargeAmount: String(tagLabour.amount),
-      labourChargeUnit: tagLabour.unit,
-      labourWeightBasis: 'net',
-    };
-  }
-
-  const serialNumber = stoneField(data, 'serialNumber');
+  const itemMatch = currentRules ? findItemOnTag(identifiers, plainRows(itemRows)) : null;
+  const labourFields = appLabourFields({
+    tagLabour: stoneField(data, 'labour'),
+    itemRow: itemMatch?.row || null,
+    labourDoc,
+    rules,
+  });
 
   return {
     jewelleryType: scan?.jewelleryType || stoneField(data, 'jewelleryType'),
@@ -499,10 +544,7 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
     // So the price worked out with the reading finds the Masters item and
     // a Masters -> Wastage code printed anywhere on the tag, as the app's
     // own pricing does.
-    tagIdentifiers: tagIdentifiersOf({
-      structuredData: data,
-      unknownFields: scan?.analysisResult?.unknownFields,
-    }),
+    tagIdentifiers,
     calculationMode:
       scan?.calculationMode || (taxSettings?.scannerCalculationUse === 'cash' ? 'cash' : 'rtgs'),
   };

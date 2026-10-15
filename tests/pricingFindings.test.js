@@ -6,7 +6,9 @@
  * ones; the database and the live rates are stood in for.
  *
  * The rates themselves (half-up rounding, no rate without an MCX) are in
- * tests/ratesHalfUp.test.js.
+ * tests/ratesHalfUp.test.js. Requests here come from the current app
+ * (X-Pricing-Rules: 2); the builds before it, and the follow-up findings,
+ * are in tests/pricingFollowups.test.js.
  */
 process.env.USE_MEMORY_STORE = 'true';
 
@@ -136,8 +138,8 @@ const quiet = async (fn) => {
   }
 };
 
-/** POST /scans/scan-1/calculate with `body`, through the real controller. */
-async function calculate(body) {
+/** POST /scans/scan-1/calculate with `body`, through the real controller, from the current app. */
+async function calculate(body, rules = 2) {
   const res = {
     statusCode: 200,
     body: null,
@@ -146,7 +148,7 @@ async function calculate(body) {
   };
   let failure = null;
   await quiet(() => calculationController.calculateMRP(
-    { params: { scanId: 'scan-1' }, user: OWNER, body },
+    { params: { scanId: 'scan-1' }, user: OWNER, body, headers: { 'x-pricing-rules': String(rules) } },
     res,
     (error) => { failure = error; },
   ));
@@ -172,13 +174,13 @@ const scanFor = (structuredData, unknownFields = []) => ({
   analysisResult: { provider: 'openai', rawText: {}, structuredData, unknownFields, overallConfidence: 90 },
 });
 
-/** The analysis's own price for a reading: the input it derives and the MRP. */
-async function analyzePrice(structuredData, unknownFields = []) {
+/** The analysis's own price for a reading, for the current app: the input it derives and the MRP. */
+async function analyzePrice(structuredData, unknownFields = [], rules = 2) {
   const scan = scanFor(structuredData, unknownFields);
   return quiet(async () => {
-    const pricingInput = await deriveInputFromReading({ user: OWNER, structuredData, scan });
+    const pricingInput = await deriveInputFromReading({ user: OWNER, structuredData, scan, rules });
     const computed = await computeMrp({
-      user: OWNER, sessionContext: SESSION, scanId: 'scan-1', input: pricingInput, scan,
+      user: OWNER, sessionContext: SESSION, scanId: 'scan-1', input: pricingInput, scan, rules,
     });
     return { pricingInput, pricing: computed.resultData };
   });
@@ -201,11 +203,13 @@ test('#0 the analysis reads the karat off the reader\'s field object: 22K, not t
   assert.equal(pricing.finalMRPRounded, 146560);
 });
 
-test('#0/#12 fineness and karats a tag prints resolve as the app reads them, 23K/21K/15K/10K included', () => {
+test('#0/#12 fineness and karats a tag prints resolve as the app reads them, 23K/21K/10K included', () => {
   const cases = [
     [{ purity: field('958') }, '23K'],
     [{ purity: field('875') }, '21K'],
-    [{ purity: field('625') }, '15K'],
+    // 625 (15K) is not a karat the app reads, so neither does the server.
+    [{ purity: field('625') }, '14K'],
+    [{ karat: field('15K') }, '14K'],
     [{ purity: field('417') }, '10K'],
     [{ purity: field('916') }, '22K'],
     [{ purity: field('91.6') }, '22K'],
