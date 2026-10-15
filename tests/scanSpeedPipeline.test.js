@@ -16,8 +16,6 @@
  *    only, and only until the refusal expires.
  */
 process.env.USE_MEMORY_STORE = 'true';
-// The settle delay before a speculative analysis calls the model.
-process.env.SPECULATIVE_SETTLE_MS = '30';
 
 const test = require('node:test');
 const assert = require('node:assert/strict');

@@ -73,21 +73,20 @@ const createScan = async (jewelleryType, scanType, session = {}) => {
  * A scan's wait is the model call, and it used to start only when the user
  * tapped Calculate, after they had already looked at the preview for a second
  * or three. With the client's consent (a `speculate` field on the upload) the
- * call now starts shortly after an image lands, keyed to the exact image set
- * it saw. The analyze request collects that result when the set still
- * matches, and runs fresh otherwise. Nothing is written to the scan and no
- * credit is billed until the analyze request arrives, so an abandoned preview
- * costs a model call and nothing else.
+ * call now starts the moment the photo is on the server and recorded as the
+ * caller's, keyed to the exact image set it saw. There is no settle delay. The
+ * analyze request (the Calculate tap) joins that read, still running or
+ * finished, when the set still matches, and runs fresh otherwise. Nothing is
+ * written to the scan and no credit is billed until the analyze request
+ * arrives, so an abandoned preview costs a model call and nothing else.
  *
- * The short settle delay lets a re-crop (a new upload for the same side)
- * replace the first image before any call is made for it.
- *
- * A pipeline a newer upload supersedes (or that the analyze request cannot
- * use) is aborted, not just forgotten: its model calls are cancelled, and it
- * writes nothing, bills nothing and logs no failure.
+ * A retake (a new upload for the same side) or the other side arriving
+ * supersedes the read: the pipeline is aborted, not just forgotten. Its model
+ * calls are cancelled, and it writes nothing, bills nothing and logs no
+ * failure; a read for the new image set starts at once. The same happens to a
+ * read the analyze request cannot use.
  */
 const SPECULATIVE_ANALYSIS_ENABLED = String(process.env.SPECULATIVE_ANALYSIS || 'true').toLowerCase() !== 'false';
-const SPECULATIVE_SETTLE_MS = Number(process.env.SPECULATIVE_SETTLE_MS) || 1200;
 const SPECULATIVE_MAX_AGE_MS = 10 * 60 * 1000;
 const speculativeAnalyses = new Map();
 
@@ -104,16 +103,12 @@ const imageSetKey = (scan, scannerSettings = {}) => {
 };
 
 /**
- * Stops an entry for good: its timer, and its model calls if they started.
- * Only a pipeline still in flight is logged as cancelled; one that had already
- * finished (its calls made and paid for) is logged as discarded, so the logs
- * do not count savings that never happened.
+ * Stops an entry for good: its model calls if they started. Only a pipeline
+ * still in flight is logged as cancelled; one that had already finished (its
+ * calls made and paid for) is logged as discarded, so the logs do not count
+ * savings that never happened.
  */
 const cancelSpeculative = (entry) => {
-  if (entry.timer) {
-    clearTimeout(entry.timer);
-    entry.timer = null;
-  }
   if (entry.controller.signal.aborted) return;
   entry.controller.abort();
   if (!entry.promise) return;
@@ -172,9 +167,9 @@ const takePreparedViews = async (scanId, frontImagePath, backImagePath) => {
   return { frontViews, backViews };
 };
 
-/** Starts an installed entry once its settle delay has passed; idempotent. */
+/** Starts an installed entry's read; idempotent. */
 const startSpeculative = (entry) => {
-  if (!entry.settled || !entry.scan || entry.promise) return;
+  if (!entry.scan || entry.promise) return;
   if (entry.controller.signal.aborted || speculativeAnalyses.get(entry.scanId) !== entry) return;
   console.info('[SPECULATIVE_ANALYSIS_START]', {
     scanId: entry.scanId,
@@ -200,10 +195,10 @@ const startSpeculative = (entry) => {
 
 /**
  * A speculative analysis for an upload whose access check is still running.
- * The settle delay starts now, with the upload on disk; nothing can call the
- * model until install() publishes the entry with the updated scan, which
- * saveImage does only after the upload passed its access check and was
- * recorded. discard() drops an upload that did not.
+ * Nothing can call the model until install() publishes the entry with the
+ * updated scan, which saveImage does only after the upload passed its access
+ * check and was recorded; the read starts right there, with no delay.
+ * discard() drops an upload that did not pass.
  */
 const beginSpeculativeAnalysis = (scanId, scope) => {
   if (!SPECULATIVE_ANALYSIS_ENABLED || !scanId) return null;
@@ -215,16 +210,9 @@ const beginSpeculativeAnalysis = (scanId, scope) => {
     promise: null,
     // Set once the promise has settled (resolved or rejected).
     done: false,
-    timer: null,
-    settled: false,
     createdAt: Date.now(),
     controller: new AbortController(),
   };
-  entry.timer = setTimeout(() => {
-    entry.timer = null;
-    entry.settled = true;
-    startSpeculative(entry);
-  }, SPECULATIVE_SETTLE_MS);
   return {
     install(scan) {
       if (entry.controller.signal.aborted) return;
@@ -237,7 +225,7 @@ const beginSpeculativeAnalysis = (scanId, scope) => {
       pruneSpeculative();
       dropSpeculative(scanId);
       speculativeAnalyses.set(scanId, entry);
-      // Starts right away when the record took longer than the settle delay.
+      // The photo is the caller's and recorded: read it now.
       startSpeculative(entry);
     },
     discard() {
@@ -258,7 +246,7 @@ const takeSpeculativeResult = async (scanId, scan, scannerSettings) => {
     !entry.promise ||
     entry.controller.signal.aborted
   ) {
-    // Not for these images and this prompt (or not started yet): cancel it,
+    // Not for these images and this prompt: cancel it,
     // run fresh. Whether the pipeline sent one read or two follows from the
     // images alone (a part cut or not), so a matching key covers that too.
     cancelSpeculative(entry);
@@ -285,11 +273,11 @@ const saveImage = async (scanId, imagePath, type, session = {}, options = {}) =>
     front: 'FRONT_IMAGE_RECEIVED',
     back: 'BACK_IMAGE_RECEIVED'
   };
-  // The decode, the orientation call and the speculation's settle delay
-  // start now, with the file on disk, instead of after the two scan-record
-  // round trips below. Nothing they produce is visible until the upload has
-  // passed its access check and been recorded; an upload that fails either
-  // has its warm-up aborted and discarded unseen.
+  // The decode and the orientation call start now, with the file on disk,
+  // instead of after the two scan-record round trips below. Nothing they
+  // produce is visible until the upload has passed its access check and been
+  // recorded; an upload that fails either has its warm-up aborted and
+  // discarded unseen. The speculative read starts the moment it is recorded.
   const warmContext = (businessId) => ({
     businessId: session?.businessId || businessId || null,
     userId: session?.userId || null,

@@ -3,6 +3,10 @@
  * its scanner settings are) is collected by /analyze whenever the model's
  * input would have been the same. Settings the prompt never reads must not
  * throw it away, and the labour setting is applied to it by rule.
+ *
+ * It starts the moment the upload is recorded, with no settle delay; a retake
+ * aborts the read in flight; and /analyze (the Calculate tap) joins a read that
+ * is still running instead of starting its own.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -10,7 +14,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-process.env.SPECULATIVE_SETTLE_MS = '1';
+// A knob that used to hold the read back after an upload. It must not delay
+// anything any more, however large it is set.
+process.env.SPECULATIVE_SETTLE_MS = '60000';
 
 const redisService = require('../src/services/redis.service');
 const openaiService = require('../src/services/openai.service');
@@ -24,6 +30,14 @@ const session = { userId: 'user-1', businessId: 'business-1' };
 const scans = new Map();
 let modelCalls = [];
 let labourRead = '12';
+// When set, each model call waits for release() (or its abort) before answering.
+let holdReads = false;
+const pending = new Set();
+const releaseReads = () => {
+  for (const release of pending) release();
+  pending.clear();
+};
+const abortError = () => Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
 
 const original = {
   getScan: redisService.getScan,
@@ -42,8 +56,19 @@ test.before(() => {
     scans.set(scanId, updated);
     return updated;
   };
-  openaiService.analyzeImages = async (front, back, type, scanType, scannerSettings) => {
-    modelCalls.push({ scannerSettings });
+  openaiService.analyzeImages = async (front, back, type, scanType, scannerSettings, scope, views, options = {}) => {
+    const call = { front, scannerSettings, signal: options?.signal || null, answered: false };
+    modelCalls.push(call);
+    if (holdReads) {
+      await new Promise((resolve, reject) => {
+        pending.add(resolve);
+        call.signal?.addEventListener('abort', () => {
+          pending.delete(resolve);
+          reject(abortError());
+        });
+      });
+    }
+    call.answered = true;
     return {
       structuredData: {
         grossWeight: { value: '8.208', confidence: 97 },
@@ -73,8 +98,8 @@ test.after(() => {
 });
 
 let count = 0;
-/** A scan with a front image uploaded under `speculate`, its read already done. */
-const speculatedScan = async () => {
+/** A new scan record and a photo on disk for it; the model call log is reset. */
+const newScan = () => {
   count += 1;
   const scanId = `scan-${count}`;
   const file = path.join(tmpDir, `front-${count}.jpg`);
@@ -88,6 +113,14 @@ const speculatedScan = async () => {
     businessId: session.businessId,
   });
   modelCalls = [];
+  return { scanId, file };
+};
+/** Lets the pipeline's own promise steps run; no timer is given a chance. */
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+
+/** A scan with a front image uploaded under `speculate`, its read already done. */
+const speculatedScan = async () => {
+  const { scanId, file } = newScan();
   await scanService.saveImage(scanId, file, 'front', session, { speculate: true });
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(modelCalls.length, 1, 'the speculative read started');
@@ -140,6 +173,81 @@ test('a setting the prompt does read still asks for a fresh read', async () => {
   scans.set(scanId, { ...scans.get(scanId), jewelleryType: 'GOLD' });
   await scanService.analyzeScan(scanId, {}, session.businessId, session);
   assert.equal(modelCalls.length, 2);
+});
+
+test('the read starts the moment the photo is recorded, with no settle delay', async () => {
+  const { scanId, file } = newScan();
+  await scanService.saveImage(scanId, file, 'front', session, { speculate: true });
+  await turn();
+  assert.equal(modelCalls.length, 1, 'the read is already at the model, before any Calculate tap');
+  assert.deepEqual(modelCalls[0].scannerSettings, {}, 'it is the speculative read, not one made by /analyze');
+  assert.equal(modelCalls[0].front, file);
+  // Collected by the Calculate tap with no second call.
+  await scanService.analyzeScan(scanId, {}, session.businessId, session);
+  assert.equal(modelCalls.length, 1);
+});
+
+test('Calculate tapped while the read is still running joins it instead of reading again', async () => {
+  holdReads = true;
+  try {
+    const { scanId, file } = newScan();
+    await scanService.saveImage(scanId, file, 'front', session, { speculate: true });
+    await turn();
+    const analyzing = scanService.analyzeScan(
+      scanId,
+      { defaultKarat: '18K', showRtgs: true },
+      session.businessId,
+      session,
+    );
+    await turn();
+    await turn();
+    assert.equal(modelCalls.length, 1, 'no read of its own while the first one runs');
+    assert.deepEqual(modelCalls[0].scannerSettings, {}, 'the running read is the speculative one');
+    assert.equal(modelCalls[0].signal.aborted, false, 'and it was not cancelled');
+    releaseReads();
+    const updated = await analyzing;
+    assert.equal(modelCalls.length, 1);
+    assert.equal(modelCalls[0].answered, true);
+    assert.equal(updated.status, 'ANALYSIS_COMPLETED');
+    assert.equal(updated.analysisResult.structuredData.grossWeight.value, '8.208');
+  } finally {
+    holdReads = false;
+    releaseReads();
+  }
+});
+
+test('a retake aborts the read in flight and the new photo is read at once', async () => {
+  holdReads = true;
+  try {
+    const { scanId, file } = newScan();
+    await scanService.saveImage(scanId, file, 'front', session, { speculate: true });
+    await turn();
+    assert.equal(modelCalls.length, 1);
+    const first = modelCalls[0];
+
+    const retake = path.join(tmpDir, `front-${count}-retake.jpg`);
+    fs.writeFileSync(retake, 'jpeg');
+    await scanService.saveImage(scanId, retake, 'front', session, { speculate: true });
+    await turn();
+    assert.equal(first.signal.aborted, true, "the first photo's read was cancelled");
+    assert.equal(first.answered, false);
+    assert.equal(modelCalls.length, 2, 'the retake is read straight away');
+    assert.equal(modelCalls[1].front, retake);
+
+    const analyzing = scanService.analyzeScan(scanId, {}, session.businessId, session);
+    await turn();
+    await turn();
+    assert.equal(modelCalls.length, 2, "Calculate joins the retake's read");
+    releaseReads();
+    const updated = await analyzing;
+    assert.equal(modelCalls.length, 2);
+    assert.equal(modelCalls[1].answered, true);
+    assert.equal(updated.frontImagePath, retake);
+    assert.equal(updated.status, 'ANALYSIS_COMPLETED');
+  } finally {
+    holdReads = false;
+    releaseReads();
+  }
 });
 
 test('applyLabourPreference rewrites plain figures only', () => {
