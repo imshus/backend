@@ -1,0 +1,7 @@
+# The pricing worker (calc_worker.py). Exact pins, wheels from PyPI.
+# numpy 2.0.2 is the last numpy for Python 3.9 (Amazon Linux 2023's python3)
+# and builds for 3.9-3.12; 2.5.1 builds for 3.12-3.14 only (3.14 on the dev PC).
+# pandas 2.3.3 builds for 3.9-3.14 and takes either numpy.
+numpy==2.0.2; python_version < "3.12"
+numpy==2.5.1; python_version >= "3.12"
+pandas==2.3.3

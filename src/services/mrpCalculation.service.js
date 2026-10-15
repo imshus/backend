@@ -9,7 +9,7 @@ const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const Employee = require('../models/employee.model');
-const { computePricing } = require('./pricingMath');
+const pyCalcEngine = require('./pyCalcEngine');
 const { assertScanAccess } = require('../utils/scanAccess');
 const { settingsScope, findScopedSetting, findScopedRows } = require('./userScope.service');
 const { findDiamondRateMatch, normalizeKey } = require('./diamondRateLookup.service');
@@ -288,8 +288,9 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
       ? `${labourCharge.type || 'AMOUNT'}_GLOBAL`
       : 'NONE';
 
-  // The arithmetic itself.
-  const priced = computePricing({
+  // The arithmetic itself: pricingMath, in the Python worker when
+  // CALC_ENGINE=python and it answers in time, else in Node.
+  const priced = await pyCalcEngine.computePricing({
     netWt: numericNetWt,
     grossWt: numericGrossWt,
     customPurityPercent: hasCustomPurityPercent ? toNumber(customPurityPercent) : null,
