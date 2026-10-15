@@ -1,4 +1,4 @@
-const { prepareImageViews } = require('./ocrViews');
+const { startImageViews } = require('./ocrViews');
 const { isAbortError } = require('../utils/abort');
 
 /**
@@ -31,7 +31,7 @@ const { isAbortError } = require('../utils/abort');
 const MAX_ENTRY_AGE_MS = 5 * 60 * 1000;
 const MAX_ENTRIES = 40;
 
-/** @type {Map<string, { promise: Promise<object>, filePath: string, createdAt: number }>} */
+/** @type {Map<string, { promise: Promise<object>, staged: object, filePath: string, createdAt: number }>} */
 const entries = new Map();
 
 const keyFor = (scanId, side) => `${scanId}:${side}`;
@@ -70,11 +70,12 @@ const beginWarm = (scanId, side, filePath, scanContext) => {
   // which way up the tag is, and requiring it while this module is still
   // loading would be a cycle through ocrViews.
   const { detectPrintRotation } = require('./openai.service');
-  const promise = prepareImageViews(filePath, {
+  const staged = startImageViews(filePath, {
     detectRotation: detectPrintRotation,
     scanContext,
     signal: controller.signal,
   });
+  const { final: promise } = staged;
   let state = 'pending';
   let failure = null;
 
@@ -110,7 +111,7 @@ const beginWarm = (scanId, side, filePath, scanContext) => {
         return;
       }
       entries.delete(key);
-      entries.set(key, { promise, filePath, createdAt: Date.now() });
+      entries.set(key, { promise, staged, filePath, createdAt: Date.now() });
       pruneStale();
     },
     discard() {
@@ -139,10 +140,20 @@ const takePreprocessed = (scanId, side, filePath) => {
   return entry.promise;
 };
 
+/**
+ * The same entry in stages (ocrViews startImageViews): the upright views
+ * and the which-way-up answer separately, so a read can start on the
+ * upright views before the answer is in. Null as takePreprocessed is.
+ */
+const takePreprocessedStaged = (scanId, side, filePath) => {
+  if (!takePreprocessed(scanId, side, filePath)) return null;
+  return entries.get(keyFor(scanId, side))?.staged || null;
+};
+
 /** Drops both sides of a scan once its result is in hand. */
 const releaseScan = (scanId) => {
   if (!scanId) return;
   for (const side of ['front', 'back']) entries.delete(keyFor(scanId, side));
 };
 
-module.exports = { beginWarm, warmPreprocess, takePreprocessed, releaseScan };
+module.exports = { beginWarm, warmPreprocess, takePreprocessed, takePreprocessedStaged, releaseScan };

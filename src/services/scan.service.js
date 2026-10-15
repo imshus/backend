@@ -153,21 +153,26 @@ const runModelForScan = async (scan, scannerSettings, scope, signal) => {
 /**
  * Image views prepared at upload time for this scan's exact files, or null
  * per side; any failure degrades to on-demand preparation inside analyzeImages.
+ * Handed over in stages (ocrViews startImageViews) as soon as the upright
+ * views exist, without waiting on the which-way-up answer: the reads start
+ * on them while it is asked, and analyzeImages keeps or replaces them.
  */
 const takePreparedViews = async (scanId, frontImagePath, backImagePath) => {
   const take = async (side, filePath) => {
     try {
-      const promise = ocrPreprocessCache.takePreprocessed(scanId, side, filePath);
-      return promise ? await promise : null;
+      const staged = ocrPreprocessCache.takePreprocessedStaged(scanId, side, filePath);
+      if (!staged) return null;
+      await staged.upright;
+      return staged;
     } catch (error) {
       return null;
     }
   };
-  const [frontViews, backViews] = await Promise.all([
+  const [frontStaged, backStaged] = await Promise.all([
     take('front', frontImagePath),
     take('back', backImagePath),
   ]);
-  return { frontViews, backViews };
+  return { frontStaged, backStaged };
 };
 
 /** Starts an installed entry's read; idempotent. */

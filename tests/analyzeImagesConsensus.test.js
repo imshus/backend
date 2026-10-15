@@ -232,7 +232,8 @@ test('with the second read switched off a single read still answers', async () =
     const openaiService = require('../src/services/openai.service');
     const file = await tagImage();
     const result = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
-    assert.deepEqual(requests.map((r) => r.kind), ['print-rotation', 'read-a']);
+    // The read no longer waits on the orientation answer: either may arrive first.
+    assert.deepEqual(requests.map((r) => r.kind).sort(), ['print-rotation', 'read-a']);
     assert.equal(result.consensus.mode, 'single');
     // Read A alone said 5.54; the weight identity repairs it from gross minus net.
     assert.equal(result.structuredData.diamonds[0].weight.value, '0.54');
@@ -267,8 +268,9 @@ test('no part cut on any side: ONE read, no second read and no third look', asyn
   const file = await smallTagImage();
   const result = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
 
-  // The orientation thumbnail, then a single whole-image read.
-  assert.deepEqual(requests.map((r) => `${r.kind}:${r.images}`), ['print-rotation:1', 'read-plain:1']);
+  // The orientation thumbnail and, beside it rather than after it, a single
+  // whole-image read.
+  assert.deepEqual(requests.map((r) => `${r.kind}:${r.images}`).sort(), ['print-rotation:1', 'read-plain:1']);
   assert.equal(requests.filter((r) => r.kind === 'adjudicate').length, 0);
   const read = requests.find((r) => r.kind === 'read-plain');
   assert.equal(read.body.max_completion_tokens, 6000);
@@ -308,7 +310,7 @@ test('when the single read fails, the plain retry answers, as when both reads fa
     const openaiService = require('../src/services/openai.service');
     const file = await smallTagImage();
     const result = await openaiService.analyzeImages(file, null, 'DIAMOND', 'SINGLE_SIDE', {}, null);
-    assert.deepEqual(requests.map((r) => r.kind), ['print-rotation', 'read-plain', 'read-plain']);
+    assert.deepEqual(requests.map((r) => r.kind).sort(), ['print-rotation', 'read-plain', 'read-plain']);
     assert.ok(requests.every((r) => r.kind !== 'adjudicate'));
     assert.equal(result.consensus.mode, 'plain');
     assert.equal(result.structuredData.grossWeight.value, '8.208');
@@ -332,7 +334,7 @@ test('when the single read times out, nothing more is sent and the scan fails in
     const elapsed = Date.now() - started;
     // The read had the whole budget; a plain retry would have been the same
     // request again, on the client's 60s default once the budget was spent.
-    assert.deepEqual(requests.map((r) => r.kind), ['print-rotation', 'read-plain']);
+    assert.deepEqual(requests.map((r) => r.kind).sort(), ['print-rotation', 'read-plain']);
     assert.ok(elapsed < 6000 + 1500, `failed after ${elapsed}ms, past the 6s deadline`);
   } finally {
     holdWholeReads = false;

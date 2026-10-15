@@ -126,7 +126,7 @@ const regionPixels = (region, width, height) => {
  * is aborted, and the preparation stops at its next step with the abort error
  * instead of finishing views nobody will read.
  */
-const prepareImageViews = async (filePath, { detectRotation, scanContext, signal } = {}) => {
+const prepareViews = async (filePath, { detectRotation, scanContext, signal } = {}, stages = {}) => {
   const started = Date.now();
   const maxEdgePx = config.ocr?.maxEdgePx || 2400;
   const jpegQuality = config.ocr?.jpegQuality || 82;
@@ -154,6 +154,7 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext, signal
     : Promise.resolve(0);
   // Awaited below; until then a failure must not count as unhandled.
   rotationAnswer.catch(() => {});
+  stages.rotation?.(rotationAnswer, Boolean(detector));
 
   // One decode, at the larger of the two ceilings, so both the whole image and
   // the parts come out of the same pass.
@@ -270,6 +271,11 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext, signal
 
   const uprightViews = encodeViews(decoded.data, decoded.info, { turned: false });
   uprightViews.catch(() => {});
+  // The views as the photo stands, before the answer: a read can start on
+  // them now (startImageViews) and is kept when the answer is 0.
+  const uprightPublic = uprightViews.then((upright) => asPublicViews(upright, 0));
+  uprightPublic.catch(() => {});
+  stages.upright?.(uprightPublic);
 
   // The whole working image turned as far as the answer says, once.
   // Everything is then cut from the turned pixels, so a tag held the other way
@@ -307,18 +313,73 @@ const prepareImageViews = async (filePath, { detectRotation, scanContext, signal
     ms: Date.now() - started,
   });
 
-  return {
-    full: full.toString('base64'),
-    width: fullWidth,
-    height: fullHeight,
-    printRotation,
-    quarters,
-    thirds,
-  };
+  // Upright: the very views a read may already have started on.
+  return printRotation ? asPublicViews(views, printRotation) : uprightPublic;
 };
+
+/** What a caller is handed: the whole image as base64, its size and the parts. */
+const asPublicViews = (views, printRotation) => ({
+  full: views.full.toString('base64'),
+  width: views.fullWidth,
+  height: views.fullHeight,
+  printRotation,
+  quarters: views.quarters,
+  thirds: views.thirds,
+});
+
+const settleLater = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  promise.catch(() => {});
+  return { promise, resolve, reject };
+};
+
+/**
+ * prepareImageViews in stages, so the which-way-up question stops holding the
+ * reads back:
+ *   upright   the views as the photo stands, ready as soon as they are
+ *             encoded, before the question is answered;
+ *   rotation  the answer (0, 90, 180 or 270); rotationMs once it is in;
+ *   final     what prepareImageViews returns: the upright views themselves
+ *             when the answer is 0, the turned views otherwise.
+ * A read started on `upright` is kept when the answer is 0 and replaced by
+ * one on `final` otherwise (openai.service analyzeImages). Every stage
+ * rejects with the preparation's own error, the abort included.
+ */
+const startImageViews = (filePath, options = {}) => {
+  const upright = settleLater();
+  const rotation = settleLater();
+  const staged = { upright: upright.promise, rotation: rotation.promise, final: null, rotationMs: null };
+  staged.final = prepareViews(filePath, options, {
+    upright: (promise) => promise.then(upright.resolve, upright.reject),
+    rotation: (promise, asked) => {
+      const askedAt = Date.now();
+      promise.then(
+        (answer) => {
+          staged.rotationMs = asked ? Date.now() - askedAt : 0;
+          rotation.resolve(answer || 0);
+        },
+        rotation.reject,
+      );
+    },
+  });
+  // A preparation that fails before a stage exists fails that stage too.
+  staged.final.catch((error) => {
+    upright.reject(error);
+    rotation.reject(error);
+  });
+  return staged;
+};
+
+const prepareImageViews = (filePath, options = {}) => startImageViews(filePath, options).final;
 
 module.exports = {
   prepareImageViews,
+  startImageViews,
   ROTATION_PROBE_EDGE_PX,
   QUARTERS,
   THIRDS_ALONG_WIDTH,

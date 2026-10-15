@@ -4,7 +4,7 @@ const config = require('../config/env');
 const fs = require('fs');
 const { getSystemPrompt, getUserPrompt } = require('../prompts/openai.prompt');
 const { getPromptCustomizations } = require('./redis.service');
-const { prepareImageViews } = require('./ocrViews');
+const { prepareImageViews, startImageViews } = require('./ocrViews');
 const { compareReads, applyAdjudication, describeDisagreements } = require('./ocrConsensus');
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
@@ -1033,6 +1033,46 @@ const asViews = (value) => {
 
 const isOff = (name) => String(process.env[name] || '').toLowerCase() === 'false';
 
+/** Views already final (prepared by the caller): nothing left to ask. */
+const fixedStage = (views) => ({
+  upright: Promise.resolve(views),
+  rotation: Promise.resolve(0),
+  final: Promise.resolve(views),
+  rotationMs: null,
+  fixed: true,
+});
+
+/** `promise`, or the abort error as soon as `signal` aborts. */
+const untilAborted = (promise, signal) => {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortedError());
+      return;
+    }
+    const onAbort = () => reject(abortedError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+};
+
+/** A controller of its own that also aborts when `parent` does. */
+const childController = (parent) => {
+  const controller = new AbortController();
+  if (parent?.aborted) controller.abort();
+  else parent?.addEventListener('abort', () => controller.abort(), { once: true });
+  return controller;
+};
+
 const analyzeImages = async (
   frontImagePath,
   backImagePath,
@@ -1056,43 +1096,43 @@ const analyzeImages = async (
       : { businessId, userId: null };
   const cacheId = scopeCacheId(scope);
   const tPipelineStart = Date.now();
+
+  // Each side's views in stages (ocrViews startImageViews): views the caller
+  // already finished, the stages started at upload time (the same file), or
+  // stages started here. The reads start on the upright views while the
+  // which-way-up question is still being answered; the answer decides below
+  // whether those reads stand.
+  const sources = [
+    { filePath: frontImagePath, staged: preprocessed?.frontStaged, views: preprocessed?.frontViews || preprocessed?.frontBase64 },
+    { filePath: backImagePath, staged: preprocessed?.backStaged, views: preprocessed?.backViews || preprocessed?.backBase64 },
+  ];
+  const stages = sources.map(({ filePath, staged, views }) => {
+    if (views) return fixedStage(asViews(views));
+    if (staged) return staged;
+    if (filePath && fs.existsSync(filePath)) {
+      return startImageViews(filePath, { detectRotation: detectPrintRotation, scanContext: scope, signal });
+    }
+    return null;
+  });
+
   // Image views and prompt customizations in parallel. Views prepared at
   // upload time (by prepareImageViews on the SAME file) skip the decode here.
   const [
-    frontViews,
-    backViews,
+    frontUpright,
+    backUpright,
     [customizations, colorstoneCustomizations, orgCustomizations],
   ] = await Promise.all([
-    preprocessed?.frontViews || preprocessed?.frontBase64
-      ? asViews(preprocessed.frontViews || preprocessed.frontBase64)
-      : (frontImagePath && fs.existsSync(frontImagePath)
-          ? prepareImageViews(frontImagePath, {
-              detectRotation: detectPrintRotation,
-              scanContext: scope,
-              signal,
-            })
-          : null),
-    preprocessed?.backViews || preprocessed?.backBase64
-      ? asViews(preprocessed.backViews || preprocessed.backBase64)
-      : (backImagePath && fs.existsSync(backImagePath)
-          ? prepareImageViews(backImagePath, {
-              detectRotation: detectPrintRotation,
-              scanContext: scope,
-              signal,
-            })
-          : null),
+    stages[0] ? untilAborted(stages[0].upright, signal) : null,
+    stages[1] ? untilAborted(stages[1].upright, signal) : null,
     getContextCached(scope),
   ]);
   throwIfAborted(signal);
   const preprocessMs = Date.now() - tPipelineStart;
   console.log(`[TIMING] preprocess_and_context_ms=${preprocessMs}`);
 
-  const sides = [];
-  if (frontViews) sides.push({ label: 'Front', views: frontViews });
-  if (backViews) sides.push({ label: 'Back', views: backViews });
   // Without an image the model answers the schema from the prompt alone, and
   // those invented weights would be written to the scan as a normal result.
-  if (sides.length === 0) {
+  if (!frontUpright && !backUpright) {
     throw new Error('No readable image for this scan');
   }
 
@@ -1107,10 +1147,6 @@ const analyzeImages = async (
   );
   const systemPromptText = getSystemPrompt(mergedDiamondCustoms, mergedColorstoneCustoms);
   const systemMessage = { role: 'system', content: systemPromptText };
-  // Two reads over different parts of the same pixels: quarters for the
-  // primary, thirds for the second, so a misread in one is unlikely in the other.
-  const messagesA = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'quarters') }];
-  const messagesB = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'thirds') }];
 
   const { model, serviceTier, reasoningEffort } = resolveModelSettings();
   const promptCharacters = systemPromptText.length + userPromptText.length;
@@ -1118,224 +1154,325 @@ const analyzeImages = async (
     messages[1].content.filter((part) => part.type === 'image_url').length;
   const doubleRead = config.ocr?.doubleRead !== false && !isOff('OCR_DOUBLE_READ');
   const adjudicate = config.ocr?.adjudicate !== false && !isOff('OCR_ADJUDICATE');
-  // With no magnified part cut for any side (a camera crop below the model's
-  // pixel budget), the two reads would be the same request byte for byte:
-  // the second would only add sampling noise and the third look would settle
-  // that noise. One read is sent, and it is treated exactly like a read that
-  // stood alone today.
-  const partsOf = (side, layout) => (Array.isArray(side.views[layout]) ? side.views[layout] : []);
-  const identicalReads = sides.every(
-    (side) => partsOf(side, 'quarters').length === 0 && partsOf(side, 'thirds').length === 0,
-  );
-  const secondRead = doubleRead && !identicalReads;
-  const imageCount = countImages(messagesA) + (secondRead ? countImages(messagesB) : 0);
-  console.log(
-    `[OPENAI_REQUEST] model=${model} images=${imageCount} promptChars=${promptCharacters} tier=${serviceTier || 'default'} effort=${reasoningEffort || 'default'} doubleRead=${doubleRead} reads=${secondRead ? 2 : 1} at=${new Date().toISOString()}`,
-  );
+  const deadlineMs = pipelineDeadlineMs();
+  const remainingMs = () => deadlineMs - (Date.now() - tPipelineStart);
 
-  try {
-    const tAiStart = Date.now();
-    const deadlineMs = pipelineDeadlineMs();
-    const remainingMs = () => deadlineMs - (Date.now() - tPipelineStart);
-    const [primary, secondary] = await Promise.allSettled([
-      callModel(messagesA, { label: 'read-a', businessId: cacheId, timeoutMs: remainingMs(), signal }),
-      secondRead
-        ? callModel(messagesB, { label: 'read-b', businessId: cacheId, timeoutMs: remainingMs(), signal })
-        : Promise.reject(new Error(doubleRead ? 'second read identical to the first' : 'second read disabled')),
-    ]);
-    // A cancelled pipeline stops here: no plain retry, no failure logged.
-    throwIfAborted(signal);
-    const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-    const addUsage = (u) => {
-      usage.prompt_tokens += Number(u?.prompt_tokens || 0);
-      usage.completion_tokens += Number(u?.completion_tokens || 0);
-      usage.total_tokens += Number(u?.total_tokens || 0);
-    };
-    // Tokens the API charged for count even when the answer was unusable.
-    if (primary.status === 'fulfilled') addUsage(primary.value.usage);
-    else addUsage(primary.reason?.usage);
-    if (secondary.status === 'fulfilled') addUsage(secondary.value.usage);
-    else addUsage(secondary.reason?.usage);
+  /**
+   * The reads, the third look and the repairs, on one set of views. Run on
+   * the upright views first; run again on the turned views when the answer
+   * says the tag was not upright, the first run then aborted (`readSignal`)
+   * and never billed or written.
+   */
+  const readViews = async (frontViews, backViews, readSignal) => {
+    const sides = [];
+    if (frontViews) sides.push({ label: 'Front', views: frontViews });
+    if (backViews) sides.push({ label: 'Back', views: backViews });
+    // Two reads over different parts of the same pixels: quarters for the
+    // primary, thirds for the second, so a misread in one is unlikely in the other.
+    const messagesA = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'quarters') }];
+    const messagesB = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'thirds') }];
+    // With no magnified part cut for any side (a camera crop below the model's
+    // pixel budget), the two reads would be the same request byte for byte:
+    // the second would only add sampling noise and the third look would settle
+    // that noise. One read is sent, and it is treated exactly like a read that
+    // stood alone today.
+    const partsOf = (side, layout) => (Array.isArray(side.views[layout]) ? side.views[layout] : []);
+    const identicalReads = sides.every(
+      (side) => partsOf(side, 'quarters').length === 0 && partsOf(side, 'thirds').length === 0,
+    );
+    const secondRead = doubleRead && !identicalReads;
+    const imageCount = countImages(messagesA) + (secondRead ? countImages(messagesB) : 0);
+    const metrics = { reads: secondRead ? 2 : 1, images: imageCount, readMs: 0, adjudicationMs: 0, aiMs: 0 };
+    console.log(
+      `[OPENAI_REQUEST] model=${model} images=${imageCount} promptChars=${promptCharacters} tier=${serviceTier || 'default'} effort=${reasoningEffort || 'default'} doubleRead=${doubleRead} reads=${secondRead ? 2 : 1} at=${new Date().toISOString()}`,
+    );
 
-    let parsedData;
-    let consensus = {
-      mode: secondRead || !doubleRead ? 'single' : 'single-identical',
-      agreements: 0,
-      disagreements: 0,
-      adjudicated: 0,
-    };
-    if (primary.status === 'rejected' && (secondary.status === 'rejected' || !secondRead)) {
-      // Both reads carry the same large payload to the same endpoint, so
-      // whatever stopped one usually stopped the other: a size limit, a rate
-      // limit, an unreadable part. One last attempt with the whole images
-      // alone is the request the old single-call reader used to send. The
-      // same holds when only one read was sent — unless it would finish after
-      // the app gave up, or would only repeat a read that timed out.
-      const skipReason = plainRetrySkipReason({
-        remainingMs: remainingMs(),
-        repeatsFailedRead: sides.every((side) => partsOf(side, 'quarters').length === 0),
-        error: primary.reason,
-      });
-      if (skipReason) {
-        console.warn('[OCR_READS_FAILED_NO_RETRY]', {
-          reason: skipReason,
+    try {
+      const tAiStart = Date.now();
+      const [primary, secondary] = await Promise.allSettled([
+        callModel(messagesA, { label: 'read-a', businessId: cacheId, timeoutMs: remainingMs(), signal: readSignal }),
+        secondRead
+          ? callModel(messagesB, { label: 'read-b', businessId: cacheId, timeoutMs: remainingMs(), signal: readSignal })
+          : Promise.reject(new Error(doubleRead ? 'second read identical to the first' : 'second read disabled')),
+      ]);
+      // A cancelled pipeline stops here: no plain retry, no failure logged.
+      throwIfAborted(readSignal);
+      const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+      const addUsage = (u) => {
+        usage.prompt_tokens += Number(u?.prompt_tokens || 0);
+        usage.completion_tokens += Number(u?.completion_tokens || 0);
+        usage.total_tokens += Number(u?.total_tokens || 0);
+      };
+      // Tokens the API charged for count even when the answer was unusable.
+      if (primary.status === 'fulfilled') addUsage(primary.value.usage);
+      else addUsage(primary.reason?.usage);
+      if (secondary.status === 'fulfilled') addUsage(secondary.value.usage);
+      else addUsage(secondary.reason?.usage);
+
+      let parsedData;
+      let consensus = {
+        mode: secondRead || !doubleRead ? 'single' : 'single-identical',
+        agreements: 0,
+        disagreements: 0,
+        adjudicated: 0,
+      };
+      if (primary.status === 'rejected' && (secondary.status === 'rejected' || !secondRead)) {
+        // Both reads carry the same large payload to the same endpoint, so
+        // whatever stopped one usually stopped the other: a size limit, a rate
+        // limit, an unreadable part. One last attempt with the whole images
+        // alone is the request the old single-call reader used to send. The
+        // same holds when only one read was sent — unless it would finish after
+        // the app gave up, or would only repeat a read that timed out.
+        const skipReason = plainRetrySkipReason({
           remainingMs: remainingMs(),
+          repeatsFailedRead: sides.every((side) => partsOf(side, 'quarters').length === 0),
+          error: primary.reason,
+        });
+        if (skipReason) {
+          console.warn('[OCR_READS_FAILED_NO_RETRY]', {
+            reason: skipReason,
+            remainingMs: remainingMs(),
+            error: primary.reason?.message || String(primary.reason),
+          });
+          throw primary.reason;
+        }
+        const plain = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'none') }];
+        console.warn('[OCR_READS_FAILED_RETRY_PLAIN]', {
           error: primary.reason?.message || String(primary.reason),
+          images: countImages(plain),
         });
-        throw primary.reason;
-      }
-      const plain = [systemMessage, { role: 'user', content: buildReadContent(userPromptText, sides, 'none') }];
-      console.warn('[OCR_READS_FAILED_RETRY_PLAIN]', {
-        error: primary.reason?.message || String(primary.reason),
-        images: countImages(plain),
-      });
-      const fallback = await callModel(plain, {
-        label: 'read-plain',
-        businessId: cacheId,
-        timeoutMs: remainingMs(),
-        signal,
-      });
-      addUsage(fallback.usage);
-      parsedData = prepareRead(fallback.parsedData);
-      consensus = { mode: 'plain', agreements: 0, disagreements: 0, adjudicated: 0 };
-    }
-    if (parsedData) {
-      // The plain retry above already produced the reading.
-    } else if (primary.status === 'rejected' || secondary.status === 'rejected') {
-      // One read is a complete answer on its own; the other's failure is logged.
-      if (secondRead) {
-        const failed = primary.status === 'rejected' ? primary : secondary;
-        console.warn('[OCR_READ_FAILED]', {
-          label: primary.status === 'rejected' ? 'read-a' : 'read-b',
-          error: failed.reason?.message || String(failed.reason),
+        metrics.reads += 1;
+        metrics.images += countImages(plain);
+        const fallback = await callModel(plain, {
+          label: 'read-plain',
+          businessId: cacheId,
+          timeoutMs: remainingMs(),
+          signal: readSignal,
         });
+        addUsage(fallback.usage);
+        parsedData = prepareRead(fallback.parsedData);
+        consensus = { mode: 'plain', agreements: 0, disagreements: 0, adjudicated: 0 };
       }
-      const survivor = primary.status === 'fulfilled' ? primary : secondary;
-      parsedData = prepareRead(survivor.value.parsedData);
-    } else {
-      const readA = prepareRead(primary.value.parsedData);
-      const readB = prepareRead(secondary.value.parsedData);
-      const { merged, disagreements, agreements } = compareReads(readA, readB);
-      parsedData = merged;
-      consensus = { mode: 'double', agreements, disagreements: disagreements.length, adjudicated: 0 };
-      if (disagreements.length && adjudicate && remainingMs() > ADJUDICATION_MIN_BUDGET_MS) {
-        try {
-          const verdict = await callModel(
-            [
-              { role: 'system', content: ADJUDICATION_SYSTEM_PROMPT },
-              { role: 'user', content: buildAdjudicationContent(sides, disagreements) },
-            ],
-            {
-              label: 'adjudicate',
-              businessId: cacheId,
-              maxCompletionTokens: ADJUDICATION_MAX_COMPLETION_TOKENS,
-              timeoutMs: remainingMs(),
-              signal,
-            },
-          );
-          addUsage(verdict.usage);
-          const answers = verdict.parsedData?.answers || verdict.parsedData;
-          consensus.adjudicated = applyAdjudication(parsedData, disagreements, answers).applied;
-          if (consensus.adjudicated === 0) {
-            // Nothing matched the paths that were asked about: the answer came
-            // back in a shape this code cannot read, which would otherwise be
-            // indistinguishable from "the third look confirmed nothing".
-            console.warn('[OCR_ADJUDICATION_UNUSED]', {
-              asked: disagreements.map((d) => d.path),
-              answered: Object.keys(answers || {}).slice(0, 10),
-            });
-          }
-        } catch (adjudicationError) {
-          if (isAbortError(adjudicationError)) throw adjudicationError;
-          // The contested fields stay at low confidence and get reviewed.
-          console.warn('[OCR_ADJUDICATION_FAILED]', {
-            error: adjudicationError?.message || String(adjudicationError),
+      metrics.readMs = Date.now() - tAiStart;
+      if (parsedData) {
+        // The plain retry above already produced the reading.
+      } else if (primary.status === 'rejected' || secondary.status === 'rejected') {
+        // One read is a complete answer on its own; the other's failure is logged.
+        if (secondRead) {
+          const failed = primary.status === 'rejected' ? primary : secondary;
+          console.warn('[OCR_READ_FAILED]', {
+            label: primary.status === 'rejected' ? 'read-a' : 'read-b',
+            error: failed.reason?.message || String(failed.reason),
           });
         }
-      } else if (disagreements.length && adjudicate) {
-        console.warn('[OCR_ADJUDICATION_SKIPPED_NO_TIME]', { remainingMs: remainingMs() });
-      }
-      console.info('[OCR_CONSENSUS]', {
-        ...consensus,
-        fields: disagreements.map((d) => `${d.path}: "${d.a}" vs "${d.b}"`),
-      });
-    }
-    console.log(`[TIMING] openai_call_ms=${Date.now() - tAiStart} analyze_total_ms=${Date.now() - tPipelineStart}`);
-
-    // The separator repair already ran per reading, against the transcript
-    // that reading produced; these work on the agreed record.
-    repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
-    reconcileStoneWeightsWithGrossNet(parsedData);
-    syncStoneQuality(parsedData);
-    applyLabourPreference(parsedData, scannerSettings);
-
-    if (process.env.DEBUG_AI_LOGS === 'true') {
-      console.log("=== AI RAW RESPONSE ===");
-      console.log(JSON.stringify(parsedData, null, 2));
-      console.log("=======================");
-    }
-
-    // Add backward compatibility for frontend by flattening the first stone
-    if (parsedData.structuredData) {
-      if (hasFieldValue(parsedData.packetCode) && !hasFieldValue(parsedData.structuredData.packetCode)) {
-        parsedData.structuredData.packetCode = parsedData.packetCode;
-      }
-
-      const packetCodeField = parsedData.structuredData.packetCode;
-      if (Array.isArray(parsedData.structuredData.diamonds)) {
-        parsedData.structuredData.diamonds = parsedData.structuredData.diamonds.map((diamond) => {
-          if (!diamond || typeof diamond !== 'object') return diamond;
-          // The schema asks for a packetCode on every stone, so an empty one
-          // is an object, not undefined: testing the object left every row
-          // without the tag-wide code it was supposed to inherit.
-          if (hasFieldValue(diamond.packetCode)) return diamond;
-          if (!hasFieldValue(packetCodeField)) return diamond;
-          return { ...diamond, packetCode: packetCodeField };
+        const survivor = primary.status === 'fulfilled' ? primary : secondary;
+        parsedData = prepareRead(survivor.value.parsedData);
+      } else {
+        const readA = prepareRead(primary.value.parsedData);
+        const readB = prepareRead(secondary.value.parsedData);
+        const { merged, disagreements, agreements } = compareReads(readA, readB);
+        parsedData = merged;
+        consensus = { mode: 'double', agreements, disagreements: disagreements.length, adjudicated: 0 };
+        if (disagreements.length && adjudicate && remainingMs() > ADJUDICATION_MIN_BUDGET_MS) {
+          const tAdjudicationStart = Date.now();
+          try {
+            const verdict = await callModel(
+              [
+                { role: 'system', content: ADJUDICATION_SYSTEM_PROMPT },
+                { role: 'user', content: buildAdjudicationContent(sides, disagreements) },
+              ],
+              {
+                label: 'adjudicate',
+                businessId: cacheId,
+                maxCompletionTokens: ADJUDICATION_MAX_COMPLETION_TOKENS,
+                timeoutMs: remainingMs(),
+                signal: readSignal,
+              },
+            );
+            addUsage(verdict.usage);
+            const answers = verdict.parsedData?.answers || verdict.parsedData;
+            consensus.adjudicated = applyAdjudication(parsedData, disagreements, answers).applied;
+            if (consensus.adjudicated === 0) {
+              // Nothing matched the paths that were asked about: the answer came
+              // back in a shape this code cannot read, which would otherwise be
+              // indistinguishable from "the third look confirmed nothing".
+              console.warn('[OCR_ADJUDICATION_UNUSED]', {
+                asked: disagreements.map((d) => d.path),
+                answered: Object.keys(answers || {}).slice(0, 10),
+              });
+            }
+          } catch (adjudicationError) {
+            if (isAbortError(adjudicationError)) throw adjudicationError;
+            // The contested fields stay at low confidence and get reviewed.
+            console.warn('[OCR_ADJUDICATION_FAILED]', {
+              error: adjudicationError?.message || String(adjudicationError),
+            });
+          } finally {
+            metrics.adjudicationMs = Date.now() - tAdjudicationStart;
+          }
+        } else if (disagreements.length && adjudicate) {
+          console.warn('[OCR_ADJUDICATION_SKIPPED_NO_TIME]', { remainingMs: remainingMs() });
+        }
+        console.info('[OCR_CONSENSUS]', {
+          ...consensus,
+          fields: disagreements.map((d) => `${d.path}: "${d.a}" vs "${d.b}"`),
         });
       }
+      metrics.aiMs = Date.now() - tAiStart;
 
-      if (parsedData.structuredData.diamonds && parsedData.structuredData.diamonds.length > 0) {
+      // The separator repair already ran per reading, against the transcript
+      // that reading produced; these work on the agreed record.
+      repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
+      reconcileStoneWeightsWithGrossNet(parsedData);
+      syncStoneQuality(parsedData);
+      applyLabourPreference(parsedData, scannerSettings);
 
-        const firstDia = parsedData.structuredData.diamonds[0];
-        parsedData.structuredData.diamondWeight = firstDia.weight || { value: '', confidence: 0 };
-        parsedData.structuredData.diamondPieces = firstDia.pieces || { value: '', confidence: 0 };
-        parsedData.structuredData.diamondRate = firstDia.rate || { value: '', confidence: 0 };
-        parsedData.structuredData.diamondQuality = firstDia.quality || { value: '', confidence: 0 };
-        parsedData.structuredData.diamondColor = firstDia.color || { value: '', confidence: 0 };
-        parsedData.structuredData.diamondClarity = firstDia.clarity || { value: '', confidence: 0 };
-        parsedData.structuredData.diamondShape = firstDia.shape || { value: '', confidence: 0 };
+      if (process.env.DEBUG_AI_LOGS === 'true') {
+        console.log("=== AI RAW RESPONSE ===");
+        console.log(JSON.stringify(parsedData, null, 2));
+        console.log("=======================");
       }
 
-      if (parsedData.structuredData.colorstones && parsedData.structuredData.colorstones.length > 0) {
-        const firstCs = parsedData.structuredData.colorstones[0];
-        parsedData.structuredData.coloredStoneWeight = firstCs.weight || { value: '', confidence: 0 };
-        parsedData.structuredData.coloredStonePieces = firstCs.pieces || { value: '', confidence: 0 };
-        parsedData.structuredData.coloredStoneRate = firstCs.rate || { value: '', confidence: 0 };
-        parsedData.structuredData.coloredStoneQuality = firstCs.quality || { value: '', confidence: 0 };
-        parsedData.structuredData.coloredStoneColor = firstCs.color || { value: '', confidence: 0 };
-        parsedData.structuredData.coloredStoneClarity = firstCs.clarity || { value: '', confidence: 0 };
+      // Add backward compatibility for frontend by flattening the first stone
+      if (parsedData.structuredData) {
+        if (hasFieldValue(parsedData.packetCode) && !hasFieldValue(parsedData.structuredData.packetCode)) {
+          parsedData.structuredData.packetCode = parsedData.packetCode;
+        }
+
+        const packetCodeField = parsedData.structuredData.packetCode;
+        if (Array.isArray(parsedData.structuredData.diamonds)) {
+          parsedData.structuredData.diamonds = parsedData.structuredData.diamonds.map((diamond) => {
+            if (!diamond || typeof diamond !== 'object') return diamond;
+            // The schema asks for a packetCode on every stone, so an empty one
+            // is an object, not undefined: testing the object left every row
+            // without the tag-wide code it was supposed to inherit.
+            if (hasFieldValue(diamond.packetCode)) return diamond;
+            if (!hasFieldValue(packetCodeField)) return diamond;
+            return { ...diamond, packetCode: packetCodeField };
+          });
+        }
+
+        if (parsedData.structuredData.diamonds && parsedData.structuredData.diamonds.length > 0) {
+
+          const firstDia = parsedData.structuredData.diamonds[0];
+          parsedData.structuredData.diamondWeight = firstDia.weight || { value: '', confidence: 0 };
+          parsedData.structuredData.diamondPieces = firstDia.pieces || { value: '', confidence: 0 };
+          parsedData.structuredData.diamondRate = firstDia.rate || { value: '', confidence: 0 };
+          parsedData.structuredData.diamondQuality = firstDia.quality || { value: '', confidence: 0 };
+          parsedData.structuredData.diamondColor = firstDia.color || { value: '', confidence: 0 };
+          parsedData.structuredData.diamondClarity = firstDia.clarity || { value: '', confidence: 0 };
+          parsedData.structuredData.diamondShape = firstDia.shape || { value: '', confidence: 0 };
+        }
+
+        if (parsedData.structuredData.colorstones && parsedData.structuredData.colorstones.length > 0) {
+          const firstCs = parsedData.structuredData.colorstones[0];
+          parsedData.structuredData.coloredStoneWeight = firstCs.weight || { value: '', confidence: 0 };
+          parsedData.structuredData.coloredStonePieces = firstCs.pieces || { value: '', confidence: 0 };
+          parsedData.structuredData.coloredStoneRate = firstCs.rate || { value: '', confidence: 0 };
+          parsedData.structuredData.coloredStoneQuality = firstCs.quality || { value: '', confidence: 0 };
+          parsedData.structuredData.coloredStoneColor = firstCs.color || { value: '', confidence: 0 };
+          parsedData.structuredData.coloredStoneClarity = firstCs.clarity || { value: '', confidence: 0 };
+        }
+
+        // Each reading was given both representations before they were
+        // compared; this is the safety net for a shape neither produced.
+        synthesizeStoneArrays(parsedData);
       }
 
-      // Each reading was given both representations before they were
-      // compared; this is the safety net for a shape neither produced.
-      synthesizeStoneArrays(parsedData);
+      parsedData.billingMeta = {
+        provider: 'openai',
+        model,
+        promptTokens: Number(usage.prompt_tokens || 0),
+        completionTokens: Number(usage.completion_tokens || 0),
+        totalTokens: Number(usage.total_tokens || 0),
+      };
+      parsedData.consensus = consensus;
+
+      return { parsedData, metrics };
+    } catch (err) {
+      // A cancelled pipeline failed nothing.
+      if (!isAbortError(err)) console.error('[OpenAI Error]', err);
+      throw err;
     }
+  };
 
-    parsedData.billingMeta = {
-      provider: 'openai',
-      model,
-      promptTokens: Number(usage.prompt_tokens || 0),
-      completionTokens: Number(usage.completion_tokens || 0),
-      totalTokens: Number(usage.total_tokens || 0),
-    };
-    parsedData.consensus = consensus;
-
-    return parsedData;
-  } catch (err) {
-    // A cancelled pipeline failed nothing.
-    if (!isAbortError(err)) console.error('[OpenAI Error]', err);
-    throw err;
+  // Reads on the upright views, started now. Most tags arrive upright: an
+  // answer of 0 keeps them, so the question no longer stands in front of
+  // the reads. A turned tag (90, 180, 270) aborts them and is read again from
+  // the turned views; an answer that never came (unclear) does the same,
+  // reading what the preparation finally gives, as before. When the answer
+  // is already in (asked at upload, long before Calculate), the right views
+  // are read straight away.
+  const pending = stages.filter((stage) => stage && !stage.fixed);
+  const answered = pending.every((stage) => stage.rotationMs !== null);
+  const early = answered ? null : childController(signal);
+  const earlyRun = early ? readViews(frontUpright, backUpright, early.signal) : null;
+  earlyRun?.catch(() => {});
+  let answers;
+  try {
+    answers = await untilAborted(Promise.allSettled(pending.map((stage) => stage.rotation)), signal);
+  } catch (error) {
+    early?.abort();
+    throw error;
   }
+  const upright = answers.every((answer) => answer.status === 'fulfilled' && answer.value === 0);
+  let outcome;
+  let reread = false;
+  if (upright) {
+    outcome = earlyRun ? await earlyRun : await readViews(frontUpright, backUpright, signal);
+  } else {
+    if (early) {
+      early.abort();
+      reread = true;
+    }
+    console.info('[PRINT_ROTATION_REREAD]', {
+      businessId: scope.businessId || null,
+      rotations: answers.map((answer) => (answer.status === 'fulfilled' ? answer.value : 'unclear')),
+      readsAborted: reread,
+    });
+    // An upload-time preparation that failed is redone here from the file,
+    // as a failed warm-up always was.
+    const finalOf = (stage, index) => {
+      if (!stage) return null;
+      if (!sources[index].staged || sources[index].views) return untilAborted(stage.final, signal);
+      return untilAborted(
+        stage.final.catch((error) => {
+          if (isAbortError(error)) throw error;
+          return prepareImageViews(sources[index].filePath, {
+            detectRotation: detectPrintRotation,
+            scanContext: scope,
+            signal,
+          });
+        }),
+        signal,
+      );
+    };
+    const [frontFinal, backFinal] = await Promise.all(stages.map(finalOf));
+    throwIfAborted(signal);
+    outcome = await readViews(frontFinal, backFinal, signal);
+  }
+
+  const { parsedData, metrics } = outcome;
+  console.log(`[TIMING] openai_call_ms=${metrics.aiMs} analyze_total_ms=${Date.now() - tPipelineStart}`);
+  const rotationTimes = pending.map((stage) => stage.rotationMs).filter((ms) => Number.isFinite(ms));
+  // Where this scan's wait went, for its [SCAN_TIMING] line (scan.service).
+  // Not part of the reading: never stored or sent.
+  Object.defineProperty(parsedData, 'timing', {
+    value: {
+      preprocessMs,
+      rotationMs: rotationTimes.length ? Math.max(...rotationTimes) : null,
+      readMs: metrics.readMs,
+      adjudicationMs: metrics.adjudicationMs,
+      reads: metrics.reads,
+      images: metrics.images,
+      tier: serviceTier || 'default',
+      model,
+      rotationReread: reread,
+    },
+    enumerable: false,
+    configurable: true,
+  });
+  return parsedData;
 };
 
 
