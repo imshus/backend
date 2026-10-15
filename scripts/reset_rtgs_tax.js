@@ -13,8 +13,12 @@
  *   node scripts/reset_rtgs_tax.js --apply --from 3 --to 0
  *
  * Only records at exactly --from (3) are touched: a shop that typed 2 or 5
- * chose it and keeps it. The gold-rates cache of each shop changed is
- * invalidated, so the app shows the new figure on its next read.
+ * chose it and keeps it.
+ *
+ * The API keeps each shop's worked-out gold rates in its own memory, which
+ * this separate process cannot reach. After --apply, restart the API so it
+ * shows the new Rate 2 at once; otherwise a running server keeps the old
+ * figure until the board next moves (hours, at night or over a weekend).
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
@@ -42,7 +46,7 @@ function parseArgs(argv) {
  */
 async function resetRtgsTax({ from = 3, to = 0, apply = false } = {}) {
   const records = await GoldTaxSetting.find({ rtgsTaxPercent: from }).lean();
-  const summary = { matched: records.length, changed: 0, cacheCleared: 0 };
+  const summary = { matched: records.length, changed: 0 };
 
   for (const record of records) {
     const businessId = String(record.businessId);
@@ -52,22 +56,6 @@ async function resetRtgsTax({ from = 3, to = 0, apply = false } = {}) {
 
     await GoldTaxSetting.updateOne({ _id: record._id, rtgsTaxPercent: from }, { $set: { rtgsTaxPercent: to } });
     summary.changed += 1;
-  }
-
-  if (apply && summary.changed > 0) {
-    // Best effort: the cache also refreshes on its own with the next feed
-    // move, so a Redis that cannot be reached from here is not a failure.
-    try {
-      // Required here, not at the top, so a dry run never opens Redis.
-      const redisService = require('../src/services/redis.service');
-      const businessIds = [...new Set(records.map((record) => String(record.businessId)))];
-      for (const businessId of businessIds) {
-        await redisService.invalidateGoldRatesCache(businessId);
-        summary.cacheCleared += 1;
-      }
-    } catch (error) {
-      console.warn('cache not cleared (it refreshes with the next feed move):', error.message || error);
-    }
   }
 
   return summary;
@@ -95,7 +83,12 @@ async function main() {
     console.log('\n--- summary');
     console.log(`records at ${from}    ${summary.matched}`);
     console.log(`changed         ${summary.changed}`);
-    console.log(`cache cleared   ${summary.cacheCleared}`);
+    if (apply && summary.changed > 0) {
+      // The rates the API works out are cached in its own memory, out of
+      // this process's reach: only a restart drops them at once.
+      console.log('\nRestart the API now so it shows the new Rate 2; until then a running');
+      console.log('server keeps the old figure until the board next moves.');
+    }
     return summary;
   } finally {
     await mongoose.disconnect();
