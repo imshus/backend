@@ -584,6 +584,183 @@ const reconcileStoneWeightsWithGrossNet = (parsedData) => {
 };
 
 /**
+ * The 8-read-as-3 check. A tag's weights close: gross = net + 0.2 g per
+ * diamond carat. A reading whose gross falls short of that (or whose net is
+ * above its gross) has misread a digit. When changing ONE digit of ONE weight
+ * to the digit it is commonly mistaken for (3/8, 5/6, 6/8, 0/8) closes the
+ * weights, and no other such change does, that is the misread: the value is
+ * corrected and marked for review with the reason. When no single change
+ * explains it the values stay as read and the weights are marked for review.
+ *
+ * Only a shortfall is a misread. A gross ABOVE net + diamonds is how a tag
+ * with colour stones, pearls or enamel legitimately reads, so it is never
+ * acted on here, and a tag the reading shows carrying any of those is never
+ * corrected at all: with weight the arithmetic cannot see, it no longer
+ * points at one digit. Serials and codes are not weights and are not touched.
+ */
+const LOOKALIKE_DIGITS = { 3: ['8'], 8: ['3', '6', '0'], 5: ['6'], 6: ['5', '8'], 0: ['8'] };
+// Rounding on the printed figures (2-3 decimals of a gram, 2 of a carat).
+const WEIGHT_CLOSE_TOLERANCE_G = 0.015;
+// A shortfall smaller than this is marked, never pinned on a digit: it is
+// within reach of a thousandths swap, which rounding explains as well.
+const LOOKALIKE_MIN_SHORTFALL_G = 2 * WEIGHT_CLOSE_TOLERANCE_G;
+// Below the review screen's attention threshold (80): the amber "check" mark.
+const WEIGHT_CHECK_CONFIDENCE = 70;
+// What else a tag can carry that weighs: a label naming it, followed by a figure.
+const OTHER_MATERIAL_LINE =
+  /\b(?:PEARLS?|PRL|MOTI|ENAMEL|MEENA|KUNDAN|POLKI|BEADS?|C\.?S\.?\s*WT|COL\.?\s*WT|COLOU?RE?D?\s*STONES?)\b[^\n\d]{0,12}\d/i;
+const OTHER_MATERIAL_LABEL =
+  /\b(?:PEARLS?|PRL|MOTI|ENAMEL|MEENA|KUNDAN|POLKI|BEADS?|C\.?S\.?(?:\s*WT)?|COL\.?\s*WT|COLOU?RE?D?\s*STONES?)\b/i;
+
+const formatGrams = (value) => String(Number(value.toFixed(3)));
+
+/** Whether the reading shows weight beyond metal and diamonds: colour stones, pearls, enamel. */
+const readingShowsOtherMaterial = (parsedData) => {
+  const sd = parsedData?.structuredData || {};
+  const colorstones = Array.isArray(sd.colorstones) ? sd.colorstones : [];
+  const stoneCarriesData = (stone) =>
+    stone && typeof stone === 'object' && Object.values(stone).some((field) => hasFieldValue(field));
+  if (colorstones.some(stoneCarriesData) || hasFieldValue(sd.coloredStoneWeight)) return true;
+  const unknown = Array.isArray(parsedData?.unknownFields) ? parsedData.unknownFields : [];
+  if (
+    unknown.some((entry) =>
+      OTHER_MATERIAL_LABEL.test(`${entry?.abbreviation || ''} ${entry?.label || ''} ${entry?.suggestedMeaning || ''}`),
+    )
+  ) {
+    return true;
+  }
+  return OTHER_MATERIAL_LINE.test(String(parsedData?.rawText?.merged ?? ''));
+};
+
+/**
+ * Gross, net and the diamond weights of a reading, each with what one unit of
+ * it adds to gross - net - diamonds in grams.
+ */
+const weightTerms = (sd) => {
+  const terms = [];
+  const add = (field, label, gramsPer) => {
+    const number = parseWeightNumber(field);
+    if (number != null) terms.push({ field, label, number, gramsPer });
+  };
+  add(sd.grossWeight, 'grossWeight', 1);
+  add(sd.netWeight, 'netWeight', -1);
+  (Array.isArray(sd.diamonds) ? sd.diamonds : []).forEach((stone, index) => {
+    if (!stone || typeof stone !== 'object') return;
+    const inGrams = /^\s*g/i.test(String(stone.unit?.value ?? ''));
+    add(stone.weight, `diamonds[${index}].weight`, inGrams ? -1 : -0.2);
+  });
+  const gross = terms.find((term) => term.label === 'grossWeight');
+  const net = terms.find((term) => term.label === 'netWeight');
+  return { terms, gross, net };
+};
+
+/** gross - net - diamonds in grams: 0 when the weights close, negative when gross falls short. */
+const weightResidual = (terms, replaced) =>
+  terms.reduce((sum, term) => sum + term.gramsPer * (term === replaced?.term ? replaced.number : term.number), 0);
+
+/** Every reading of `text` with one digit swapped for its lookalike. */
+const lookalikeVariants = (text) => {
+  const out = [];
+  for (let index = 0; index < text.length; index += 1) {
+    for (const digit of LOOKALIKE_DIGITS[text[index]] || []) {
+      const variant = `${text.slice(0, index)}${digit}${text.slice(index + 1)}`;
+      out.push({ text: variant, from: text[index], to: digit });
+    }
+  }
+  return out;
+};
+
+const markForReview = (field, reason) => {
+  field.confidence = Math.min(Number(field.confidence) || 0, WEIGHT_CHECK_CONFIDENCE);
+  field.reason = reason;
+};
+
+/**
+ * Returns { outcome, suspects }: outcome 'consistent' (nothing to do),
+ * 'corrected' (one lookalike digit fixed and marked) or 'unresolved' (the
+ * shortfall stands); suspects are the weights a lookalike change could have
+ * fixed when more than one could. Runs on the agreed record.
+ */
+const correctLookalikeWeightDigit = (parsedData) => {
+  const consistent = { outcome: 'consistent', suspects: [] };
+  const sd = parsedData?.structuredData;
+  if (!sd) return consistent;
+  const { terms, gross, net } = weightTerms(sd);
+  if (!gross || !net) return consistent;
+  const residual = weightResidual(terms);
+  if (residual >= -WEIGHT_CLOSE_TOLERANCE_G) return consistent;
+  if (residual > -LOOKALIKE_MIN_SHORTFALL_G || readingShowsOtherMaterial(parsedData)) {
+    return { outcome: 'unresolved', suspects: [] };
+  }
+
+  const candidates = [];
+  for (const term of terms) {
+    const read = String(term.field.value ?? '').trim();
+    for (const variant of lookalikeVariants(read)) {
+      const number = parseWeightNumber({ value: variant.text });
+      if (number == null) continue;
+      if (Math.abs(weightResidual(terms, { term, number })) <= WEIGHT_CLOSE_TOLERANCE_G) {
+        candidates.push({ term, read, ...variant });
+      }
+    }
+  }
+  if (candidates.length !== 1) {
+    console.info('[WEIGHT_LOOKALIKE_UNRESOLVED]', {
+      residualG: formatGrams(residual),
+      candidates: candidates.map((c) => `${c.term.label}: ${c.read} -> ${c.text}`),
+    });
+    return { outcome: 'unresolved', suspects: [...new Set(candidates.map((c) => c.term.label))] };
+  }
+  const [{ term, read, text, from, to }] = candidates;
+  term.field.value = text;
+  markForReview(
+    term.field,
+    `Read as ${read}. Gross must equal net + 0.2 g per diamond carat, and only reading the ${from} as ${to} (${text}) makes the weights agree. Check against the tag.`,
+  );
+  console.warn('[WEIGHT_LOOKALIKE_CORRECTED]', { field: term.label, from: read, to: text });
+  return { outcome: 'corrected', suspects: [term.label] };
+};
+
+/**
+ * Gross still short of net + diamonds: the weights that can explain it are
+ * marked for review, values unchanged. That is the ones a lookalike change
+ * could have fixed when it was a choice between them; otherwise gross and
+ * net when net is above gross, else every weight in the sum.
+ */
+const flagWeightShortfall = (parsedData, suspects = []) => {
+  const sd = parsedData?.structuredData;
+  if (!sd) return;
+  const { terms, gross, net } = weightTerms(sd);
+  if (!gross || !net) return;
+  const residual = weightResidual(terms);
+  if (residual >= -WEIGHT_CLOSE_TOLERANCE_G) return;
+  const printed = (term) => String(term.field.value ?? '').trim();
+  const netAboveGross = net.number > gross.number;
+  const reason = netAboveGross
+    ? `Net weight ${printed(net)} is above gross weight ${printed(gross)}. Check the weights against the tag.`
+    : `Gross weight ${printed(gross)} is ${formatGrams(-residual)} g short of net + 0.2 g per diamond carat. Check the weights against the tag.`;
+  let flagged = terms.filter((term) => suspects.includes(term.label));
+  if (flagged.length === 0) flagged = netAboveGross ? [gross, net] : terms;
+  console.info('[WEIGHT_SHORTFALL_FLAGGED]', {
+    residualG: formatGrams(residual),
+    fields: flagged.map((term) => term.label),
+  });
+  for (const term of flagged) markForReview(term.field, reason);
+};
+
+/**
+ * Every weight check on the agreed record, in order: the lookalike digit
+ * (8 read as 3), then the stone-weight repairs, then a review mark on any
+ * shortfall neither explained.
+ */
+const crossCheckWeights = (parsedData) => {
+  const { outcome, suspects } = correctLookalikeWeightDigit(parsedData);
+  if (outcome === 'corrected') return;
+  reconcileStoneWeightsWithGrossNet(parsedData);
+  flagWeightShortfall(parsedData, suspects);
+};
+
+/**
  * quality = colour + clarity, always. The model writes all three, and a
  * consensus or repair can change the colour or the clarity afterwards, which
  * would leave a quality string that names a grade the row no longer has.
@@ -1323,7 +1500,7 @@ const analyzeImages = async (
       // The separator repair already ran per reading, against the transcript
       // that reading produced; these work on the agreed record.
       repairCompactGradeTokens(parsedData, mergedDiamondCustoms);
-      reconcileStoneWeightsWithGrossNet(parsedData);
+      crossCheckWeights(parsedData);
       syncStoneQuality(parsedData);
       applyLabourPreference(parsedData, scannerSettings);
 
@@ -1675,6 +1852,8 @@ module.exports = {
     splitWeightRatePairs,
     repairCompactGradeTokens,
     reconcileStoneWeightsWithGrossNet,
+    correctLookalikeWeightDigit,
+    crossCheckWeights,
     syncStoneQuality,
     correctSeparatorMisreads,
     buildReadContent,

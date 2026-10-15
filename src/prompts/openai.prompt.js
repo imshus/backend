@@ -1036,6 +1036,11 @@ ABSOLUTE RULES
    "g" for grams (g, gm, gms, grm), "ct" for carats (ct, cts, crt). Leave it
    "" when no unit is printed. Never convert the weight itself.
 
+3d. 8 OR 3.
+   An 8 is closed on the left, a 3 is open on the left (same care for 6/8,
+   5/6, 0/8): check the left side of the glyph before writing 3 or 8 in a
+   weight or code.
+
 4. NEVER convert purity values.
    Examples:
    - Do NOT convert 750 → 18K
