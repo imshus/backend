@@ -2,22 +2,11 @@ const jwt = require('jsonwebtoken');
 const config = require('../config/env');
 const { toPlainPermissions } = require('../utils/permissions');
 
-const IST_OFFSET_MS = 330 * 60 * 1000;
-
-/** Seconds from now until the next midnight in India (Asia/Kolkata), never under a minute. */
-const secondsUntilIstMidnight = (now = Date.now()) => {
-  const istNow = now + IST_OFFSET_MS;
-  const istNextMidnight = (Math.floor(istNow / 86_400_000) + 1) * 86_400_000;
-  return Math.max(60, Math.round((istNextMidnight - IST_OFFSET_MS - now) / 1000));
-};
-
 /**
- * Every session ends at 12:00 AM India time — the shop's rule, and it holds
- * whether the app is open, in the background or closed, on every device.
- * The refresh token expires at the coming midnight instead of a week out,
- * and the access token at fifteen minutes or midnight, whichever is first.
- * Past midnight the first request is refused, the refresh is refused, and
- * the app drops to Log In.
+ * A session no longer ends at 12:00 AM (the owner's call, 16 Oct 2026: the
+ * daily sign-out and MPIN again after midnight are gone). The access token
+ * lives fifteen minutes and the refresh token thirty days; every refresh
+ * issues a new pair, so a phone used at least once a month stays signed in.
  *
  * `claims` adds to the payload and can never replace the three that decide
  * who the token is: an employee's token carries a copy of their permissions,
@@ -26,12 +15,9 @@ const secondsUntilIstMidnight = (now = Date.now()) => {
  */
 const generateTokens = (businessId, userId, role, claims = {}) => {
   const payload = { ...claims, businessId, userId, role };
-  const untilMidnight = secondsUntilIstMidnight();
 
-  const accessToken = jwt.sign(payload, config.jwt.accessSecret, {
-    expiresIn: Math.min(15 * 60, untilMidnight),
-  });
-  const refreshToken = jwt.sign(payload, config.jwt.refreshSecret, { expiresIn: untilMidnight });
+  const accessToken = jwt.sign(payload, config.jwt.accessSecret, { expiresIn: '15m' });
+  const refreshToken = jwt.sign(payload, config.jwt.refreshSecret, { expiresIn: '30d' });
 
   return { accessToken, refreshToken };
 };
