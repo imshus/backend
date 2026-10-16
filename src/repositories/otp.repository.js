@@ -22,9 +22,10 @@ const findLatestByMobileAndFlow = async (mobile, flow) => {
 };
 
 // The latest code one shop asked for: another shop's code to the same number
-// is never read in its place.
+// is never read in its place. A resend MSG91 refused (FAILED) was never
+// delivered, so it must not hide the code the employee did receive.
 const findLatestByMobileFlowAndBusiness = async (mobile, flow, businessId) => {
-  return OtpVerification.findOne({ mobile, flow, businessId }).sort({ createdAt: -1 });
+  return OtpVerification.findOne({ mobile, flow, businessId, status: { $ne: 'FAILED' } }).sort({ createdAt: -1 });
 };
 
 // A shop's sign-up code and the codes it later texts to employees it adds are

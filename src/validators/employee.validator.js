@@ -127,6 +127,9 @@ const checkPhoneSchema = Joi.object({
 
 const employeePhoneOtpSchema = Joi.object({
   phone: phoneSchema.required(),
+  // Present when an existing employee's number is being changed: that is not
+  // a new employee, so the shop's employee limit does not apply.
+  employeeId: Joi.string().hex().length(24),
 });
 
 const verifyEmployeePhoneOtpSchema = Joi.object({

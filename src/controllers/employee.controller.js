@@ -134,22 +134,25 @@ async function createEmployeeWithAccount(fields, { mpin } = {}) {
   }
 }
 
+const TRIAL_REQUIRED = {
+  success: false,
+  error: 'TRIAL_REQUIRED_FOR_MORE_EMPLOYEES',
+  message: 'Start your free trial to add more than one employee.',
+};
+
+/** Whether the shop's licence lets it add one more employee. */
+async function mayAddEmployee(businessId) {
+  const { licenseStatus } = await licenseService.getLicenseOverview(businessId);
+  if (licenseStatus !== 'NO_LICENSE') return true;
+  return (await Employee.countDocuments({ businessId })) < 1;
+}
+
 const createEmployee = async (req, res) => {
   try {
     const body = req.validated || req.body || {};
     const businessId = req.user.businessId;
 
-    const { licenseStatus } = await licenseService.getLicenseOverview(businessId);
-    if (licenseStatus === 'NO_LICENSE') {
-      const existingEmployees = await Employee.countDocuments({ businessId });
-      if (existingEmployees >= 1) {
-        return res.status(403).json({
-          success: false,
-          error: 'TRIAL_REQUIRED_FOR_MORE_EMPLOYEES',
-          message: 'Start your free trial to add more than one employee.',
-        });
-      }
-    }
+    if (!(await mayAddEmployee(businessId))) return res.status(403).json(TRIAL_REQUIRED);
 
     // This build: everything in one request, the MPIN set by the owner.
     if (body.mpin) {
@@ -286,7 +289,16 @@ const checkPhone = async (req, res) => {
  */
 const sendPhoneOtp = async (req, res) => {
   try {
-    const { phone } = req.validated || {};
+    const { phone, employeeId } = req.validated || {};
+    // A shop that cannot add another employee is told before an SMS is paid
+    // for, not after the owner has verified, set an MPIN and permissions.
+    // A number change for an employee the shop already has is not an add.
+    const existing = employeeId
+      ? await Employee.exists({ _id: employeeId, businessId: req.user.businessId })
+      : null;
+    if (!existing && !(await mayAddEmployee(req.user.businessId))) {
+      return res.status(403).json(TRIAL_REQUIRED);
+    }
     if (await employeeAccounts.isPhoneRegistered(phone)) {
       return res.status(409).json(PHONE_TAKEN);
     }

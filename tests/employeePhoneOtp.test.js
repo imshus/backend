@@ -624,3 +624,46 @@ test('neither the phone proof nor a password-reset token is ever a session', asy
   }
   assert.equal((await api('GET', '/employees', { token: ownerToken(shopA) })).status, 200);
 });
+
+test('a resend MSG91 refused never hides the code the employee already received', async () => {
+  const phone = '9822200031';
+  assert.equal((await sendCode(shopA, phone)).status, 200);
+  const delivered = lastCodeTo(phone);
+  msg91.mode = 'reject';
+  try {
+    assert.equal((await sendCode(shopA, phone)).status, 502);
+  } finally {
+    msg91.mode = 'ok';
+  }
+  const checked = await checkCode(shopA, phone, delivered);
+  assert.equal(checked.status, 200, JSON.stringify(checked.body));
+  assert.ok(checked.body.data.phoneVerificationToken);
+});
+
+test('a shop that may not add another employee is told before any SMS; a number change is not an add', async () => {
+  // Shop B has one employee; without a licence it may not add a second.
+  await OrganizationLicense.updateOne({ businessId: shopB.id }, { licenseStatus: 'NO_LICENSE' });
+  try {
+    const before = msg91.sent.length;
+    const refused = await sendCode(shopB, '9822200032');
+    assert.equal(refused.status, 403);
+    assert.equal(refused.body.error, 'TRIAL_REQUIRED_FOR_MORE_EMPLOYEES');
+    assert.equal(msg91.sent.length, before, 'no SMS for an add the shop cannot make');
+
+    const karigar = await Employee.findOne({ businessId: shopB.id, name: 'Old Karigar' });
+    const change = await api('POST', '/employees/phone-otp', {
+      token: ownerToken(shopB),
+      body: { phone: '9822200033', employeeId: String(karigar._id) },
+    });
+    assert.equal(change.status, 200, JSON.stringify(change.body));
+
+    // Another shop's employee id does not lift the limit.
+    const stranger = await api('POST', '/employees/phone-otp', {
+      token: ownerToken(shopB),
+      body: { phone: '9822200034', employeeId: String(new mongoose.Types.ObjectId()) },
+    });
+    assert.equal(stranger.status, 403);
+  } finally {
+    await OrganizationLicense.updateOne({ businessId: shopB.id }, { licenseStatus: 'PERMANENT_LICENSE' });
+  }
+});
