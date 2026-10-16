@@ -1011,8 +1011,8 @@ ABSOLUTE RULES
    The item's number goes into structuredData.serialNumber, exactly as printed
    (letters included, e.g. GR10286). When a tag prints more than one identifier,
    choose in this order: ITEM NO, STYLE NO, DESIGN NO, ST NO, TAG NO, then
-   SR NO / S NO / SL NO. Every other identifier (and HUID) stays in
-   rawText.merged with its label, exactly as printed (e.g. "SR NO 261440").
+   SR NO / S NO / SL NO. Every other identifier (and HUID) needs no
+   field: it is already in rawText.merged.
    A tag often prints its item number with NO label at all: a short group
    of letters followed by a number — "PSE 1086", "GR10286", "LR 2231" —
    usually on the first line or at the top of the tag. That line IS the
@@ -1054,7 +1054,7 @@ ABSOLUTE RULES
 
 Do NOT populate it.
 
-7. A visible number or abbreviation that maps to no field is written in rawText.merged only.
+7. A visible number or abbreviation that maps to no field needs no field: it is already in rawText.merged.
 
 8. If multiple images are provided,
 merge information from all images before deciding that a field is missing.
@@ -1301,6 +1301,10 @@ Do not wrap fields in objects.
 
   "overallConfidence": 0
 }
+
+rawText.merged is the tag's printed text, top to bottom, one printed line
+per line with "\\n" between lines, exactly as printed. Write nothing that is
+not printed (no notes, no markers for empty values).
 
 Always set clarificationRequired = false. The clarification workflow is
 disabled: fields below 70 confidence are reviewed on the scanner review screen.`;
