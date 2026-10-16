@@ -124,7 +124,7 @@ module.exports = {
     // answer within ~4 s of Calculate, and every model step is ~1.3 s faster
     // on it. OPENAI_SERVICE_TIER=default turns it off.
     serviceTier: envVars.OPENAI_SERVICE_TIER || 'priority',
-    reasoningEffort: envVars.OPENAI_REASONING_EFFORT || 'low',
+    reasoningEffort: envVars.OPENAI_REASONING_EFFORT || 'none',
   },
   razorpay: {
     keyId: envVars.RAZORPAY_KEY_ID,
