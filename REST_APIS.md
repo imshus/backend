@@ -278,11 +278,11 @@ number or shop → `403 { success:false, error:'EMPLOYEE_PHONE_NOT_VERIFIED', me
 - OWNER: the roster; EMP: only themselves. Each item adds `hasMpin`; never a hash.
 7.3 GET /api/v1/employees/check-phone?phone= (OWNER) → `{ available }`
 7.3a POST /api/v1/employees/phone-otp (OWNER) `{ phone }` → `{ phone, expiresInSeconds:600, resendAfterSeconds:30 }`
-- Texts a 6-digit code (MSG91, flow `EMPLOYEE_PHONE`, stored against the owner's business). A taken number → `409 PHONE_ALREADY_REGISTERED`, nothing sent; MSG91 failing → `502 OTP_SEND_FAILED`; 10 sends an hour per number → `429`.
+- Texts a 6-digit code (MSG91, flow `EMPLOYEE_PHONE`, stored against the owner's business). A taken number → `409 PHONE_ALREADY_REGISTERED`, nothing sent; MSG91 failing → `502 OTP_SEND_FAILED`; 10 sends an hour per number for each shop → `429`.
 7.3b POST /api/v1/employees/phone-otp/verify (OWNER) `{ phone, otp }` → `{ phoneVerificationToken, expiresInSeconds:1800 }`
-- Only the latest code this shop sent to the number counts, once. `400` with `OTP_INVALID` | `OTP_EXPIRED` | `OTP_NOT_FOUND` | `OTP_ALREADY_USED`; 15 checks an hour per number → `429`.
+- Only the latest code this shop sent to the number counts, once. `400` with `OTP_INVALID` | `OTP_EXPIRED` | `OTP_NOT_FOUND` | `OTP_ALREADY_USED`; 15 checks an hour per number for each shop → `429`.
 7.4 PUT /api/v1/employees/:id (OWNER)
-- `{ name?, phone?, email?, designation?, permissions?, isActive?, phoneVerificationToken? }`; a new phone needs the token for the new number, and is re-checked excluding the employee, and so is the current one when `isActive:true` switches a switched-off employee back on (a switched-off employee holds no number). Taken → `409 PHONE_ALREADY_REGISTERED`, nothing written. The same number, however written, needs no token.
+- `{ name?, phone?, email?, designation?, permissions?, isActive?, phoneVerificationToken? }`; a new phone needs the token for the new number, and is re-checked excluding the employee, and so is the current one when `isActive:true` switches a switched-off employee back on (a switched-off employee holds no number). Taken → `409 PHONE_ALREADY_REGISTERED`, nothing written. The same number, however written (an old record's `0XXXXXXXXXX` included), needs no token.
 7.5 PUT /api/v1/employees/:id/mpin (OWNER) `{ mpin, confirmMpin }` → `{ success:true }`
 7.6 GET /api/v1/employees/:id/mpin (OWNER) → `{ mpin: '1234' | null }` from the sealed copy
 7.7 DELETE /api/v1/employees/:id (OWNER) — also deletes the sign-in record.

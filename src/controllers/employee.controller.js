@@ -6,7 +6,7 @@ const licenseService = require('../services/license.service');
 const employeeAccounts = require('../services/employeeAccount.service');
 const otpService = require('../services/otp.service');
 const { isOwnerRole } = require('../services/userScope.service');
-const { normalizeIndianMobile } = require('../utils/phone');
+const { normalizeIndianMobile, storedSpellingsOf } = require('../utils/phone');
 const { toPlainPermissions } = require('../utils/permissions');
 const {
   EMPLOYEE_PHONE_TOKEN_TTL_SECONDS,
@@ -68,6 +68,15 @@ const OTP_RESEND_AFTER_SECONDS = 30;
 /** Whether the request carries the proof for this shop and this number. */
 const phoneVerified = (body, businessId, phone) =>
   isEmployeePhoneVerified(body.phoneVerificationToken, { businessId, phone });
+
+/**
+ * Whether the number stored on an employee is these ten digits. A record
+ * from before numbers were normalised may hold a spelling normalizeIndianMobile
+ * refuses ("09876543210"), so it is also matched the way sign-in matches it.
+ */
+const isStoredPhone = (tenDigits, stored) =>
+  tenDigits === normalizeIndianMobile(stored)
+  || (Boolean(tenDigits) && storedSpellingsOf(tenDigits).includes(String(stored ?? '').trim()));
 
 const NOT_FOUND = { success: false, error: 'EMPLOYEE_NOT_FOUND', message: 'Employee not found' };
 
@@ -374,7 +383,7 @@ const updateEmployee = async (req, res) => {
 
     if (body.phone !== undefined) {
       const nextPhone = normalizeIndianMobile(body.phone);
-      if (nextPhone !== normalizeIndianMobile(before.phone)) {
+      if (!isStoredPhone(nextPhone, before.phone)) {
         // A new number becomes their sign-in, so it is proved like a new
         // employee's. The same number (however written) needs nothing.
         if (!phoneVerified(body, req.user.businessId, nextPhone)) {

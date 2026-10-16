@@ -9,14 +9,14 @@ const originalAxiosPost = axios.post;
 const originalCreateOtpRecord = otpRepository.createOtpRecord;
 const originalUpdateOtpRecord = otpRepository.updateOtpRecord;
 const originalFindLatestByMobile = otpRepository.findLatestByMobile;
-const originalFindLatestByBusinessAndType = otpRepository.findLatestByBusinessAndType;
+const originalFindLatestByBusinessTypeAndFlow = otpRepository.findLatestByBusinessTypeAndFlow;
 
 test.after(() => {
   axios.post = originalAxiosPost;
   otpRepository.createOtpRecord = originalCreateOtpRecord;
   otpRepository.updateOtpRecord = originalUpdateOtpRecord;
   otpRepository.findLatestByMobile = originalFindLatestByMobile;
-  otpRepository.findLatestByBusinessAndType = originalFindLatestByBusinessAndType;
+  otpRepository.findLatestByBusinessTypeAndFlow = originalFindLatestByBusinessTypeAndFlow;
 });
 
 test('sendMobileOtp stores and sends OTP through MSG91', async () => {
@@ -116,5 +116,29 @@ test('sendMobileOtp returns explicit auth error when MSG91 rejects auth key/toke
   await assert.rejects(
     () => otpService.sendMobileOtp({ mobile: '9625060017', flow: 'SIGNUP' }),
     { message: 'MSG91_AUTH_ERROR' }
+  );
+});
+
+test('the sign-up phone check reads only the code sign-up sent, and not past its ten minutes', async () => {
+  let asked;
+  const record = {
+    otp: '123456',
+    verified: false,
+    status: 'SENT',
+    expiresAt: new Date(Date.now() + 60_000),
+    save: async () => {},
+  };
+  otpRepository.findLatestByBusinessTypeAndFlow = async (...args) => {
+    asked = args;
+    return record;
+  };
+
+  assert.equal(await otpService.verifyOtp('business-1', 'PHONE', '123456'), true);
+  assert.deepEqual(asked, ['business-1', 'PHONE', 'SIGNUP'], 'a shop\'s employee-phone codes are never read');
+
+  record.expiresAt = new Date(Date.now() - 1000);
+  await assert.rejects(
+    () => otpService.verifyOtp('business-1', 'PHONE', '123456'),
+    { message: 'OTP_EXPIRED' },
   );
 });

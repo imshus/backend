@@ -8,8 +8,13 @@ const updateOtpRecord = async (id, update) => {
   return OtpVerification.findByIdAndUpdate(id, { $set: update }, { returnDocument: 'after' });
 };
 
+// The number's own latest code, for the checks that name no flow (sign-in,
+// /auth/verify-otp, forgot User ID, sign-up's fallback). A code a shop texted
+// to a number it is adding as an employee is skipped: it is read only by that
+// shop's own check (findLatestByMobileFlowAndBusiness), never as proof of the
+// number to anyone else, and it does not hide the number's own code either.
 const findLatestByMobile = async (mobile) => {
-  return OtpVerification.findOne({ mobile }).sort({ createdAt: -1 });
+  return OtpVerification.findOne({ mobile, flow: { $ne: 'EMPLOYEE_PHONE' } }).sort({ createdAt: -1 });
 };
 
 const findLatestByMobileAndFlow = async (mobile, flow) => {
@@ -22,8 +27,10 @@ const findLatestByMobileFlowAndBusiness = async (mobile, flow, businessId) => {
   return OtpVerification.findOne({ mobile, flow, businessId }).sort({ createdAt: -1 });
 };
 
-const findLatestByBusinessAndType = async (businessId, otpType) => {
-  return OtpVerification.findOne({ businessId, otpType }).sort({ createdAt: -1 });
+// A shop's sign-up code and the codes it later texts to employees it adds are
+// both PHONE codes under its businessId; only the flow tells them apart.
+const findLatestByBusinessTypeAndFlow = async (businessId, otpType, flow) => {
+  return OtpVerification.findOne({ businessId, otpType, flow }).sort({ createdAt: -1 });
 };
 
 module.exports = {
@@ -32,5 +39,5 @@ module.exports = {
   findLatestByMobile,
   findLatestByMobileAndFlow,
   findLatestByMobileFlowAndBusiness,
-  findLatestByBusinessAndType,
+  findLatestByBusinessTypeAndFlow,
 };

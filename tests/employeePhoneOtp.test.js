@@ -43,6 +43,8 @@ const Employee = require('../src/models/employee.model');
 const OrganizationLicense = require('../src/models/organizationLicense.model');
 const OtpVerification = require('../src/models/otpVerification.model');
 const authService = require('../src/services/auth.service');
+const otpService = require('../src/services/otp.service');
+const registrationService = require('../src/services/registration.service');
 const redisClient = require('../src/redis/redisClient');
 const { normalizeIndianMobile } = require('../src/utils/phone');
 const {
@@ -473,24 +475,152 @@ test('changing an employee\'s number needs the token for the new number; the sam
   assert.deepEqual(await storedPhones(), { employee: '9820000013', account: '9820000013' });
 });
 
-test('codes to one number are capped: 10 sends and 15 checks an hour, however the number is written', async () => {
+test('codes to one number are capped per shop: 10 sends and 15 checks an hour, however the number is written', async () => {
   const phone = '9820000020';
   for (let i = 0; i < 10; i += 1) {
     const sent = await sendCode(shopA, i % 2 ? phone : '+91 98200 00020');
     assert.equal(sent.status, 200, `send ${i + 1}`);
   }
+  const codeA = lastCodeTo(phone);
   const before = msg91.sent.length;
-  const limited = await sendCode(shopB, '919820000020');
+  const limited = await sendCode(shopA, '919820000020');
   assert.equal(limited.status, 429);
   assert.equal(limited.body.error, 'RATE_LIMIT_EXCEEDED');
   assert.equal(msg91.sent.length, before, 'nothing texted past the cap');
 
-  const code = lastCodeTo(phone);
-  const wrongCode = code === '000000' ? '111111' : '000000';
+  const wrongCode = codeA === '000000' ? '111111' : '000000';
   for (let i = 0; i < 15; i += 1) {
     const wrong = await checkCode(shopA, phone, wrongCode);
     assert.equal(wrong.status, 400, `check ${i + 1}`);
   }
-  const blocked = await checkCode(shopA, '98200 00020', code);
+  const blocked = await checkCode(shopA, '98200 00020', codeA);
   assert.equal(blocked.status, 429, 'not even the right code past the cap');
+
+  // Shop A having spent its sends and checks on the number leaves shop B's
+  // untouched: B can still text it and prove it.
+  const sentB = await sendCode(shopB, phone);
+  assert.equal(sentB.status, 200, JSON.stringify(sentB.body));
+  const checkedB = await checkCode(shopB, phone, lastCodeTo(phone));
+  assert.equal(checkedB.status, 200, JSON.stringify(checkedB.body));
+});
+
+test('one shop\'s wrong guesses at a number never lock another shop out of it', async () => {
+  const phone = '9820000021';
+  await sendCode(shopB, phone);
+  const codeB = lastCodeTo(phone);
+  const wrongCode = codeB === '000000' ? '111111' : '000000';
+  for (let i = 0; i < 16; i += 1) await checkCode(shopA, phone, wrongCode);
+
+  const own = await checkCode(shopB, phone, codeB);
+  assert.equal(own.status, 200, JSON.stringify(own.body));
+});
+
+test('an employee stored under an old spelling of their number is edited without a code', async () => {
+  const token = ownerToken(shopA);
+  const legacy = await Employee.create({ businessId: shopA.id, name: 'Old Spelling', phone: '09820000030' });
+
+  // The app sends the number back as the ten digits it shows.
+  const edited = await api('PUT', `/employees/${legacy._id}`, {
+    token, body: { phone: '9820000030', name: 'Old Spelling R' },
+  });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const stored = await Employee.findById(legacy._id).lean();
+  assert.equal(stored.name, 'Old Spelling R');
+  assert.equal(stored.phone, '9820000030');
+
+  // Another number still needs its code.
+  const moved = await api('PUT', `/employees/${legacy._id}`, { token, body: { phone: '9820000031' } });
+  assert.equal(moved.status, 403);
+  assert.deepEqual(moved.body, NOT_VERIFIED);
+});
+
+test('a code a shop texted to an employee is never that shop\'s sign-up phone proof', async () => {
+  // Someone holding shop B's id restarts its sign-up with a number they do
+  // not hold; the sign-up code goes there. Then B's owner texts a code to the
+  // number of someone being added, who can read it.
+  const businessId = String(shopB.id);
+  const signupPhone = '9820000040';
+  const employeePhone = '9820000041';
+  try {
+    await registrationService.submitContactDetails(businessId, signupPhone);
+    const signupCode = lastCodeTo(signupPhone);
+    await sendCode(shopB, employeePhone);
+    const employeeCode = lastCodeTo(employeePhone);
+
+    if (employeeCode !== signupCode) {
+      await assert.rejects(
+        () => registrationService.verifyPhoneOtp(businessId, employeeCode),
+        { message: 'OTP_INVALID' },
+      );
+    }
+    const before = await counts();
+    await assert.rejects(
+      () => registrationService.createPassword(businessId, undefined, undefined, 'Intruder', undefined, '1234'),
+      { message: 'Please verify mobile number first' },
+    );
+    assert.deepEqual(await counts(), before, 'no owner added to shop B');
+
+    // The sign-up code still proves its own number, and the owner's code was
+    // neither read nor spent.
+    assert.deepEqual(await registrationService.verifyPhoneOtp(businessId, signupCode), { phoneVerified: true });
+    const checked = await checkCode(shopB, employeePhone, employeeCode);
+    assert.equal(checked.status, 200, JSON.stringify(checked.body));
+  } finally {
+    await redisClient.del(`registration:${businessId}`);
+  }
+});
+
+test('a number the owner proved is not proved for anyone\'s own sign-up', async () => {
+  const phone = '9820000042';
+  await proveNumber(shopA, phone);
+  const fresh = await Business.create({
+    gstNumber: '29CCCCC2222C1Z5',
+    legalName: 'FRESH SHOP',
+    tradeName: 'Fresh Shop',
+    businessType: 'Retailer',
+    gstStatus: 'Active',
+    address: 'Bengaluru',
+    isRegistered: false,
+  });
+
+  const before = await counts();
+  await assert.rejects(
+    () => registrationService.register({
+      mobile: phone,
+      mpin: '1234',
+      businessDetails: { businessId: String(fresh._id) },
+    }),
+    { message: 'Please verify mobile number first' },
+  );
+  assert.deepEqual(await counts(), before, 'no account on the number');
+});
+
+test('the sign-in checks never read a shop\'s code to an employee, nor let it hide the number\'s own', async () => {
+  const phone = '9820000043';
+  await otpService.sendMobileOtp({ mobile: phone, flow: 'LOGIN' });
+  const loginCode = lastCodeTo(phone);
+  await sendCode(shopA, phone);
+  const employeeCode = lastCodeTo(phone);
+
+  if (employeeCode !== loginCode) {
+    await assert.rejects(
+      () => otpService.verifyOtpByMobile({ mobile: phone, otp: employeeCode }),
+      { message: 'OTP_INVALID' },
+    );
+  }
+  const own = await otpService.verifyOtpByMobile({ mobile: phone, otp: loginCode });
+  assert.equal(own.verified, true);
+
+  const checked = await checkCode(shopA, phone, employeeCode);
+  assert.equal(checked.status, 200, 'the owner\'s code was not spent');
+});
+
+test('neither the phone proof nor a password-reset token is ever a session', async () => {
+  const proof = await proveNumber(shopA, '9820000044');
+  const reset = authService.generatePasswordResetToken(String(shopA.id), String(shopA.ownerId), 'nonce-1');
+  for (const [label, token] of [['the phone proof', proof], ['a reset token', reset]]) {
+    const { status } = await api('GET', '/employees', { token });
+    assert.equal(status, 401, label);
+  }
+  assert.equal((await api('GET', '/employees', { token: ownerToken(shopA) })).status, 200);
 });

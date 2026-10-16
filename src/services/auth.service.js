@@ -58,15 +58,27 @@ const verifyPasswordResetToken = (token) => {
   }
 };
 
+/**
+ * A session, and only a session. Other tokens are signed with the same secret
+ * (the password-reset and profile-edit tokens, the employee-phone proof); each
+ * says what it is for (`purpose`, `typ`), so none of them is ever let in as a
+ * sign-in, nor outlives the midnight that ends every real one. A session
+ * always names its user. (A missing or unknown role is the route's to refuse.)
+ */
 const verifyAccessToken = (token) => {
+  let payload;
   try {
-    return jwt.verify(token, config.jwt.accessSecret);
+    payload = jwt.verify(token, config.jwt.accessSecret);
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       throw new Error('TOKEN_EXPIRED');
     }
     throw new Error('UNAUTHORIZED');
   }
+  if (!payload || payload.typ || payload.purpose || !payload.userId) {
+    throw new Error('UNAUTHORIZED');
+  }
+  return payload;
 };
 
 const verifyRefreshToken = (token) => {

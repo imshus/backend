@@ -36,6 +36,20 @@ test('ordinary login access tokens cannot be used as password reset tokens', () 
   );
 });
 
+test('a token signed for another purpose is never accepted as a session', () => {
+  const resetToken = authService.generatePasswordResetToken('business-1', 'user-1', 'nonce-1');
+  assert.throws(() => authService.verifyAccessToken(resetToken), /UNAUTHORIZED/);
+  const phoneProof = jwt.sign(
+    { typ: 'employee-phone', businessId: 'business-1', phone: '9876543210' },
+    process.env.JWT_ACCESS_SECRET,
+    { expiresIn: 60 },
+  );
+  assert.throws(() => authService.verifyAccessToken(phoneProof), /UNAUTHORIZED/);
+
+  const { accessToken } = authService.generateTokens('business-1', 'user-1', 'OWNER');
+  assert.equal(authService.verifyAccessToken(accessToken).role, 'OWNER');
+});
+
 test('expired password reset tokens are rejected explicitly', () => {
   const expiredToken = jwt.sign(
     {

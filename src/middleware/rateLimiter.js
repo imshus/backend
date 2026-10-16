@@ -158,7 +158,13 @@ const employeePhoneCheckLimiter = perUserLimiter({
 // the sign-in codes are (same limits, same reasons), in buckets of its own so
 // adding someone never uses up their own sign-in codes. The number is read as
 // the roster stores it, so "+91 98765 43210" and "9876543210" are one bucket.
-const employeePhoneOf = (req) => normalizeIndianMobile(req.body?.phone);
+// Each shop has its own bucket per number: the check only ever reads the code
+// that shop sent, so a shared one would add no protection and would let any
+// shop spend the sends and checks another shop needs to add that number.
+const employeePhoneOf = (req) => {
+  const phone = normalizeIndianMobile(req.body?.phone);
+  return phone ? `${req.user?.businessId}:${phone}` : '';
+};
 const employeeOtpSendLimiter = bodyKeyLimiter({
   name: 'employee_otp_send',
   limit: 10,

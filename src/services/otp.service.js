@@ -15,6 +15,9 @@ const MSG91_OTP_URL = 'https://control.msg91.com/api/v5/otp';
 const MSG91_MAX_ATTEMPTS = 4;
 const MSG91_RETRY_BASE_DELAY_MS = 700;
 
+// The code a shop's sign-up texts to its phone (contact-details).
+const SIGNUP_FLOW = 'SIGNUP';
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -256,6 +259,7 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
   logContext({ mobile, timestamp, requestId, route });
 
   let normalizedMobile;
+  let record = null;
   try {
     normalizedMobile = ensureMobile(mobile);
     const otp = generateOtp();
@@ -264,7 +268,7 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
     divider('VALIDATION');
     console.log('Validation Passed: YES');
 
-    const record = await createOtpRecord({
+    record = await createOtpRecord({
       businessId,
       otpType,
       destination: destination || normalizedMobile,
@@ -305,15 +309,14 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
       message: 'OTP sent successfully',
     };
   } catch (error) {
-    if (normalizedMobile) {
+    // The code this send stored is marked by its own id: the number's latest
+    // code (findLatestByMobile) never reads an employee-phone code.
+    if (record) {
       try {
-        const latest = await otpRepository.findLatestByMobile(normalizedMobile);
-        if (latest && String(latest.requestId) === String(requestId)) {
-          await otpRepository.updateOtpRecord(latest._id, {
-            status: 'FAILED',
-            msg91Response: error.msg91Response || { message: error.message },
-          });
-        }
+        await otpRepository.updateOtpRecord(record._id, {
+          status: 'FAILED',
+          msg91Response: error.msg91Response || { message: error.message },
+        });
       } catch (dbError) {
         logErrorSection('OTP DATABASE FAILURE (POST-MSG91)', {
           timestamp: nowIso(),
@@ -428,11 +431,22 @@ async function verifyOtpByMobile({
   };
 }
 
-async function verifyOtp(businessId, otpType, otp) {
-  const record = await otpRepository.findLatestByBusinessAndType(businessId, otpType);
+/**
+ * The sign-up phone check (POST /auth/business/verify-phone-otp). Only a code
+ * sign-up itself sent (sendPhoneOtp, flow SIGNUP) is read: a registered shop
+ * also texts PHONE codes under its businessId to the employees it adds, and
+ * one of those must never count as proof of a sign-up number.
+ */
+async function verifyOtp(businessId, otpType, otp, flow = SIGNUP_FLOW) {
+  const record = await otpRepository.findLatestByBusinessTypeAndFlow(businessId, otpType, flow);
 
   if (!record) {
     throw new Error('OTP_NOT_FOUND');
+  }
+
+  // Past its ten minutes even before MongoDB's TTL monitor gets to it.
+  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) {
+    throw new Error('OTP_EXPIRED');
   }
 
   if (String(record.otp) !== String(otp)) {
@@ -452,7 +466,7 @@ async function sendPhoneOtp(businessId, phone) {
   return sendMobileOtp({
     businessId,
     mobile: phone,
-    flow: 'SIGNUP',
+    flow: SIGNUP_FLOW,
     otpType: 'PHONE',
     destination: phone,
     route: '/api/v1/auth/business/contact-details',
