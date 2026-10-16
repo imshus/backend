@@ -599,11 +599,11 @@ test('a refused speed parameter is left out for that model only, and only until 
   }
 });
 
-test('the reader defaults to gpt-5.6-luna', () => {
+test('the reader defaults to gpt-6-luna', () => {
   const saved = process.env.OPENAI_MODEL;
   delete process.env.OPENAI_MODEL;
   try {
-    assert.equal(openaiService._internal.resolveModelSettings().model, 'gpt-5.6-luna');
+    assert.equal(openaiService._internal.resolveModelSettings().model, 'gpt-6-luna');
   } finally {
     if (saved !== undefined) process.env.OPENAI_MODEL = saved;
   }

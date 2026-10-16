@@ -913,14 +913,16 @@ const prepareRead = (parsedData) => {
 
 // Model selection and speed knobs. process.env first so scripts/latency_test.js
 // --model/--tier/--effort still override the .env config.
-// GPT-5.6 Luna is the default reader; it takes "none" and "low", the levels
+// GPT-6 Luna is the default reader (16 Oct 2026: as fast as GPT-5.6 Luna on
+// the priority tier, which it reports as "fast", no worse on weights, better
+// on codes, at half the token price); it takes "none" and "low", the levels
 // the scan pipeline sends. An .env still set to GPT-5's "minimal" is read as
 // "none", its nearest: sent as it is, a refusal would drop the effort from
 // that model's calls until the refusal expires.
 const resolveModelSettings = () => {
   const effort = process.env.OPENAI_REASONING_EFFORT || config.openai.reasoningEffort;
   return {
-    model: process.env.OPENAI_MODEL || 'gpt-5.6-luna',
+    model: process.env.OPENAI_MODEL || 'gpt-6-luna',
     serviceTier: process.env.OPENAI_SERVICE_TIER || config.openai.serviceTier,
     reasoningEffort: effort === 'minimal' ? 'none' : effort,
   };
