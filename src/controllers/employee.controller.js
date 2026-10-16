@@ -6,7 +6,7 @@ const licenseService = require('../services/license.service');
 const employeeAccounts = require('../services/employeeAccount.service');
 const otpService = require('../services/otp.service');
 const { isOwnerRole } = require('../services/userScope.service');
-const { normalizeIndianMobile, storedSpellingsOf } = require('../utils/phone');
+const { normalizeIndianMobile, isStoredPhone } = require('../utils/phone');
 const { toPlainPermissions } = require('../utils/permissions');
 const {
   EMPLOYEE_PHONE_TOKEN_TTL_SECONDS,
@@ -24,7 +24,8 @@ const {
  * (business_users, role EMP). The owner's own number, a SUPER account's and
  * one of this shop's employees are refused before anything is written.
  * Another shop's owner or employee, or a second owner of this shop, is moved
- * here once the number is proved: their sign-in record is archived whole in
+ * here once the number is proved and the app says the owner was shown whose
+ * login it is (`confirmTransfer`): their sign-in record is archived whole in
  * released_logins and taken out of business_users (another shop's employee
  * is also switched off there), and put back if the add then fails. Nothing
  * else of theirs — business, invoices, scans, wallet — is touched.
@@ -81,12 +82,28 @@ const OTP_RESEND_AFTER_SECONDS = 30;
 const phoneVerified = (body, businessId, phone) =>
   isEmployeePhoneVerified(body.phoneVerificationToken, { businessId, phone });
 
+const TRANSFER_UNCONFIRMED = {
+  success: false,
+  error: 'TRANSFER_CONFIRMATION_REQUIRED',
+  message: "This number already signs in to MRPscan. Confirm moving it to your shop. If you don't see that step, update the MRPscan app.",
+};
+
 /** The 409 a number is refused with, or null when it may be added (or moved here). */
 const refusalOf = (claim) => {
   if (claim.status === 'own') return OWN_NUMBER;
   if (claim.status === 'taken') return PHONE_TAKEN;
   return null;
 };
+
+/**
+ * The 409 for a number that would be moved here when the request does not
+ * say the owner was shown whose login it is (`confirmTransfer: true`). Builds
+ * from before that screen never send it, so for them nobody is moved and the
+ * number stays refused, as it always was; `transfer` says from whom.
+ */
+const unconfirmedTransferOf = (claim, body) => (claim.status === 'transfer' && body.confirmTransfer !== true
+  ? { ...TRANSFER_UNCONFIRMED, transfer: claim.transfer }
+  : null);
 
 /** Who holds the number, asked at this moment for this shop and this owner. */
 const claimOf = (req, phone, except = {}) => employeeAccounts.classifyPhone(phone, {
@@ -98,20 +115,23 @@ const claimOf = (req, phone, except = {}) => employeeAccounts.classifyPhone(phon
 /**
  * Moves a transferable number off whoever holds it, for a request that has
  * proved it; nothing for a free one. What comes back is what restoreReleased
- * puts back if the write that needed the number fails.
+ * puts back if the write that needed the number fails. Null when another
+ * request took the number first (nothing of this one's stays moved): the
+ * caller answers 409.
  */
-const releaseFor = (req, claim, phone) => (claim.status === 'transfer'
-  ? employeeAccounts.releasePhoneHolders(claim, { businessId: req.user.businessId, userId: req.user.userId, phone })
-  : []);
-
-/**
- * Whether the number stored on an employee is these ten digits. A record
- * from before numbers were normalised may hold a spelling normalizeIndianMobile
- * refuses ("09876543210"), so it is also matched the way sign-in matches it.
- */
-const isStoredPhone = (tenDigits, stored) =>
-  tenDigits === normalizeIndianMobile(stored)
-  || (Boolean(tenDigits) && storedSpellingsOf(tenDigits).includes(String(stored ?? '').trim()));
+const releaseFor = async (req, claim, phone) => {
+  if (claim.status !== 'transfer') return [];
+  try {
+    return await employeeAccounts.releasePhoneHolders(claim, {
+      businessId: req.user.businessId,
+      userId: req.user.userId,
+      phone,
+    });
+  } catch (error) {
+    if (error.message === 'PHONE_ALREADY_REGISTERED') return null;
+    throw error;
+  }
+};
 
 const NOT_FOUND = { success: false, error: 'EMPLOYEE_NOT_FOUND', message: 'Employee not found' };
 
@@ -197,10 +217,11 @@ const createEmployee = async (req, res) => {
       if (!phoneVerified(body, businessId, phone)) return res.status(403).json(PHONE_NOT_VERIFIED);
       // Asked again now, whatever check-phone or the OTP step said earlier.
       const claim = await claimOf(req, phone);
-      const refused = refusalOf(claim);
+      const refused = refusalOf(claim) || unconfirmedTransferOf(claim, body);
       if (refused) return res.status(409).json(refused);
 
       const released = await releaseFor(req, claim, phone);
+      if (!released) return res.status(409).json(PHONE_TAKEN);
       let added;
       try {
         added = await createEmployeeWithAccount({
@@ -467,7 +488,7 @@ const updateEmployee = async (req, res) => {
           return res.status(403).json(PHONE_NOT_VERIFIED);
         }
         claim = await claimOf(req, nextPhone, { exceptEmployeeId: employee._id, exceptUserId: account?._id });
-        const refused = refusalOf(claim);
+        const refused = refusalOf(claim) || unconfirmedTransferOf(claim, body);
         if (refused) return res.status(409).json(refused);
         phoneChanged = true;
       }
@@ -487,6 +508,7 @@ const updateEmployee = async (req, res) => {
     // here) holds is moved off them first; if the write below does not go
     // through, they get it back.
     const released = phoneChanged ? await releaseFor(req, claim, employee.phone) : [];
+    if (!released) return res.status(409).json(PHONE_TAKEN);
 
     try {
       await employee.save();
@@ -505,11 +527,16 @@ const updateEmployee = async (req, res) => {
       }
       if (phoneChanged || reactivating) {
         // Lost a race for the number (a new one, or the one being claimed
-        // back): whoever it was moved from gets it back, and everything is
-        // put back as it was, so nothing is written.
-        await employeeAccounts.restoreReleased(released);
+        // back): everything is put back as it was, so nothing is written,
+        // and whoever it was moved from gets it back. This employee lets go
+        // of it first: an employee given it back without a sign-in record is
+        // only switched on while nobody else holds it.
         Object.assign(employee, before);
-        await employee.save();
+        try {
+          await employee.save();
+        } finally {
+          await employeeAccounts.restoreReleased(released);
+        }
         return res.status(409).json(PHONE_TAKEN);
       }
       // An employee from before sign-in records whose unchanged number is

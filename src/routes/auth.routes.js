@@ -29,7 +29,7 @@ const {
   accountLookupLimiter,
   loginAttemptLimiter,
 } = require('../middleware/rateLimiter');
-const { authenticateJWT } = require('../middleware/auth.middleware');
+const { authenticateJWT, requireCurrentOwner } = require('../middleware/auth.middleware');
 
 const router = express.Router();
 
@@ -70,6 +70,8 @@ router.post('/employee/login', loginAttemptLimiter, validate(employeeLoginSchema
 router.get('/employee/permissions', authenticateJWT, authController.getEmployeePermissions);
 router.post('/change-password', authenticateJWT, validate(changePasswordSchema), authController.changePassword);
 router.post('/refresh', authController.refreshToken);
-router.delete('/account', authenticateJWT, authController.deleteAccount);
+// Wipes the shop: an owner's token counts only while their sign-in record
+// is still the shop's owner's (not one just made someone's employee).
+router.delete('/account', authenticateJWT, requireCurrentOwner, authController.deleteAccount);
 
 module.exports = router;

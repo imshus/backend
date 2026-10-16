@@ -20,6 +20,16 @@ function storedSpellingsOf(tenDigits) {
 }
 
 /**
+ * Whether a number stored on a record is these ten digits. A record from
+ * before numbers were normalised may hold a spelling normalizeIndianMobile
+ * refuses ("09876543210"), so it is also matched the way sign-in matches it.
+ */
+function isStoredPhone(tenDigits, stored) {
+  return tenDigits === normalizeIndianMobile(stored)
+    || (Boolean(tenDigits) && storedSpellingsOf(tenDigits).includes(String(stored ?? '').trim()));
+}
+
+/**
  * Which account a sign-in identifier names, exactly as the login looks it up:
  * a value holding at least ten digits is the phone number its last ten digits
  * spell, whatever else is typed around them; anything else is a User ID, as
@@ -32,4 +42,4 @@ function loginLookupOf(value) {
   return /^[0-9]{10}$/.test(phone) ? { phone } : { userId: identifier };
 }
 
-module.exports = { normalizeIndianMobile, storedSpellingsOf, loginLookupOf };
+module.exports = { normalizeIndianMobile, storedSpellingsOf, isStoredPhone, loginLookupOf };

@@ -5,7 +5,7 @@ const Employee = require('../models/employee.model');
 const ReleasedLogin = require('../models/releasedLogin.model');
 const authService = require('./auth.service');
 const { sealMpin, openMpin } = require('../utils/mpinVault');
-const { normalizeIndianMobile, storedSpellingsOf } = require('../utils/phone');
+const { normalizeIndianMobile, storedSpellingsOf, isStoredPhone } = require('../utils/phone');
 const { toPlainPermissions } = require('../utils/permissions');
 
 /**
@@ -34,6 +34,8 @@ const SHOP_DETAIL_FIELDS = ['gstNumber', 'businessName', 'address'];
 
 const phoneTaken = () => new Error('PHONE_ALREADY_REGISTERED');
 const isDuplicateKey = (error) => error?.code === 11000;
+/** The unique field a duplicate-key error is about ('phone', 'userId'). */
+const duplicateFieldOf = (error) => Object.keys(error?.keyPattern || error?.keyValue || {})[0] || null;
 
 /**
  * Whether a number is already someone's: any account in business_users
@@ -131,22 +133,57 @@ async function classifyPhone(phone, {
   };
 }
 
+/** Takes back an entry that turned out to release nothing. */
+async function withdrawRelease(entry, released) {
+  released.splice(released.indexOf(entry), 1);
+  try {
+    await ReleasedLogin.deleteOne({ _id: entry._id });
+  } catch (error) {
+    console.error('[EMPLOYEE_TRANSFER] could not withdraw', { releasedId: String(entry._id), error: error.message });
+  }
+}
+
 /**
- * Archives one business_users record whole in released_logins, then deletes
- * it, so its number is free and its sessions end at their next refresh.
- * The entry is written before anything changes, so a failure part-way leaves
- * nothing that cannot be put back.
+ * Moves one holder of the number aside: archives their business_users record
+ * whole in released_logins, deletes it (so the number is free and its
+ * sessions end at their next refresh), then switches another shop's employee
+ * off. The entry is written first and joins `released` at once, so a failure
+ * at any later step is undone with the rest (restoreReleased).
+ *
+ * The record is deleted only while it still holds the number, and only what
+ * this call actually removed stays archived: a record another request took
+ * first (two shops claiming one number at once) answers PHONE_ALREADY_REGISTERED
+ * with its entry withdrawn. An employee without a record is released by being
+ * switched off here; one already off holds nothing and leaves no entry.
  */
-async function archiveRelease(fields, original = null) {
+async function archiveRelease(fields, original, released) {
+  const switchOff = Boolean(fields.employeeId) && fields.previousIsActive === true;
+  if (!original && !switchOff) return null;
+
   const entry = await ReleasedLogin.create({
     ...fields,
     fromBusinessId: original?.businessId ?? fields.fromBusinessId ?? null,
     original,
   });
-  if (fields.employeeId && fields.previousIsActive === true) {
-    await Employee.updateOne({ _id: fields.employeeId }, { $set: { isActive: false } });
+  released.push(entry);
+
+  if (original) {
+    const { deletedCount } = await BusinessUser.collection.deleteOne({ _id: original._id, phone: original.phone });
+    if (!deletedCount) {
+      await withdrawRelease(entry, released);
+      throw phoneTaken();
+    }
   }
-  if (original) await BusinessUser.collection.deleteOne({ _id: original._id });
+  if (switchOff) {
+    const { matchedCount } = await Employee.updateOne(
+      { _id: fields.employeeId, isActive: { $ne: false }, phone: { $in: storedSpellingsOf(fields.phone) } },
+      { $set: { isActive: false } },
+    );
+    if (!original && !matchedCount) {
+      await withdrawRelease(entry, released);
+      return null;
+    }
+  }
 
   // Ids and shops only: never the number's codes, hashes or tokens.
   console.info('[EMPLOYEE_TRANSFER]', {
@@ -164,9 +201,11 @@ async function archiveRelease(fields, original = null) {
  * Takes the number classifyPhone found transferable off everyone holding it,
  * for this shop (`businessId`) and this owner (`userId`): the OWNER record is
  * archived and deleted; another shop's employee is switched off and their
- * EMP record archived and deleted. Businesses, invoices, scans, wallets and
+ * EMP record on this number archived and deleted. Only holders that still
+ * hold the number are touched. Businesses, invoices, scans, wallets and
  * licences are never touched. Answers the released_logins entries written,
- * for restoreReleased; if any step fails, what was released is put back.
+ * for restoreReleased; if any step fails, what was released is put back
+ * (and each entry's id logged as it goes back, or as it could not).
  */
 async function releasePhoneHolders(claim, { businessId, userId, phone }) {
   const by = {
@@ -182,31 +221,36 @@ async function releasePhoneHolders(claim, { businessId, userId, phone }) {
     if (claim.owner) {
       // Only while it still holds this number: one changed since is left alone.
       const original = await raw.findOne({ _id: claim.owner._id, phone: by.phone });
-      if (original) released.push(await archiveRelease({ ...by, kind: 'owner' }, original));
+      if (original) await archiveRelease({ ...by, kind: 'owner' }, original, released);
     }
     for (const holder of claim.employees) {
       const employee = holder.employeeId
-        ? await Employee.findById(holder.employeeId).select('isActive').lean()
+        ? await Employee.findById(holder.employeeId).select('isActive phone').lean()
         : null;
+      // Their roster entry is switched off only while it is still on this
+      // number; null leaves it as it is (and a restore leaves it too).
+      const onThisNumber = Boolean(employee) && isStoredPhone(by.phone, employee.phone);
       const fields = {
         ...by,
         kind: 'employee',
         fromBusinessId: holder.fromBusinessId,
         employeeId: holder.employeeId || null,
-        previousIsActive: employee ? employee.isActive !== false : null,
+        previousIsActive: onThisNumber ? employee.isActive !== false : null,
       };
+      // Their sign-in records on this number: one moved to another number
+      // since does not hold it.
       const logins = holder.employeeId
-        ? await raw.find({ employeeId: holder.employeeId, role: EMP }).toArray()
+        ? await raw.find({ employeeId: holder.employeeId, role: EMP, phone: by.phone }).toArray()
         : [];
       if (holder.loginId && !logins.some((login) => String(login._id) === String(holder.loginId))) {
         const stray = await raw.findOne({ _id: holder.loginId, phone: by.phone });
         if (stray) logins.push(stray);
       }
       if (!logins.length) {
-        released.push(await archiveRelease(fields));
+        await archiveRelease(fields, null, released);
         continue;
       }
-      for (const login of logins) released.push(await archiveRelease(fields, login));
+      for (const login of logins) await archiveRelease(fields, login, released);
     }
   } catch (error) {
     await restoreReleased(released);
@@ -217,19 +261,37 @@ async function releasePhoneHolders(claim, { businessId, userId, phone }) {
 
 /**
  * Puts one released entry back: the record into business_users exactly as it
- * was (the unique phone index refuses it if the number has been taken since)
- * and the employee's isActive as it was. With `check` (the restore script),
- * refuses first, writing nothing, when the number is someone else's now
- * (PHONE_ALREADY_REGISTERED) or the employee has since been deleted by their
- * shop (EMPLOYEE_NOT_FOUND), whose record would hold the number for nobody.
+ * was (the unique indexes refuse it if its number or Login ID has been taken
+ * since) and the employee's isActive as it was. An employee without a record
+ * has no unique index behind their number, so before one is switched back on
+ * the number is checked here every time, the rollback inside a request too.
+ *
+ * With `check` (the restore script), refuses first, writing nothing, when:
+ *   - EMPLOYEE_NOT_FOUND       their shop has deleted the employee since;
+ *   - EMPLOYEE_NUMBER_CHANGED  their shop has moved the employee to another
+ *                              number since (the old one would sign in as them);
+ *   - EMPLOYEE_HAS_LOGIN       their shop has given the employee a new sign-in
+ *                              record since;
+ *   - USER_ID_TAKEN            the owner's Login ID is someone else's now;
+ *   - PHONE_ALREADY_REGISTERED the number is someone else's now.
  */
 async function restoreRelease(entry, { check = false } = {}) {
   if (entry.restoredAt) return { restored: false, reason: 'ALREADY_RESTORED' };
   const original = entry.original || null;
   if (check) {
-    if (entry.employeeId && !(await Employee.exists({ _id: entry.employeeId }))) {
-      throw new Error('EMPLOYEE_NOT_FOUND');
+    if (entry.employeeId) {
+      const employee = await Employee.findById(entry.employeeId).select('phone').lean();
+      if (!employee) throw new Error('EMPLOYEE_NOT_FOUND');
+      if (!isStoredPhone(entry.phone, employee.phone)) throw new Error('EMPLOYEE_NUMBER_CHANGED');
+      const otherLogin = { employeeId: entry.employeeId, role: EMP };
+      if (original) otherLogin._id = { $ne: original._id };
+      if (await BusinessUser.exists(otherLogin)) throw new Error('EMPLOYEE_HAS_LOGIN');
     }
+    if (original?.userId && await BusinessUser.exists({ userId: original.userId, _id: { $ne: original._id } })) {
+      throw new Error('USER_ID_TAKEN');
+    }
+  }
+  if (check || (!original && entry.previousIsActive === true)) {
     const except = { exceptEmployeeId: entry.employeeId, exceptUserId: original?._id || null };
     for (const phone of new Set([entry.phone, original?.phone].filter(Boolean))) {
       if (await isPhoneRegistered(phone, except)) throw phoneTaken();
@@ -240,7 +302,9 @@ async function restoreRelease(entry, { check = false } = {}) {
     try {
       await BusinessUser.collection.insertOne(original);
     } catch (error) {
-      if (isDuplicateKey(error)) throw phoneTaken();
+      if (isDuplicateKey(error)) {
+        throw duplicateFieldOf(error) === 'userId' ? new Error('USER_ID_TAKEN') : phoneTaken();
+      }
       throw error;
     }
   }

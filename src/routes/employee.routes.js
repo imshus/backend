@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const employeeController = require('../controllers/employee.controller');
-const { authenticateJWT, requireRole } = require('../middleware/auth.middleware');
+const { authenticateJWT, requireCurrentOwner, requireRole } = require('../middleware/auth.middleware');
 const { validateInput } = require('../middleware/validation.middleware');
 const {
   employeePhoneCheckLimiter,
@@ -18,8 +18,10 @@ const {
 } = require('../validators/employee.validator');
 
 // Only the OWNER manages the roster; an employee may read it and gets just
-// their own record back (scoped in the controller).
-router.use(authenticateJWT);
+// their own record back (scoped in the controller). An owner's token counts
+// only while their sign-in record is still the shop's owner's (one just made
+// an employee keeps a token for up to fifteen minutes).
+router.use(authenticateJWT, requireCurrentOwner);
 
 router.get('/', employeeController.getEmployees);
 // Before the /:id routes, so "check-phone" is never read as an id.

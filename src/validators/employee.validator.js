@@ -62,6 +62,11 @@ const emailSchema = Joi.string().trim().lowercase().max(254).allow('', null);
 // "verify the number" answer rather than a validation error.
 const phoneVerificationTokenSchema = Joi.string().trim().max(2048).allow('', null);
 
+// True once the app has shown the owner that the number's login (another
+// shop's owner or employee, or a second owner here) moves to this shop.
+// Optional: the controller refuses a move without it.
+const confirmTransferSchema = Joi.boolean();
+
 const otpSchema = Joi.string()
   .trim()
   .pattern(/^[0-9]{6}$/)
@@ -101,6 +106,7 @@ const createEmployeeSchema = Joi.object({
   }),
   password: Joi.string().min(1).max(128),
   phoneVerificationToken: phoneVerificationTokenSchema,
+  confirmTransfer: confirmTransferSchema,
 })
   .oxor('mpin', 'password')
   .messages({ 'object.oxor': 'Send an MPIN or a password, not both' });
@@ -114,6 +120,7 @@ const updateEmployeeSchema = Joi.object({
   permissions: permissionsSchema,
   isActive: Joi.boolean(),
   phoneVerificationToken: phoneVerificationTokenSchema,
+  confirmTransfer: confirmTransferSchema,
 });
 
 const employeeMpinSchema = Joi.object({

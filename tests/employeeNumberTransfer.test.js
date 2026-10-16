@@ -3,7 +3,8 @@
  *
  * The owner may not add their own number, a SUPER account's, or one of their
  * own employees'. Any other holder is moved here once the number is proved
- * with the OTP: another shop's owner (or a second owner of this shop) has
+ * with the OTP and the app confirms the move (`confirmTransfer`, which builds
+ * from before the warning never send): another shop's owner (or a second owner of this shop) has
  * their sign-in record archived whole in released_logins and taken out of
  * business_users; another shop's employee is switched off there and their
  * sign-in record archived the same way. Their shop — business, invoices,
@@ -69,12 +70,20 @@ const lastCodeTo = (phone) => {
 // The [EMPLOYEE_TRANSFER] lines, kept out of the test output and read back.
 const transferLog = [];
 const realInfo = console.info;
+const realError = console.error;
 console.info = (...args) => {
   if (String(args[0]).startsWith('[EMPLOYEE_TRANSFER]')) {
     transferLog.push(args);
     return;
   }
   realInfo(...args);
+};
+console.error = (...args) => {
+  if (String(args[0]).startsWith('[EMPLOYEE_TRANSFER]')) {
+    transferLog.push(args);
+    return;
+  }
+  realError(...args);
 };
 
 let mongoServer;
@@ -137,6 +146,7 @@ async function proveNumber(shop, phone) {
   return { sent: sent.body, token: checked.body.data.phoneVerificationToken, otp: lastCodeTo(phone) };
 }
 
+// As this build sends it once the owner has been shown whose login moves.
 const newEmployee = (phone, phoneVerificationToken, extra = {}) => ({
   name: 'Moved Person',
   phone,
@@ -144,6 +154,7 @@ const newEmployee = (phone, phoneVerificationToken, extra = {}) => ({
   mpin: '2580',
   confirmMpin: '2580',
   ...(phoneVerificationToken === undefined ? {} : { phoneVerificationToken }),
+  confirmTransfer: true,
   ...extra,
 });
 
@@ -209,11 +220,11 @@ async function makeShop(key, { phone, mpin, gstNumber, name }) {
   return shop;
 }
 
-/** An employee of `shop` added the way the app adds one, MPIN and all. */
+/** An employee of `shop` added the way the app adds one, MPIN and all (a free number needs no confirmTransfer). */
 async function addEmployee(shop, phone, mpin, name = 'Shop Staff') {
   const { status, body } = await api('POST', '/employees', {
     token: ownerToken(shop),
-    body: newEmployee(phone, verified(shop, phone), { name, mpin, confirmMpin: mpin }),
+    body: newEmployee(phone, verified(shop, phone), { name, mpin, confirmMpin: mpin, confirmTransfer: undefined }),
   });
   assert.equal(status, 201, JSON.stringify(body));
   return body.data.employee;
@@ -283,6 +294,7 @@ test.before(async () => {
 
 test.after(async () => {
   console.info = realInfo;
+  console.error = realError;
   if (server) await new Promise((resolve) => server.close(resolve));
   await mongoose.disconnect();
   if (mongoServer) await mongoServer.stop();
@@ -442,6 +454,12 @@ test('another shop\'s owner: check-phone and the OTP say so, and the proved add 
   assert.equal(asEmployee.body.data.businessId, String(shops.A.id));
   assert.equal(asEmployee.body.data.userId, created.fromOwnerB._id);
   assert.equal(asEmployee.body.data.businessName, 'Shop A');
+
+  // Their owner access token has not expired yet, but it no longer deletes
+  // the shop or manages its roster.
+  assert.equal((await api('DELETE', '/auth/account', { token: ownerSession.accessToken })).status, 401);
+  assert.equal((await check(shopB, '9300000077')).status, 401);
+  assert.deepEqual(await shopData(shopB.id), shopBBefore, 'shop B is still all there');
 });
 
 test('a second owner of this shop: sameShop is true, and they become an employee here', async () => {
@@ -474,6 +492,17 @@ test('a second owner of this shop: sameShop is true, and they become an employee
   assert.equal(session.body.data.role, 'EMP');
   assert.equal(session.body.data.businessId, String(shops.A.id));
   assert.equal((await login(phone, '1212')).status, 401);
+
+  // Their unexpired owner token can no longer wipe shop A or touch its roster;
+  // the owner who added them carries on.
+  const stale = ownerToken(shops.A, shops.A.secondOwnerId);
+  assert.equal((await api('DELETE', '/auth/account', { token: stale })).status, 401);
+  assert.equal((await api('DELETE', `/employees/${created.ownA._id}`, { token: stale })).status, 401);
+  assert.equal((await api('GET', '/employees/check-phone?phone=9300000077', { token: stale })).status, 401);
+  assert.ok(await Business.exists({ _id: shops.A.id }));
+  assert.ok(await Employee.exists({ _id: created.ownA._id }));
+  assert.ok(await BusinessUser.exists({ _id: shops.A.ownerId, role: 'OWNER' }));
+  assert.equal((await check(shops.A, '9300000077')).status, 200);
 });
 
 test('another shop\'s employee: switched off there, their sign-in archived, and added here', async () => {
@@ -585,6 +614,40 @@ test('without the proof for this shop and this number nothing is released', asyn
   assert.deepEqual(await counts(), before);
 });
 
+test('a proved move the app did not confirm is refused, so a build that never warned the owner moves no one', async () => {
+  const unconfirmed = (transfer) => ({
+    success: false,
+    error: 'TRANSFER_CONFIRMATION_REQUIRED',
+    message: "This number already signs in to MRPscan. Confirm moving it to your shop. If you don't see that step, update the MRPscan app.",
+    transfer,
+  });
+  const before = await counts();
+  for (const [phone, transfer] of [
+    ['9300000006', { kind: 'owner', sameShop: false }],
+    ['9300000071', { kind: 'employee', sameShop: false }],
+  ]) {
+    // As the released app sends it: proved, and no confirmTransfer at all.
+    for (const confirmTransfer of [undefined, false]) {
+      const add = await api('POST', '/employees', {
+        token: ownerToken(shops.A),
+        body: newEmployee(phone, verified(shops.A, phone), { confirmTransfer }),
+      });
+      assert.equal(add.status, 409, `${phone} ${confirmTransfer}`);
+      assert.deepEqual(add.body, unconfirmed(transfer), `${phone} ${confirmTransfer}`);
+    }
+    const move = await api('PUT', `/employees/${created.ownA._id}`, {
+      token: ownerToken(shops.A),
+      body: { phone, phoneVerificationToken: verified(shops.A, phone) },
+    });
+    assert.equal(move.status, 409, `${phone}: number change`);
+    assert.deepEqual(move.body, unconfirmed(transfer), `${phone}: number change`);
+  }
+  assert.deepEqual(await counts(), before, 'nothing written, nothing released');
+  assert.ok(await BusinessUser.exists({ _id: shops.F.ownerId, role: 'OWNER' }));
+  assert.equal((await Employee.findById(created.staffG._id).lean()).isActive, true);
+  assert.equal((await Employee.findById(created.ownA._id).lean()).phone, '9300000021');
+});
+
 test('an add that fails after the release puts back everything it moved', async () => {
   const realCreate = employeeAccounts.createAccountFor;
 
@@ -631,6 +694,159 @@ test('an add that fails after the release puts back everything it moved', async 
   assert.equal(back.body.data.businessId, String(shops.G.id));
 });
 
+test('a release that fails part-way is put back whole, and the log names the entry', async () => {
+  const phone = '9300000072';
+  const staff = await addEmployee(shops.G, phone, '7272', 'G Staff Two');
+  const employeesBefore = await Employee.countDocuments();
+  const raw = BusinessUser.collection;
+
+  // The sign-in record's delete fails (a network blip): the entry is already
+  // written, so it goes back, and the employee was never switched off.
+  // Then the switch-off fails after the delete: the record is put back.
+  const realDelete = raw.deleteOne;
+  const realUpdate = Employee.updateOne;
+  for (const [label, arm, disarm] of [
+    ['delete', () => { raw.deleteOne = async () => { throw new Error('network blip'); }; }, () => { raw.deleteOne = realDelete; }],
+    ['switch-off', () => {
+      Employee.updateOne = async () => {
+        Employee.updateOne = realUpdate;
+        throw new Error('network blip');
+      };
+    }, () => { Employee.updateOne = realUpdate; }],
+  ]) {
+    const before = await rawLogin({ phone });
+    transferLog.length = 0;
+    arm();
+    try {
+      const add = await api('POST', '/employees', {
+        token: ownerToken(shops.A),
+        body: newEmployee(phone, verified(shops.A, phone)),
+      });
+      assert.equal(add.status, 500, label);
+    } finally {
+      disarm();
+    }
+
+    assert.deepEqual(plain(await rawLogin({ phone })), plain(before), `${label}: the sign-in record as it was`);
+    assert.equal((await Employee.findById(staff._id).lean()).isActive, true, `${label}: still on in shop G`);
+    assert.equal(await Employee.countDocuments(), employeesBefore, `${label}: no employee left behind`);
+    const entries = await ReleasedLogin.find({ phone }).sort({ _id: -1 }).lean();
+    assert.ok(entries[0].restoredAt instanceof Date, `${label}: the archive says it went back`);
+    assert.deepEqual(transferLog.map(([tag, fields]) => [tag, fields.releasedId]), [
+      ['[EMPLOYEE_TRANSFER] restored', String(entries[0]._id)],
+    ], label);
+    const session = await login(phone, '7272');
+    assert.equal(session.status, 200, `${label}: signs in to shop G as before`);
+    assert.equal(session.body.data.businessId, String(shops.G.id));
+  }
+});
+
+test('rolling back a release never switches an employee without a sign-in record back on over the number\'s new holder', async () => {
+  const phone = '9400000077';
+  const legacy = await Employee.create({ businessId: shops.E.id, name: 'Legacy Two', phone });
+  const realCreate = employeeAccounts.createAccountFor;
+  let winner = null;
+  // Another shop takes the number between this release and this add.
+  employeeAccounts.createAccountFor = async () => {
+    winner = await BusinessUser.create({
+      businessId: new mongoose.Types.ObjectId(),
+      phone,
+      passwordHash: 'x',
+      role: 'OWNER',
+    });
+    throw new Error('PHONE_ALREADY_REGISTERED');
+  };
+  transferLog.length = 0;
+  try {
+    const add = await api('POST', '/employees', {
+      token: ownerToken(shops.A),
+      body: newEmployee(phone, verified(shops.A, phone)),
+    });
+    assert.equal(add.status, 409);
+    assert.deepEqual(add.body, PHONE_TAKEN);
+  } finally {
+    employeeAccounts.createAccountFor = realCreate;
+  }
+
+  // Left off, for the restore script: the number has one holder.
+  assert.equal((await Employee.findById(legacy._id).lean()).isActive, false);
+  const entry = await ReleasedLogin.findOne({ phone }).lean();
+  assert.equal(entry.restoredAt, null);
+  assert.equal(await Employee.countDocuments({ phone, isActive: { $ne: false } }), 0);
+  assert.equal(transferLog.at(-1)[0], '[EMPLOYEE_TRANSFER] could not restore');
+  assert.equal(transferLog.at(-1)[1].releasedId, String(entry._id));
+
+  // Once the number is free again, the script switches them back on.
+  await BusinessUser.deleteOne({ _id: winner._id });
+  assert.equal((await restoreReleasedLogin(String(entry._id))).restored, true);
+  assert.equal((await Employee.findById(legacy._id).lean()).isActive, true);
+  await Employee.deleteOne({ _id: legacy._id });
+});
+
+test('two shops claiming one owner\'s number at once: one moves it, the other gets a 409 and leaves no entry', async () => {
+  const shopK = await makeShop('K', { phone: '9400000052', mpin: '5252', gstNumber: '27KKKKK5252K1Z5', name: 'Shop K' });
+  const phone = shopK.phone;
+  const realCreate = ReleasedLogin.create;
+  let first = null;
+  // Shop C's release has read shop K's owner record and archived it; shop
+  // A's whole add lands before shop C deletes it.
+  ReleasedLogin.create = async function (...args) {
+    ReleasedLogin.create = realCreate;
+    const entry = await realCreate.apply(this, args);
+    first = await api('POST', '/employees', {
+      token: ownerToken(shops.A),
+      body: newEmployee(phone, verified(shops.A, phone), { name: 'K Owner At A' }),
+    });
+    return entry;
+  };
+  let second;
+  try {
+    second = await api('POST', '/employees', {
+      token: ownerToken(shops.C),
+      body: newEmployee(phone, verified(shops.C, phone), { name: 'K Owner At C' }),
+    });
+  } finally {
+    ReleasedLogin.create = realCreate;
+  }
+
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(second.status, 409);
+  assert.deepEqual(second.body, PHONE_TAKEN);
+  const entries = await ReleasedLogin.find({ phone }).lean();
+  assert.equal(entries.length, 1, 'only the release that happened');
+  assert.equal(String(entries[0].releasedByBusinessId), String(shops.A.id));
+  assert.equal(entries[0].restoredAt, null);
+  const account = await BusinessUser.findOne({ phone }).lean();
+  assert.equal(String(account.businessId), String(shops.A.id));
+  assert.equal(await Employee.countDocuments({ businessId: shops.C.id, phone }), 0);
+});
+
+test('an employee moved to another number since the number was asked about is left alone', async () => {
+  const phone = '9400000061';
+  const staff = await addEmployee(shops.C, phone, '6161', 'C Mover');
+  const claim = await employeeAccounts.classifyPhone(phone, { businessId: shops.A.id, userId: shops.A.ownerId });
+  assert.equal(claim.status, 'transfer');
+
+  // Shop C moves them to another number before shop A's release runs.
+  const moved = await api('PUT', `/employees/${staff._id}`, {
+    token: ownerToken(shops.C),
+    body: { phone: '9400000062', phoneVerificationToken: verified(shops.C, '9400000062') },
+  });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  const signIn = await rawLogin({ employeeId: new mongoose.Types.ObjectId(staff._id) });
+  assert.equal(signIn.phone, '9400000062');
+
+  const released = await employeeAccounts.releasePhoneHolders(claim, {
+    businessId: shops.A.id,
+    userId: shops.A.ownerId,
+    phone,
+  });
+  assert.deepEqual(released, []);
+  assert.deepEqual(plain(await rawLogin({ _id: signIn._id })), plain(signIn), 'their sign-in on the new number stays');
+  assert.equal((await Employee.findById(staff._id).lean()).isActive, true);
+  assert.equal(await ReleasedLogin.countDocuments({ phone: { $in: [phone, '9400000062'] } }), 0);
+});
+
 test('changing an employee\'s number to another shop\'s owner\'s moves that owner aside the same way, and back if the change fails', async () => {
   const staff = await addEmployee(shops.A, '9300000041', '4242', 'Number Changer');
   const ownerH = await rawLogin({ _id: shops.H.ownerId });
@@ -639,7 +855,7 @@ test('changing an employee\'s number to another shop\'s owner\'s moves that owne
   assert.deepEqual(proof.sent.data.transfer, { kind: 'owner', sameShop: false });
   const moved = await api('PUT', `/employees/${staff._id}`, {
     token: ownerToken(shops.A),
-    body: { phone: '9300000008', phoneVerificationToken: proof.token },
+    body: { phone: '9300000008', phoneVerificationToken: proof.token, confirmTransfer: true },
   });
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.equal(moved.body.data.phone, '9300000008');
@@ -664,7 +880,12 @@ test('changing an employee\'s number to another shop\'s owner\'s moves that owne
   try {
     const failed = await api('PUT', `/employees/${staff._id}`, {
       token: ownerToken(shops.A),
-      body: { phone: '9300000009', name: 'Renamed', phoneVerificationToken: verified(shops.A, '9300000009') },
+      body: {
+        phone: '9300000009',
+        name: 'Renamed',
+        phoneVerificationToken: verified(shops.A, '9300000009'),
+        confirmTransfer: true,
+      },
     });
     assert.equal(failed.status, 500);
   } finally {
@@ -729,4 +950,84 @@ test('the restore script puts a released login back once the number is free, and
 
   await assert.rejects(() => restoreReleasedLogin('not-an-id'), /usage/);
   await assert.rejects(() => restoreReleasedLogin(String(new mongoose.Types.ObjectId())), /No released login/);
+});
+
+test('the restore script names a Login ID taken since, and puts the owner back once it is free', async () => {
+  const shopL = await makeShop('L', { phone: '9400000022', mpin: '2323', gstNumber: '27LLLLL2323L1Z5', name: 'Shop L' });
+  await BusinessUser.updateOne({ _id: shopL.ownerId }, { $set: { userId: 'rameshjewel' } });
+  const add = await api('POST', '/employees', {
+    token: ownerToken(shops.A),
+    body: newEmployee(shopL.phone, verified(shops.A, shopL.phone), { name: 'L Owner At A' }),
+  });
+  assert.equal(add.status, 201, JSON.stringify(add.body));
+  const entry = await ReleasedLogin.findOne({ phone: shopL.phone }).lean();
+  assert.equal(entry.original.userId, 'rameshjewel');
+
+  // A new shop registers with that Login ID; shop A then frees the number.
+  const newcomer = await BusinessUser.create({
+    businessId: new mongoose.Types.ObjectId(),
+    phone: '9400000023',
+    userId: 'rameshjewel',
+    passwordHash: 'x',
+    role: 'OWNER',
+  });
+  assert.equal((await api('DELETE', `/employees/${add.body.data.employee._id}`, { token: ownerToken(shops.A) })).status, 200);
+
+  const before = await counts();
+  const refused = await restoreReleasedLogin(String(entry._id));
+  assert.equal(refused.restored, false);
+  assert.equal(refused.reason, 'USER_ID_TAKEN', 'not "the number belongs to someone else"');
+  assert.deepEqual(await counts(), before);
+  assert.equal((await ReleasedLogin.findById(entry._id).lean()).restoredAt, null);
+  // The unique index says the same when the check is skipped.
+  await assert.rejects(() => employeeAccounts.restoreRelease(entry), /USER_ID_TAKEN/);
+  assert.equal(await BusinessUser.exists({ _id: shopL.ownerId }), null);
+
+  await BusinessUser.deleteOne({ _id: newcomer._id });
+  assert.equal((await restoreReleasedLogin(String(entry._id))).restored, true);
+  const owner = await login(shopL.phone, '2323');
+  assert.equal(owner.status, 200);
+  assert.equal(owner.body.data.role, 'OWNER');
+  assert.equal(owner.body.data.businessId, String(shopL.id));
+});
+
+test('the restore script leaves an employee their shop has moved to another number, or given a new sign-in, since', async () => {
+  const shopM = await makeShop('M', { phone: '9400000040', mpin: '4040', gstNumber: '27MMMMM4040M1Z5', name: 'Shop M' });
+  const staff = await addEmployee(shopM, '9400000041', '4141', 'M Staff');
+  const add = await api('POST', '/employees', {
+    token: ownerToken(shops.A),
+    body: newEmployee('9400000041', verified(shops.A, '9400000041'), { name: 'M Staff At A' }),
+  });
+  assert.equal(add.status, 201, JSON.stringify(add.body));
+  const entry = await ReleasedLogin.findOne({ phone: '9400000041' }).lean();
+  assert.equal(String(entry.employeeId), staff._id);
+
+  // Shop M gives the switched-off employee another number (a new sign-in
+  // record on it); shop A then frees the old one.
+  const moved = await api('PUT', `/employees/${staff._id}`, {
+    token: ownerToken(shopM),
+    body: { phone: '9400000042', phoneVerificationToken: verified(shopM, '9400000042') },
+  });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal((await api('DELETE', `/employees/${add.body.data.employee._id}`, { token: ownerToken(shops.A) })).status, 200);
+
+  const before = await counts();
+  const changed = await restoreReleasedLogin(String(entry._id));
+  assert.equal(changed.restored, false);
+  assert.equal(changed.reason, 'EMPLOYEE_NUMBER_CHANGED');
+  assert.deepEqual(await counts(), before);
+  assert.equal((await login('9400000041', '4141')).status, 401, 'the old number does not sign in as them');
+
+  // Back on the old number, through their new sign-in record: still nothing to put back.
+  const back = await api('PUT', `/employees/${staff._id}`, {
+    token: ownerToken(shopM),
+    body: { phone: '9400000041', phoneVerificationToken: verified(shopM, '9400000041') },
+  });
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  const again = await restoreReleasedLogin(String(entry._id));
+  assert.equal(again.restored, false);
+  assert.equal(again.reason, 'EMPLOYEE_HAS_LOGIN');
+  assert.deepEqual(await counts(), before);
+  assert.equal(await BusinessUser.countDocuments({ employeeId: new mongoose.Types.ObjectId(staff._id) }), 1);
+  assert.equal((await ReleasedLogin.findById(entry._id).lean()).restoredAt, null);
 });

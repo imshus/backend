@@ -12,8 +12,10 @@
  * shop, same MPIN — so its owner signs in as before, and an employee the move
  * switched off is switched back on. Refused, writing nothing, while the
  * number is someone else's (usually the employee it was given to: delete
- * them or change their number first), for an employee their shop has
- * deleted since, or once it has been put back already. Prints ids only.
+ * them or change their number first), while the owner's Login ID is someone
+ * else's, for an employee their shop has deleted, moved to another number or
+ * given a new sign-in record since, or once it has been put back already.
+ * Prints ids only.
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
@@ -23,6 +25,15 @@ const ReleasedLogin = require('../src/models/releasedLogin.model');
 const employeeAccounts = require('../src/services/employeeAccount.service');
 
 const USAGE = 'usage: node scripts/restore_released_login.js <releasedLoginId>';
+
+// Why an entry is not put back, as the operator is told it.
+const REFUSALS = {
+  PHONE_ALREADY_REGISTERED: 'the number belongs to someone else now; free it first',
+  USER_ID_TAKEN: "the owner's Login ID belongs to someone else now",
+  EMPLOYEE_NOT_FOUND: 'their shop has deleted the employee since',
+  EMPLOYEE_NUMBER_CHANGED: 'their shop has moved the employee to another number since',
+  EMPLOYEE_HAS_LOGIN: 'their shop has given the employee a new sign-in record since',
+};
 
 /**
  * Restores one released_logins entry. Answers { restored, reason } and the
@@ -44,7 +55,7 @@ async function restoreReleasedLogin(releasedLoginId) {
     const result = await employeeAccounts.restoreRelease(entry, { check: true });
     return { ...ids, restored: result.restored, reason: result.reason || null };
   } catch (error) {
-    if (['PHONE_ALREADY_REGISTERED', 'EMPLOYEE_NOT_FOUND'].includes(error.message)) {
+    if (REFUSALS[error.message]) {
       return { ...ids, restored: false, reason: error.message };
     }
     throw error;
@@ -65,12 +76,8 @@ async function main() {
     console.log(`shop        ${result.fromBusinessId || '(unknown)'}`);
     if (result.restored) {
       console.log('\nRESTORED: the record is back in business_users and signs in as before');
-    } else if (result.reason === 'PHONE_ALREADY_REGISTERED') {
-      console.log('\nnot restored: the number belongs to someone else now; free it first');
-    } else if (result.reason === 'EMPLOYEE_NOT_FOUND') {
-      console.log('\nnot restored: their shop has deleted the employee since');
     } else {
-      console.log(`\nnot restored: ${result.reason}`);
+      console.log(`\nnot restored: ${REFUSALS[result.reason] || result.reason}`);
     }
     return result;
   } finally {

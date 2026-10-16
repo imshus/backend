@@ -35,6 +35,28 @@ const authenticateJWTOptional = (req, res, next) => {
   }
 };
 
+/**
+ * An OWNER token is let through only while its sign-in record is still an
+ * owner's record of that shop — the same test a refresh makes. An access
+ * token outlives its record by up to fifteen minutes, and an owner made
+ * someone's employee loses theirs at once (released_logins), so the routes
+ * that cannot be undone — deleting the account, managing the roster — read
+ * the record first. Other roles pass on; requireRole decides them.
+ */
+const requireCurrentOwner = async (req, res, next) => {
+  if (normalizeRole(req.user?.role) !== 'OWNER') return next();
+  const mongoose = require('mongoose');
+  const BusinessUser = require('../models/businessUser.model');
+  const { userId, businessId } = req.user;
+  const current = mongoose.isValidObjectId(String(userId))
+    && mongoose.isValidObjectId(String(businessId))
+    && await BusinessUser.exists({ _id: userId, businessId, role: { $ne: 'EMP' }, isActive: { $ne: false } });
+  if (!current) {
+    return res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'Your session has ended. Please sign in again.' });
+  }
+  return next();
+};
+
 const requireRole = (...roles) => {
   return (req, res, next) => {
     if (!req.user) {
@@ -58,5 +80,6 @@ const requireRole = (...roles) => {
 module.exports = {
   authenticateJWT,
   authenticateJWTOptional,
+  requireCurrentOwner,
   requireRole
 };
