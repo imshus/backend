@@ -239,13 +239,30 @@ test('sending a code texts the number once, stores it for this shop, and never a
   assert.ok(lifeMs > 9 * 60 * 1000 && lifeMs <= 10 * 60 * 1000, 'ten minutes');
 });
 
-test('a number that is already anyone\'s is a 409 and nothing is texted', async () => {
+test('the owner\'s own number and this shop\'s employee\'s are a 409 and nothing is texted', async () => {
+  // Another shop's owner or employee is texted instead, to be moved here:
+  // see employeeNumberTransfer.test.js.
+  const own = await Employee.create({ businessId: shopA.id, name: 'Own Karigar', phone: '9811100019' });
   const before = msg91.sent.length;
   const records = await OtpVerification.countDocuments();
-  for (const phone of [OWNER_A_PHONE, OWNER_B_PHONE, '9811100009', '+91 91000 00002']) {
-    const { status, body } = await sendCode(shopA, phone);
-    assert.equal(status, 409, phone);
-    assert.deepEqual(body, PHONE_TAKEN, phone);
+  const OWN_NUMBER = {
+    success: false,
+    error: 'OWN_NUMBER',
+    message: "You can't add your own number as an employee.",
+  };
+  try {
+    for (const [phone, refusal] of [
+      [OWNER_A_PHONE, OWN_NUMBER],
+      ['+91 91000 00001', OWN_NUMBER],
+      ['9811100019', PHONE_TAKEN],
+      ['+91 98111 00019', PHONE_TAKEN],
+    ]) {
+      const { status, body } = await sendCode(shopA, phone);
+      assert.equal(status, 409, phone);
+      assert.deepEqual(body, refusal, phone);
+    }
+  } finally {
+    await Employee.deleteOne({ _id: own._id });
   }
   assert.equal(msg91.sent.length, before, 'no SMS');
   assert.equal(await OtpVerification.countDocuments(), records, 'no code stored');

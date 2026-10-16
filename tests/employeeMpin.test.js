@@ -290,38 +290,35 @@ test('adding an employee with an MPIN creates them and their EMP sign-in record,
   assert.equal(containsExactString(rawEmployees, '0451'), false);
 });
 
-test('a number that is anyone\'s is refused with 409 and nothing is written', async () => {
+test('the owner\'s own number and this shop\'s employee\'s are refused with 409 and nothing is written', async () => {
+  // Another shop's owner or employee is moved here instead: see
+  // employeeNumberTransfer.test.js.
   const token = ownerToken(shopA);
   const base = { name: 'Dup', designation: 'Sales', mpin: '1234', confirmMpin: '1234' };
+  const PHONE_TAKEN = {
+    success: false,
+    error: 'PHONE_ALREADY_REGISTERED',
+    message: 'This number is already registered',
+  };
   const cases = [
-    ['the owner\'s own number', OWNER_A_PHONE],
-    ['another shop\'s owner', OWNER_B_PHONE],
-    ['an employee of this shop', '98111 00001'],
-    ['an active employee of another shop with no sign-in record', '9811100009'],
+    ['the owner\'s own number', OWNER_A_PHONE, {
+      success: false,
+      error: 'OWN_NUMBER',
+      message: "You can't add your own number as an employee.",
+    }],
+    ['an employee of this shop', '98111 00001', PHONE_TAKEN],
   ];
 
-  for (const [label, phone] of cases) {
+  for (const [label, phone, refusal] of cases) {
     const before = await counts();
     const { status, body } = await api('POST', '/employees', {
       token,
       body: { ...base, phone, phoneVerificationToken: verified(shopA, phone) },
     });
     assert.equal(status, 409, label);
-    assert.deepEqual(body, {
-      success: false,
-      error: 'PHONE_ALREADY_REGISTERED',
-      message: 'This number is already registered',
-    }, label);
+    assert.deepEqual(body, refusal, label);
     assert.deepEqual(await counts(), before, `${label}: nothing written`);
   }
-
-  // The same number from another shop's owner: refused, without saying whose.
-  const fromB = await api('POST', '/employees', {
-    token: ownerToken(shopB),
-    body: { ...base, phone: '9811100001', phoneVerificationToken: verified(shopB, '9811100001') },
-  });
-  assert.equal(fromB.status, 409);
-  assert.equal(JSON.stringify(fromB.body).includes('Shree'), false);
 });
 
 test('check-phone answers available or not, for the owner only', async () => {
@@ -330,9 +327,18 @@ test('check-phone answers available or not, for the owner only', async () => {
 
   assert.deepEqual((await check('9822200001')).body, { success: true, data: { available: true } });
   assert.equal((await check('+91 98222 00001')).body.data.available, true, 'formatted numbers are read as ten digits');
-  for (const taken of [OWNER_A_PHONE, OWNER_B_PHONE, '9811100001', '9811100009']) {
-    assert.equal((await check(taken)).body.data.available, false, taken);
-  }
+  assert.deepEqual((await check(OWNER_A_PHONE)).body.data, { available: false, reason: 'OWN_NUMBER' });
+  assert.deepEqual((await check('9811100001')).body.data, { available: false }, 'this shop\'s employee');
+  // Another shop's owner or employee may be moved here; asking moves nothing.
+  assert.deepEqual((await check(OWNER_B_PHONE)).body.data, {
+    available: true,
+    transfer: { kind: 'owner', sameShop: false },
+  });
+  assert.deepEqual((await check('9811100009')).body.data, {
+    available: true,
+    transfer: { kind: 'employee', sameShop: false },
+  });
+  assert.ok(await BusinessUser.exists({ _id: shopB.ownerId }));
   assert.equal((await check('9811100008')).body.data.available, true, 'an inactive employee no longer holds a number');
 
   const bad = await check('12345');
@@ -747,14 +753,18 @@ test('editing an employee\'s number re-checks it, excluding themselves', async (
   const token = ownerToken(shopA);
   const id = created.ravi._id;
 
-  const clash = await api('PUT', `/employees/${id}`, {
-    token,
-    body: { phone: OWNER_B_PHONE, phoneVerificationToken: verified(shopA, OWNER_B_PHONE) },
-  });
-  assert.equal(clash.status, 409);
-  assert.equal(clash.body.message, 'This number is already registered');
-  assert.equal((await Employee.findById(id).lean()).phone, '9811100001');
-  assert.equal((await BusinessUser.findOne({ employeeId: id }).lean()).phone, '9811100001');
+  // Another employee of this shop, and the owner's own number. (Another
+  // shop's owner or employee is moved instead: employeeNumberTransfer.test.js.)
+  for (const [phone, error] of [['9811100002', 'PHONE_ALREADY_REGISTERED'], [OWNER_A_PHONE, 'OWN_NUMBER']]) {
+    const clash = await api('PUT', `/employees/${id}`, {
+      token,
+      body: { phone, phoneVerificationToken: verified(shopA, phone) },
+    });
+    assert.equal(clash.status, 409, phone);
+    assert.equal(clash.body.error, error, phone);
+    assert.equal((await Employee.findById(id).lean()).phone, '9811100001');
+    assert.equal((await BusinessUser.findOne({ employeeId: id }).lean()).phone, '9811100001');
+  }
 
   const same = await api('PUT', `/employees/${id}`, { token, body: { phone: '9811100001', name: 'Ravi K' } });
   assert.equal(same.status, 200, 'keeping one\'s own number is not a clash');

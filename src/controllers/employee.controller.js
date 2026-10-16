@@ -21,8 +21,13 @@ const {
  * Adding someone is one request from this build — name, phone, designation,
  * the MPIN the owner sets, and the permissions picked on the next screen —
  * and creates both the Employee document and the employee's sign-in record
- * (business_users, role EMP). A number that is already anyone's, owner or
- * employee, in any shop, is refused before anything is written.
+ * (business_users, role EMP). The owner's own number, a SUPER account's and
+ * one of this shop's employees are refused before anything is written.
+ * Another shop's owner or employee, or a second owner of this shop, is moved
+ * here once the number is proved: their sign-in record is archived whole in
+ * released_logins and taken out of business_users (another shop's employee
+ * is also switched off there), and put back if the add then fails. Nothing
+ * else of theirs — business, invoices, scans, wallet — is touched.
  *
  * The number is the employee's sign-in, so it is proved first: a code is
  * texted to it (POST /phone-otp), the owner types it in (POST
@@ -32,13 +37,20 @@ const {
  * Builds 1.0.360/1.0.361 add in two steps (a draft in Redis, then a password).
  * The draft step still works; the finishing step needs the same token, which
  * those builds cannot get, so they are told to update. The duplicate-number
- * rule applies to them too.
+ * rule applies to them as it always did: a number that is anyone's is
+ * refused there, never moved.
  */
 
 const PHONE_TAKEN = {
   success: false,
   error: 'PHONE_ALREADY_REGISTERED',
   message: 'This number is already registered',
+};
+
+const OWN_NUMBER = {
+  success: false,
+  error: 'OWN_NUMBER',
+  message: "You can't add your own number as an employee.",
 };
 
 const PHONE_NOT_VERIFIED = {
@@ -68,6 +80,29 @@ const OTP_RESEND_AFTER_SECONDS = 30;
 /** Whether the request carries the proof for this shop and this number. */
 const phoneVerified = (body, businessId, phone) =>
   isEmployeePhoneVerified(body.phoneVerificationToken, { businessId, phone });
+
+/** The 409 a number is refused with, or null when it may be added (or moved here). */
+const refusalOf = (claim) => {
+  if (claim.status === 'own') return OWN_NUMBER;
+  if (claim.status === 'taken') return PHONE_TAKEN;
+  return null;
+};
+
+/** Who holds the number, asked at this moment for this shop and this owner. */
+const claimOf = (req, phone, except = {}) => employeeAccounts.classifyPhone(phone, {
+  businessId: req.user.businessId,
+  userId: req.user.userId,
+  ...except,
+});
+
+/**
+ * Moves a transferable number off whoever holds it, for a request that has
+ * proved it; nothing for a free one. What comes back is what restoreReleased
+ * puts back if the write that needed the number fails.
+ */
+const releaseFor = (req, claim, phone) => (claim.status === 'transfer'
+  ? employeeAccounts.releasePhoneHolders(claim, { businessId: req.user.businessId, userId: req.user.userId, phone })
+  : []);
 
 /**
  * Whether the number stored on an employee is these ten digits. A record
@@ -118,8 +153,9 @@ async function findOwnEmployee(req) {
 
 /**
  * Writes the Employee document and its sign-in record together. If the
- * sign-in record cannot be written the Employee document goes too, so a
- * refused number leaves nothing behind.
+ * sign-in record cannot be written the Employee document goes too (and a
+ * record written before the failure), so a refused number leaves nothing
+ * behind and is free again for whoever it was moved from.
  */
 async function createEmployeeWithAccount(fields, { mpin } = {}) {
   const employee = await Employee.create(fields);
@@ -128,6 +164,7 @@ async function createEmployeeWithAccount(fields, { mpin } = {}) {
     await employeeAccounts.createAccountFor(employee, { mpin });
     return { employee };
   } catch (error) {
+    await employeeAccounts.removeAccountOf(employee._id).catch(() => {});
     await Employee.deleteOne({ _id: employee._id }).catch(() => {});
     if (error.message === 'PHONE_ALREADY_REGISTERED') return { phoneTaken: true };
     throw error;
@@ -158,19 +195,31 @@ const createEmployee = async (req, res) => {
     if (body.mpin) {
       const phone = normalizeIndianMobile(body.phone);
       if (!phoneVerified(body, businessId, phone)) return res.status(403).json(PHONE_NOT_VERIFIED);
-      if (await employeeAccounts.isPhoneRegistered(phone)) {
+      // Asked again now, whatever check-phone or the OTP step said earlier.
+      const claim = await claimOf(req, phone);
+      const refused = refusalOf(claim);
+      if (refused) return res.status(409).json(refused);
+
+      const released = await releaseFor(req, claim, phone);
+      let added;
+      try {
+        added = await createEmployeeWithAccount({
+          businessId,
+          name: body.name,
+          phone,
+          ...(body.email ? { email: body.email } : {}),
+          designation: body.designation,
+          permissions: permissionsFrom(body.permissions),
+        }, { mpin: body.mpin });
+      } catch (error) {
+        await employeeAccounts.restoreReleased(released);
+        throw error;
+      }
+      const { employee, phoneTaken } = added;
+      if (phoneTaken) {
+        await employeeAccounts.restoreReleased(released);
         return res.status(409).json(PHONE_TAKEN);
       }
-
-      const { employee, phoneTaken } = await createEmployeeWithAccount({
-        businessId,
-        name: body.name,
-        phone,
-        ...(body.email ? { email: body.email } : {}),
-        designation: body.designation,
-        permissions: permissionsFrom(body.permissions),
-      }, { mpin: body.mpin });
-      if (phoneTaken) return res.status(409).json(PHONE_TAKEN);
 
       // A draft an older build left behind is spent: what was sent now stands.
       await clearDraft(businessId);
@@ -270,12 +319,19 @@ const getEmployees = async (req, res) => {
   }
 };
 
-/** GET /employees/check-phone?phone= — whether a number is free to add. */
+/**
+ * GET /employees/check-phone?phone= — whether a number may be added: free,
+ * or held by someone who would be moved here (`transfer` says who, an owner
+ * or an employee, and whether of this shop). The owner's own number says so.
+ */
 const checkPhone = async (req, res) => {
   try {
     const { phone } = req.validated || {};
-    const taken = await employeeAccounts.isPhoneRegistered(phone);
-    return res.status(200).json({ success: true, data: { available: !taken } });
+    const claim = await claimOf(req, phone);
+    const data = { available: claim.status === 'free' || claim.status === 'transfer' };
+    if (claim.transfer) data.transfer = claim.transfer;
+    if (claim.status === 'own') data.reason = 'OWN_NUMBER';
+    return res.status(200).json({ success: true, data });
   } catch (error) {
     console.error('Check Employee Phone Error:', error);
     return res.status(500).json({ success: false, message: 'Server error' });
@@ -284,8 +340,9 @@ const checkPhone = async (req, res) => {
 
 /**
  * POST /employees/phone-otp — texts a code to the number being added. A
- * number that is already anyone's is refused exactly as check-phone answers
- * it, before anything is sent.
+ * number that may not be added is refused exactly as check-phone answers it,
+ * before anything is sent; one that would be moved here is texted, and the
+ * answer says from whom (`transfer`). Nothing moves until the add itself.
  */
 const sendPhoneOtp = async (req, res) => {
   try {
@@ -299,9 +356,9 @@ const sendPhoneOtp = async (req, res) => {
     if (!existing && !(await mayAddEmployee(req.user.businessId))) {
       return res.status(403).json(TRIAL_REQUIRED);
     }
-    if (await employeeAccounts.isPhoneRegistered(phone)) {
-      return res.status(409).json(PHONE_TAKEN);
-    }
+    const claim = await claimOf(req, phone, { exceptEmployeeId: existing ? employeeId : null });
+    const refused = refusalOf(claim);
+    if (refused) return res.status(409).json(refused);
 
     try {
       await otpService.sendMobileOtp({
@@ -319,7 +376,12 @@ const sendPhoneOtp = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: { phone, expiresInSeconds: OTP_TTL_SECONDS, resendAfterSeconds: OTP_RESEND_AFTER_SECONDS },
+      data: {
+        phone,
+        expiresInSeconds: OTP_TTL_SECONDS,
+        resendAfterSeconds: OTP_RESEND_AFTER_SECONDS,
+        ...(claim.transfer ? { transfer: claim.transfer } : {}),
+      },
     });
   } catch (error) {
     console.error('Send Employee Phone OTP Error:', error);
@@ -393,6 +455,9 @@ const updateEmployee = async (req, res) => {
     const reactivating = body.isActive === true && employee.isActive === false;
     let phoneChanged = false;
 
+    // Who else holds a new number, asked now (see classifyPhone).
+    let claim = null;
+
     if (body.phone !== undefined) {
       const nextPhone = normalizeIndianMobile(body.phone);
       if (!isStoredPhone(nextPhone, before.phone)) {
@@ -401,7 +466,9 @@ const updateEmployee = async (req, res) => {
         if (!phoneVerified(body, req.user.businessId, nextPhone)) {
           return res.status(403).json(PHONE_NOT_VERIFIED);
         }
-        if (await isTaken(nextPhone)) return res.status(409).json(PHONE_TAKEN);
+        claim = await claimOf(req, nextPhone, { exceptEmployeeId: employee._id, exceptUserId: account?._id });
+        const refused = refusalOf(claim);
+        if (refused) return res.status(409).json(refused);
         phoneChanged = true;
       }
       employee.phone = nextPhone;
@@ -416,16 +483,31 @@ const updateEmployee = async (req, res) => {
     if (body.permissions !== undefined) employee.permissions = permissionsFrom(body.permissions) || {};
     if (body.isActive !== undefined) employee.isActive = body.isActive;
 
-    await employee.save();
+    // A proved number another shop's owner or employee (or a second owner
+    // here) holds is moved off them first; if the write below does not go
+    // through, they get it back.
+    const released = phoneChanged ? await releaseFor(req, claim, employee.phone) : [];
 
-    // The sign-in record follows: number, name, permissions, on or off.
     try {
+      await employee.save();
+      // The sign-in record follows: number, name, permissions, on or off.
       await employeeAccounts.syncAccountOf(employee, { account });
     } catch (error) {
-      if (error.message !== 'PHONE_ALREADY_REGISTERED') throw error;
+      if (error.message !== 'PHONE_ALREADY_REGISTERED') {
+        if (released.length) {
+          // Whatever failed, the number goes back to whoever had it.
+          Object.assign(employee, before);
+          await employee.save().catch(() => {});
+          await employeeAccounts.syncAccountOf(employee, { createIfMissing: false }).catch(() => {});
+          await employeeAccounts.restoreReleased(released);
+        }
+        throw error;
+      }
       if (phoneChanged || reactivating) {
         // Lost a race for the number (a new one, or the one being claimed
-        // back): put everything back as it was, so nothing is written.
+        // back): whoever it was moved from gets it back, and everything is
+        // put back as it was, so nothing is written.
+        await employeeAccounts.restoreReleased(released);
         Object.assign(employee, before);
         await employee.save();
         return res.status(409).json(PHONE_TAKEN);

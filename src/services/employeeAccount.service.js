@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
 const Employee = require('../models/employee.model');
+const ReleasedLogin = require('../models/releasedLogin.model');
 const authService = require('./auth.service');
 const { sealMpin, openMpin } = require('../utils/mpinVault');
 const { normalizeIndianMobile, storedSpellingsOf } = require('../utils/phone');
@@ -54,6 +55,220 @@ async function isPhoneRegistered(phone, { exceptEmployeeId = null, exceptUserId 
     Employee.exists(employeeFilter),
   ]);
   return Boolean(user || employee);
+}
+
+/**
+ * Who holds a number, as the owner adding it as an employee sees it:
+ *   - 'free'     nobody;
+ *   - 'own'      the owner's own sign-in — never made their own employee;
+ *   - 'taken'    a SUPER account, or this shop's own employee;
+ *   - 'transfer' only records that may be moved here: an OWNER record of
+ *                another shop, or of this one when it is not the caller (a
+ *                second owner), and/or another shop's employees. A number
+ *                held by several is moved from all of them together.
+ * `transfer` says what the app shows ({ kind, sameShop }, an owner over an
+ * employee), and `owner` / `employees` what releasePhoneHolders takes off.
+ * `except*` leave out the employee being edited and their own record.
+ */
+async function classifyPhone(phone, {
+  businessId,
+  userId = null,
+  exceptEmployeeId = null,
+  exceptUserId = null,
+} = {}) {
+  const claim = { status: 'free', transfer: null, owner: null, employees: [] };
+  const tenDigits = normalizeIndianMobile(phone);
+  if (!tenDigits) return claim;
+
+  const userFilter = { phone: tenDigits };
+  if (exceptUserId) userFilter._id = { $ne: exceptUserId };
+  const employeeFilter = { phone: { $in: storedSpellingsOf(tenDigits) }, isActive: { $ne: false } };
+  if (exceptEmployeeId) employeeFilter._id = { $ne: exceptEmployeeId };
+
+  const [user, employees] = await Promise.all([
+    BusinessUser.findOne(userFilter).select('businessId role employeeId').lean(),
+    Employee.find(employeeFilter).select('businessId').lean(),
+  ]);
+  const same = (a, b) => Boolean(a && b) && String(a) === String(b);
+  // The employee being edited is not a clash through their record either.
+  const login = user && !same(user.employeeId, exceptEmployeeId) ? user : null;
+  const role = String(login?.role || '').toUpperCase();
+  const thisShop = (id) => same(id, businessId);
+
+  const callers = [login?._id, login?.employeeId, ...employees.map((employee) => employee._id)];
+  if (callers.some((id) => same(id, userId))) return { ...claim, status: 'own' };
+  if (
+    (login && role !== 'OWNER' && role !== EMP)
+    || (role === EMP && thisShop(login.businessId))
+    || employees.some((employee) => thisShop(employee.businessId))
+  ) {
+    return { ...claim, status: 'taken' };
+  }
+
+  // Another shop's employees, by the active Employee documents and by the
+  // EMP record on the number (switched off or not, it holds the number).
+  const moving = new Map(employees.map((employee) => [
+    String(employee._id),
+    { employeeId: employee._id, fromBusinessId: employee.businessId, loginId: null },
+  ]));
+  if (role === EMP) {
+    const key = String(login.employeeId || login._id);
+    moving.set(key, {
+      employeeId: login.employeeId || null,
+      fromBusinessId: login.businessId,
+      ...moving.get(key),
+      loginId: login._id,
+    });
+  }
+
+  const owner = role === 'OWNER' ? login : null;
+  if (!owner && !moving.size) return claim;
+  return {
+    status: 'transfer',
+    transfer: { kind: owner ? 'owner' : 'employee', sameShop: Boolean(owner && thisShop(owner.businessId)) },
+    owner,
+    employees: [...moving.values()],
+  };
+}
+
+/**
+ * Archives one business_users record whole in released_logins, then deletes
+ * it, so its number is free and its sessions end at their next refresh.
+ * The entry is written before anything changes, so a failure part-way leaves
+ * nothing that cannot be put back.
+ */
+async function archiveRelease(fields, original = null) {
+  const entry = await ReleasedLogin.create({
+    ...fields,
+    fromBusinessId: original?.businessId ?? fields.fromBusinessId ?? null,
+    original,
+  });
+  if (fields.employeeId && fields.previousIsActive === true) {
+    await Employee.updateOne({ _id: fields.employeeId }, { $set: { isActive: false } });
+  }
+  if (original) await BusinessUser.collection.deleteOne({ _id: original._id });
+
+  // Ids and shops only: never the number's codes, hashes or tokens.
+  console.info('[EMPLOYEE_TRANSFER]', {
+    kind: entry.kind,
+    toBusinessId: String(entry.releasedByBusinessId),
+    fromBusinessId: entry.fromBusinessId ? String(entry.fromBusinessId) : null,
+    releasedLoginId: original ? String(original._id) : null,
+    employeeId: entry.employeeId ? String(entry.employeeId) : null,
+    releasedId: String(entry._id),
+  });
+  return entry;
+}
+
+/**
+ * Takes the number classifyPhone found transferable off everyone holding it,
+ * for this shop (`businessId`) and this owner (`userId`): the OWNER record is
+ * archived and deleted; another shop's employee is switched off and their
+ * EMP record archived and deleted. Businesses, invoices, scans, wallets and
+ * licences are never touched. Answers the released_logins entries written,
+ * for restoreReleased; if any step fails, what was released is put back.
+ */
+async function releasePhoneHolders(claim, { businessId, userId, phone }) {
+  const by = {
+    phone: normalizeIndianMobile(phone),
+    reason: 'MADE_EMPLOYEE',
+    releasedAt: new Date(),
+    releasedByBusinessId: businessId,
+    releasedByUserId: String(userId || ''),
+  };
+  const raw = BusinessUser.collection;
+  const released = [];
+  try {
+    if (claim.owner) {
+      // Only while it still holds this number: one changed since is left alone.
+      const original = await raw.findOne({ _id: claim.owner._id, phone: by.phone });
+      if (original) released.push(await archiveRelease({ ...by, kind: 'owner' }, original));
+    }
+    for (const holder of claim.employees) {
+      const employee = holder.employeeId
+        ? await Employee.findById(holder.employeeId).select('isActive').lean()
+        : null;
+      const fields = {
+        ...by,
+        kind: 'employee',
+        fromBusinessId: holder.fromBusinessId,
+        employeeId: holder.employeeId || null,
+        previousIsActive: employee ? employee.isActive !== false : null,
+      };
+      const logins = holder.employeeId
+        ? await raw.find({ employeeId: holder.employeeId, role: EMP }).toArray()
+        : [];
+      if (holder.loginId && !logins.some((login) => String(login._id) === String(holder.loginId))) {
+        const stray = await raw.findOne({ _id: holder.loginId, phone: by.phone });
+        if (stray) logins.push(stray);
+      }
+      if (!logins.length) {
+        released.push(await archiveRelease(fields));
+        continue;
+      }
+      for (const login of logins) released.push(await archiveRelease(fields, login));
+    }
+  } catch (error) {
+    await restoreReleased(released);
+    throw error;
+  }
+  return released;
+}
+
+/**
+ * Puts one released entry back: the record into business_users exactly as it
+ * was (the unique phone index refuses it if the number has been taken since)
+ * and the employee's isActive as it was. With `check` (the restore script),
+ * refuses first, writing nothing, when the number is someone else's now
+ * (PHONE_ALREADY_REGISTERED) or the employee has since been deleted by their
+ * shop (EMPLOYEE_NOT_FOUND), whose record would hold the number for nobody.
+ */
+async function restoreRelease(entry, { check = false } = {}) {
+  if (entry.restoredAt) return { restored: false, reason: 'ALREADY_RESTORED' };
+  const original = entry.original || null;
+  if (check) {
+    if (entry.employeeId && !(await Employee.exists({ _id: entry.employeeId }))) {
+      throw new Error('EMPLOYEE_NOT_FOUND');
+    }
+    const except = { exceptEmployeeId: entry.employeeId, exceptUserId: original?._id || null };
+    for (const phone of new Set([entry.phone, original?.phone].filter(Boolean))) {
+      if (await isPhoneRegistered(phone, except)) throw phoneTaken();
+    }
+  }
+
+  if (original && !(await BusinessUser.collection.findOne({ _id: original._id }))) {
+    try {
+      await BusinessUser.collection.insertOne(original);
+    } catch (error) {
+      if (isDuplicateKey(error)) throw phoneTaken();
+      throw error;
+    }
+  }
+  if (entry.employeeId && typeof entry.previousIsActive === 'boolean') {
+    await Employee.updateOne({ _id: entry.employeeId }, { $set: { isActive: entry.previousIsActive } });
+  }
+  await ReleasedLogin.updateOne({ _id: entry._id }, { $set: { restoredAt: new Date() } });
+  return { restored: true };
+}
+
+/**
+ * Undoes a release whose employee was then not written, last step first.
+ * Never throws: an entry that cannot go back stays in released_logins for
+ * scripts/restore_released_login.js, and says so in the log.
+ */
+async function restoreReleased(released) {
+  for (const entry of [...(released || [])].reverse()) {
+    try {
+      await restoreRelease(entry);
+      console.info('[EMPLOYEE_TRANSFER] restored', { releasedId: String(entry._id), kind: entry.kind });
+    } catch (error) {
+      console.error('[EMPLOYEE_TRANSFER] could not restore', {
+        releasedId: String(entry._id),
+        kind: entry.kind,
+        error: error.message,
+      });
+    }
+  }
 }
 
 /**
@@ -344,6 +559,10 @@ module.exports = {
   EMP,
   SHOP_DETAIL_FIELDS,
   isPhoneRegistered,
+  classifyPhone,
+  releasePhoneHolders,
+  restoreRelease,
+  restoreReleased,
   businessDetailsOf,
   staleShopFields,
   shopDetailsOf,

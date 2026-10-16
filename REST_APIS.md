@@ -296,10 +296,26 @@ hash + sealed copy, `utils/mpinVault`), the shop's `gstNumber` / `businessName`
 / `address` copied from the owner's record, and a mirror of `permissions`. The
 Employee document stays the source of truth; the record follows it on create,
 edit, on/off, MPIN change and delete (`services/employeeAccount.service.js`).
-A phone number held by any `business_users` record (any role, any shop) or any
-active Employee is refused everywhere below with
-`409 { success:false, error:'PHONE_ALREADY_REGISTERED', message:'This number is already registered' }`
-and nothing is written.
+Who holds a number decides what happens to it below
+(`employeeAccount.service` `classifyPhone`, asked again on every write):
+- the owner's own sign-in →
+  `409 { success:false, error:'OWN_NUMBER', message:"You can't add your own number as an employee." }`;
+- a `SUPER` record, or one of this shop's own employees →
+  `409 { success:false, error:'PHONE_ALREADY_REGISTERED', message:'This number is already registered' }`;
+- an `OWNER` record of another shop, a second `OWNER` of this shop, and/or
+  another shop's employee → transferable: once the number is proved (token
+  below), the add (7.1, MPIN path) or number change (7.4) moves it here. The
+  `business_users` record is copied whole into `released_logins` and deleted
+  (its sessions end at the next refresh); another shop's Employee is switched
+  off (`isActive:false`) and its EMP record archived the same way. Their
+  business, invoices, scans, wallet, licence and every other collection are
+  untouched; if the write then fails, everything moved is put back. Each move
+  logs one `[EMPLOYEE_TRANSFER]` line (ids only).
+  `node scripts/restore_released_login.js <releasedLoginId>` puts one back
+  (refused while the number is someone else's).
+Refused numbers write nothing. The older draft/password path (7.1) never
+moves anyone: any number held by anyone is `409 PHONE_ALREADY_REGISTERED`
+there.
 
 An employee's number is proved by OTP before it is written: adding someone,
 and moving an employee to a new number, carry the `phoneVerificationToken`
@@ -312,13 +328,13 @@ number or shop → `403 { success:false, error:'EMPLOYEE_PHONE_NOT_VERIFIED', me
 - Older builds: no mpin/password stores the 1-hour Redis draft (no token needed); `{ password }` finishes it (body fields win over the draft) and needs the token like the MPIN path.
 7.2 GET /api/v1/employees
 - OWNER: the roster; EMP: only themselves. Each item adds `hasMpin`; never a hash.
-7.3 GET /api/v1/employees/check-phone?phone= (OWNER) → `{ available }`
-7.3a POST /api/v1/employees/phone-otp (OWNER) `{ phone }` → `{ phone, expiresInSeconds:600, resendAfterSeconds:30 }`
-- Texts a 6-digit code (MSG91, flow `EMPLOYEE_PHONE`, stored against the owner's business). A taken number → `409 PHONE_ALREADY_REGISTERED`, nothing sent; MSG91 failing → `502 OTP_SEND_FAILED`; 10 sends an hour per number for each shop → `429`.
+7.3 GET /api/v1/employees/check-phone?phone= (OWNER) → `{ available:true }` free; `{ available:true, transfer:{ kind:'owner'|'employee', sameShop } }` transferable (`owner` when both); `{ available:false, reason:'OWN_NUMBER' }`; otherwise `{ available:false }`. Moves nothing.
+7.3a POST /api/v1/employees/phone-otp (OWNER) `{ phone, employeeId? }` → `{ phone, expiresInSeconds:600, resendAfterSeconds:30, transfer? }`
+- Texts a 6-digit code (MSG91, flow `EMPLOYEE_PHONE`, stored against the owner's business). The employee limit is checked first (`403 TRIAL_REQUIRED_FOR_MORE_EMPLOYEES`); a transferable number is texted and the answer carries `transfer` as 7.3 does; own number → `409 OWN_NUMBER`, a SUPER's or this shop's employee's → `409 PHONE_ALREADY_REGISTERED`, nothing sent; MSG91 failing → `502 OTP_SEND_FAILED`; 10 sends an hour per number for each shop → `429`.
 7.3b POST /api/v1/employees/phone-otp/verify (OWNER) `{ phone, otp }` → `{ phoneVerificationToken, expiresInSeconds:1800 }`
 - Only the latest code this shop sent to the number counts, once. `400` with `OTP_INVALID` | `OTP_EXPIRED` | `OTP_NOT_FOUND` | `OTP_ALREADY_USED`; 15 checks an hour per number for each shop → `429`.
 7.4 PUT /api/v1/employees/:id (OWNER)
-- `{ name?, phone?, email?, designation?, permissions?, isActive?, phoneVerificationToken? }`; a new phone needs the token for the new number, and is re-checked excluding the employee, and so is the current one when `isActive:true` switches a switched-off employee back on (a switched-off employee holds no number). Taken → `409 PHONE_ALREADY_REGISTERED`, nothing written. The same number, however written (an old record's `0XXXXXXXXXX` included), needs no token.
+- `{ name?, phone?, email?, designation?, permissions?, isActive?, phoneVerificationToken? }`; a new phone needs the token for the new number, and is re-checked excluding the employee, and so is the current one when `isActive:true` switches a switched-off employee back on (a switched-off employee holds no number). A new number is classified as above (transferable → moved here); taken → `409 PHONE_ALREADY_REGISTERED` (own number → `409 OWN_NUMBER`), nothing written. Switching back on never moves anyone. The same number, however written (an old record's `0XXXXXXXXXX` included), needs no token.
 7.5 PUT /api/v1/employees/:id/mpin (OWNER) `{ mpin, confirmMpin }` → `{ success:true }`
 7.6 GET /api/v1/employees/:id/mpin (OWNER) → `{ mpin: '1234' | null }` from the sealed copy
 7.7 DELETE /api/v1/employees/:id (OWNER) — also deletes the sign-in record.
