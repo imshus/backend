@@ -351,7 +351,7 @@ function itemLabourOf(itemRow) {
  * Rules 3: wastage is the shop's percent of the net or the gross weight
  * (wastageWeightBasis, the Wastage tile's Weight Used; net when not sent)
  * priced at the current gold rate the Gold tile shows, the 24K rate after
- * the piece's purity, and that build's invoice bills the wastage grams at
+ * the piece's purity, and that build's invoice prices the wastage line from
  * that rate. Rules 1 and 2 keep the net weight at the 24K rate: their
  * invoices print the 24K rate on the wastage line, so pricing them by rules
  * 3 would bill a wastage line that is not the MRP's.

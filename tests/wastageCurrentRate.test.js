@@ -8,9 +8,11 @@
  *
  * 22K (91.6%) at 1,50,000 a 10 g is 13,740 a gram, so 8% of a 10 g net
  * weight is 0.8 g x 13,740 = 10,992 and of a 10.5 g gross weight 0.84 g x
- * 13,740 = 11,541.60. The amount is in the MRP and the invoice bills the
- * same grams at the same rate. Builds on rules 1 and 2 keep the net weight
- * at the 24K rate, which their invoices print.
+ * 13,740 = 11,541.60. The amount is in the MRP, and the invoice's wastage
+ * line bills it: the grams to the milligram, at that rate where they come
+ * to the line's rupees, else at the price that does, with no discount
+ * either way. Builds on rules 1 and 2 keep the net weight at the 24K rate,
+ * which their invoices print.
  *
  * pricingMath, the controller, computeMrp and deriveInputFromReading are the
  * real ones; the database and the live rates are stood in for.
@@ -171,7 +173,7 @@ const expectWastage = (result, { basis, grams, rate, amount }, label) => {
   near(got.grams, grams, `${label}: grams`);
   near(got.rate, rate, `${label}: rate per gram`);
   near(got.amount, amount, `${label}: amount`);
-  // The invoice bills these grams at this rate: the two come to the amount.
+  // The grams at the rate they were priced at are the amount.
   near(got.grams * got.rate, got.amount, `${label}: grams x rate`);
 };
 
@@ -404,35 +406,92 @@ test('the analysis prices rules 3 as the card opens (net) and rules 2 as before'
 
 // ── The invoice ──────────────────────────────────────────────────────────
 
-test('the invoice\'s wastage line, grams at the breakdown\'s rate, bills the MRP with no discount', async () => {
+/**
+ * The gold and wastage lines of the invoice request the rules-3 app sends
+ * for a price (utils/moneyMath.ts buildInvoiceLines, invoice-sheet.tsx):
+ * grams to the milligram, and whole rupees that add up to the MRP to the
+ * rupee. The rupees and the wastage prices below are the ones the app's
+ * own buildInvoiceLines gives for these scans.
+ */
+const appInvoiceLines = ({ goldGrams, goldRupees, wastageGrams, wastagePrice, wastageRupees }) => [
+  { description: 'Gold (in grams)', qty: goldGrams, qty_unit: 'Gms.', hsn: '71131913', price: 13740, amount: goldRupees },
+  { description: 'Wastage (in grams)', qty: wastageGrams, qty_unit: 'Gms.', hsn: '71131913', price: wastagePrice, amount: wastageRupees },
+];
+const invoiceOf = (lineItems) => computeInvoiceFigures({ lineItems, gstRate: 3, intraState: true });
+const withWastagePrice = (lines, price) => lines.map((line, i) => (i === 1 ? { ...line, price } : line));
+
+test('the invoice\'s wastage line on whole milligrams prints the current gold rate and bills the MRP', async () => {
   resetState();
   const data = await priced({ ...PIECE, wastagePercent: 8, wastageWeightBasis: 'gross' }, 3);
   const b = data.breakdown;
-  const goldLine = {
-    description: 'Gold (in grams)', qty: b.netWeightUsed, qty_unit: 'Gms.', hsn: '71131913',
-    price: b.goldAmount / b.netWeightUsed, amount: roundHalfUp(b.goldAmount, 2),
-  };
-  const wastageLine = {
-    description: 'Wastage', qty: roundHalfUp(b.wastageWeightGrams, 3), qty_unit: 'Gms.', hsn: '71131913',
-    price: b.wastageRatePerGram, amount: roundHalfUp(b.wastageAmount, 2),
-  };
-  const figures = computeInvoiceFigures({ lineItems: [goldLine, wastageLine], gstRate: 3, intraState: true });
+  // 0.84 g is whole milligrams, and 0.84 g at 13,740 (11,541.60) rounds to
+  // the 11,542 the line bills (the MRP's 1,48,941.60 to the rupee), so the
+  // app prints the rate itself.
+  const rate = roundHalfUp(b.wastageRatePerGram, 2);
+  assert.equal(rate, 13740);
+  assert.equal(roundHalfUp(b.wastageWeightGrams, 3), 0.84);
+  assert.equal(roundHalfUp(0.84 * rate), 11542);
+  assert.equal(data.finalMRPRounded, 137400 + 11542);
+
+  const lines = appInvoiceLines({ goldGrams: 10, goldRupees: 137400, wastageGrams: 0.84, wastagePrice: rate, wastageRupees: 11542 });
+  const figures = invoiceOf(lines);
   const wastage = figures.lines[1];
   assert.equal(wastage.kind, 'wastage');
   assert.equal(wastage.uqc, 'GMS');
   assert.equal(wastage.qty, 0.84);
-  assert.equal(wastage.amountPaise, 1154160);
+  assert.equal(wastage.price, 13740, 'the rate printed');
+  assert.equal(wastage.amountPaise, 1154200);
   assert.equal(wastage.discountPaise, 0, 'no discount registered');
-  assert.equal(wastage.unitPrice, 13740);
+  // The e-invoice registers the rupees billed over the grams: the 40 paise
+  // the line's rounding added sit in its unit price, not in a discount.
+  assert.equal(wastage.unitPrice, 13740.476);
   // The subtotal is the MRP the card quoted.
-  assert.equal(figures.subtotalPaise, 13740000 + 1154160);
-  assert.equal(Math.round(figures.subtotalPaise / 100), data.finalMRPRounded);
+  assert.equal(figures.subtotalPaise, data.finalMRPRounded * 100);
 
   // Printed at the 24K rate (as the builds before rules 3 print it), the
-  // same amount would register as 1,058.40 of discount: why the rate is in
-  // the breakdown.
-  const at24k = computeInvoiceFigures({
-    lineItems: [goldLine, { ...wastageLine, price: b.goldRateApplied }], gstRate: 3, intraState: true,
+  // same line would register 0.84 g x 15,000 less 11,542 = 1,058 of
+  // discount: why the rate is in the breakdown.
+  assert.equal(invoiceOf(withWastagePrice(lines, b.goldRateApplied)).lines[1].discountPaise, 105800);
+});
+
+test('wastage grams finer than a milligram: the line prints the price that bills its rupees, never a discount', async () => {
+  resetState();
+  const plain = { jewelleryType: 'GOLD', purityKarat: '22K', calculationMode: 'rtgs', wastagePercent: 8 };
+
+  // 8% of 8.765 g is 0.7012 g, 9,634.49 at 13,740. The invoice prints
+  // 0.701 g, and 0.701 g at 13,740 is 9,631.74, not the 9,635 the line
+  // bills (the MRP's 1,30,065.59 to the rupee), so the rate cannot print:
+  // the app prints 13,744.65, which does come to it.
+  const down = await priced({ ...plain, netWt: 8.765 }, 3);
+  expectWastage(down, { basis: 'net', grams: 0.7012, rate: 13740, amount: 9634.488 }, '8.765 g');
+  assert.equal(down.finalMRPRounded, 120431 + 9635);
+  assert.equal(roundHalfUp(0.701 * down.breakdown.wastageRatePerGram), 9632);
+  const downLines = appInvoiceLines({
+    goldGrams: 8.765, goldRupees: 120431, wastageGrams: 0.701, wastagePrice: 13744.65, wastageRupees: 9635,
   });
-  assert.equal(at24k.lines[1].discountPaise, 105840);
+  const downFigures = invoiceOf(downLines);
+  assert.equal(downFigures.lines[1].qty, 0.701);
+  assert.equal(downFigures.lines[1].discountPaise, 0);
+  assert.equal(downFigures.lines[1].unitPrice, 13744.65);
+  assert.equal(downFigures.subtotalPaise, down.finalMRPRounded * 100);
+  // At the rate the printed line would come to 3.26 under its amount: no
+  // discount, but Qty x Price would not be the Amount printed.
+  assert.equal(invoiceOf(withWastagePrice(downLines, 13740)).lines[1].discountPaise, 0);
+
+  // 8% of 8.769 g is 0.70152 g, printed as 0.702 g. At 13,740 that is
+  // 9,645.48, more than the 9,639 billed: printed at the rate, the line
+  // would register 6.48 of discount. The app prints 13,730.61 and there is
+  // none.
+  const up = await priced({ ...plain, netWt: 8.769 }, 3);
+  expectWastage(up, { basis: 'net', grams: 0.70152, rate: 13740, amount: 9638.8848 }, '8.769 g');
+  assert.equal(up.finalMRPRounded, 120486 + 9639);
+  const upLines = appInvoiceLines({
+    goldGrams: 8.769, goldRupees: 120486, wastageGrams: 0.702, wastagePrice: 13730.61, wastageRupees: 9639,
+  });
+  const upFigures = invoiceOf(upLines);
+  assert.equal(upFigures.lines[1].qty, 0.702);
+  assert.equal(upFigures.lines[1].discountPaise, 0);
+  assert.equal(upFigures.lines[1].unitPrice, 13730.769);
+  assert.equal(upFigures.subtotalPaise, up.finalMRPRounded * 100);
+  assert.equal(invoiceOf(withWastagePrice(upLines, 13740)).lines[1].discountPaise, 648);
 });

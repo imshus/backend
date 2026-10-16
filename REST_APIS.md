@@ -109,6 +109,9 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
 - Description: Trigger AI processing (OpenAI/Gemini) for the uploaded images; updates scan state.
 - Also prices the reading (`pricing`, `pricingInput`, `pricingError`) from the
   inputs the asking build's card will send, by its `X-Pricing-Rules` (see 2.9).
+  Under rules 3 the card opens with its Wastage tile on the net weight, so
+  `pricingInput` carries `wastageWeightBasis: "net"` and the wastage is priced
+  on the net weight at the current gold rate.
 
 2.5 GET /api/v1/scans/:scanId/clarification
 - Auth: optional
@@ -135,10 +138,15 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
 - Auth: JWT required (`authenticateJWT`)
 - Controller: `calculationController.calculateMRP`
 - Description: Calculate final MRP using scan + rates (protected route for pricing/calculation).
-- Header `X-Pricing-Rules`: `2` from the app from 1.0.367 (prefix item match,
-  item wastage and labour, stone units, percent labour). No header (builds up
-  to 1.0.366): the Masters item is the one whose code is exactly `itemCode`
-  and its labour is not charged, as those builds invoice.
+- Header `X-Pricing-Rules`: `3` from the app build whose Wastage tile chooses
+  the weight: everything in rules 2, and wastage priced at the current gold
+  rate on the net or the gross weight (`wastageWeightBasis`, below). `2` from
+  the app from 1.0.367 (prefix item match, item wastage and labour, stone
+  units, percent labour). A number above 3 is priced by rules 3. No header,
+  or `1` (builds up to 1.0.366): the Masters item is the one whose code is
+  exactly `itemCode` and its labour is not charged, as those builds invoice.
+  Rules 1 and 2 price wastage as they always did: the net weight at the 24K
+  rate, the rate their invoices print on the wastage line.
 - Body (all optional; figures as numbers or numeric text):
   - `netWt`, `grossWt` (grams, 0-1,00,000). A net weight of 0 with a gross
     weight is worked out as gross less 0.2 g per stone carat (never below 0);
@@ -152,7 +160,7 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
     "Percent" (a percent of the gold value; "12%" in the amount means the
     same). Text around a figure ("MC 850") is read as its first number;
     text with no number ("NIL") is no amount. Without an amount: the matched
-    Masters item's labour in its `labourUnit` (rules 2 only), else the
+    Masters item's labour in its `labourUnit` (from rules 2), else the
     shop's labour charge (AMOUNT per its unit, or PERCENTAGE of the gold
     value). `labourWeightBasis` "net" | "gross", default the basis the
     shop's labour charge was saved with.
@@ -161,8 +169,36 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
     the app does: exact, then ignoring case/punctuation, then the longest
     saved code (2+ characters) the tag number starts with, followed by
     digits (GR10286 is item GR).
+  - `wastageWeightBasis`: "net" | "gross" (any case; blank or absent is
+    net), the Wastage tile's Weight Used: the weight `wastagePercent` (or
+    the matched item's wastage) is a share of. "gross" falls back to the net
+    weight when there is no gross weight. Rules 3 prices by it; rules 1 and
+    2 always use the net weight. Any other value is a 400 on every rules
+    version.
+- Wastage under rules 3: `wastagePercent / 100 x weight x current gold rate
+  per gram`, where the current gold rate is the one the Gold tile shows: the
+  selected 24K rate (cash or RTGS) per 10 g / 10 x the effective purity (the
+  custom purity, else the karat's). 8% of 10 g of 22K (91.6%) at 1,50,000 a
+  10 g is 0.8 g x 13,740 = 10,992. The amount is part of the MRP.
 - Response `data`: `{ breakdown, finalMRP, finalMRPRounded }`; `finalMRPRounded`
   is the MRP to the rupee, commercial half-up (2,59,020.50 is 2,59,021).
+  The breakdown's wastage fields:
+  - `wastagePercent`;
+  - `wastageWeightBasis`: "net" | "gross", the weight actually used ("gross"
+    only under rules 3, asked for, and with a gross weight);
+  - `wastageWeightGrams`: that weight x the percent / 100, not rounded
+    (8% of 8.765 g is 0.7012 g);
+  - `wastageRatePerGram`: the rate a gram of wastage was priced at (rules 3:
+    the current gold rate per gram; rules 1-2: the 24K rate per gram);
+  - `wastageAmount`: `wastageWeightGrams x wastageRatePerGram`.
+- The invoice's wastage line (4.1) bills `wastageWeightGrams`, printed to the
+  milligram, at `wastageRatePerGram`, and its amount is the MRP's wastage in
+  whole rupees. The rate prints where the printed grams at it come to that
+  amount (0.8 g at 13,740); otherwise the line prints the price that does
+  (0.7012 g, 9,634.49, billed as 0.701 g at 13,744.65 for 9,635). Printing
+  the rate on grams rounded up, or the 24K rate on a rules-3 price, makes
+  Qty x Price more than the amount, and the e-invoice registers a gap over a
+  rupee as a discount (1,058 on 0.84 g at 15,000 billed as 11,542).
 - Errors: 400 `INVALID_PRICING_INPUT` naming the field (wrong type, negative,
   out of range); 503 `RATES_UNAVAILABLE` when there is no live gold rate (no
   board MCX and no stored MCX). The analyze response carries the same as

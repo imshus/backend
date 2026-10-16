@@ -173,8 +173,12 @@ function computePricing(inputs) {
       wastageCode,
       wastagePercent: resolvedWastagePercent,
       // The weight the percent was taken of, and the rate a gram of wastage
-      // was priced at: the invoice bills wastageWeightGrams at this rate, so
-      // its wastage line comes to wastageAmount.
+      // was priced at: wastageWeightGrams x wastageRatePerGram is
+      // wastageAmount. The grams are not rounded (8% of 8.765 g is
+      // 0.7012 g), while the invoice prints them to the milligram and bills
+      // whole rupees, so its wastage line prints this rate only where the
+      // printed grams at it come to the rupees billed; elsewhere it prints
+      // the price that does (see invoice.controller).
       wastageWeightBasis,
       wastageWeightGrams,
       wastageRatePerGram,

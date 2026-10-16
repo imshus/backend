@@ -219,11 +219,17 @@ const resolveBusinessIdFromUser = async (user) => {
  * A wastage line ({ description: 'Wastage', qty: <wastage grams>,
  * qty_unit: 'Gms.', price: <rate per gram>, amount }) bills like the gold
  * line: HSN 7113 at 3%, registered in grams (GMS), so the subtotal comes to
- * the MRP the scanner quoted. The grams and the rate are the price's own
+ * the MRP the scanner quoted. The grams and the rate come from the price
  * (breakdown wastageWeightGrams and wastageRatePerGram): from pricing rules
  * 3 the current gold rate, the 24K rate after the piece's purity; before
- * them the 24K rate. So qty x price is the line's amount, and the e-invoice
- * registers no discount on it.
+ * them the 24K rate. The amount is the MRP's wastage in whole rupees and the
+ * grams are registered to the milligram, so the rate itself prints only
+ * where the printed grams at it come to that amount (0.8 g at 13,740 is
+ * 10,992). Elsewhere the app prints the price that does: 8% of 8.765 g is
+ * 0.7012 g and 9,634.49 at 13,740, billed as 0.701 g at 13,744.65 for
+ * 9,635. The rate on grams rounded up (0.70152 g printed as 0.702 g) would
+ * come to 6.48 more than the amount, and a gap over a rupee registers as a
+ * discount.
  */
 /**
  * Builds the payload the invoice template renders.
