@@ -217,9 +217,13 @@ const resolveBusinessIdFromUser = async (user) => {
  * is not used.
  *
  * A wastage line ({ description: 'Wastage', qty: <wastage grams>,
- * qty_unit: 'Gms.', price: <24K rate per gram>, amount }) bills like the
- * gold line: HSN 7113 at 3%, registered in grams (GMS), so the subtotal
- * comes to the MRP the scanner quoted.
+ * qty_unit: 'Gms.', price: <rate per gram>, amount }) bills like the gold
+ * line: HSN 7113 at 3%, registered in grams (GMS), so the subtotal comes to
+ * the MRP the scanner quoted. The grams and the rate are the price's own
+ * (breakdown wastageWeightGrams and wastageRatePerGram): from pricing rules
+ * 3 the current gold rate, the 24K rate after the piece's purity; before
+ * them the 24K rate. So qty x price is the line's amount, and the e-invoice
+ * registers no discount on it.
  */
 /**
  * Builds the payload the invoice template renders.

@@ -9,9 +9,10 @@ const { toSessionContext } = require('../utils/scanAccess');
  * holds right now. The arithmetic lives in mrpCalculation.service, shared
  * with the analysis, which prices a fresh reading the moment it lands.
  *
- * Priced by the rules the asking build bills with (X-Pricing-Rules: 2 from
- * 1.0.367; none from the builds before it), so the MRP a card quotes is the
- * one its invoice bills.
+ * Priced by the rules the asking build bills with (X-Pricing-Rules: 3 from
+ * the build that prices wastage at the current gold rate, 2 from 1.0.367;
+ * none from the builds before it), so the MRP a card quotes is the one its
+ * invoice bills.
  */
 const calculateMRP = async (req, res, next) => {
   try {

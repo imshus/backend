@@ -1,9 +1,9 @@
 /**
  * The follow-up findings on the October 2026 pricing fixes: the price the
  * analysis makes first, the price the card asks for (/calculate with the
- * body the app really sends) and so the invoice must be one figure, for the
- * current app (X-Pricing-Rules: 2, 1.0.367) and for the builds already in
- * shops (no header, rules 1).
+ * body the app really sends) and so the invoice must be one figure, for
+ * 1.0.367 (X-Pricing-Rules: 2) and for the builds already in shops (no
+ * header, rules 1). Rules 3's wastage is in tests/wastageCurrentRate.test.js.
  *
  * `appPayload` is pricingPrefetch.derivePricingInput's body after
  * processing.tsx: what the card sends, not a hand-built body. The
@@ -194,9 +194,14 @@ const GR10286 = { serialNumber: field('GR10286'), netWeight: field('10'), grossW
 
 // ── Which build is asking ────────────────────────────────────────────────
 
-test('the pricing rules come from X-Pricing-Rules: 2 from the current app, 1 from builds that send none', () => {
+test('the pricing rules come from X-Pricing-Rules: 3 and 2 as sent, 1 from builds that send none', () => {
   assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '2' } }), 2);
-  assert.equal(pricingRulesOf({ get: (name) => (name === 'x-pricing-rules' ? '3' : undefined) }), 2);
+  assert.equal(pricingRulesOf({ get: (name) => (name === 'x-pricing-rules' ? '3' : undefined) }), 3);
+  // A build newer than the server gets the newest rules it knows; 1.0.367
+  // keeps rules 2 now that the current rules are 3.
+  assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '9' } }), 3);
+  assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '1' } }), 1);
+  assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '0' } }), 1);
   assert.equal(pricingRulesOf({ headers: {} }), 1);
   assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': 'abc' } }), 1);
   assert.equal(pricingRulesOf(undefined), 1);

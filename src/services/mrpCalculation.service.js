@@ -26,7 +26,8 @@ const {
   itemLabourOf,
   appLabourFields,
   legacyAppColorstoneRate,
-  CURRENT_PRICING_RULES,
+  ITEM_PREFIX_RULES,
+  WASTAGE_AT_GOLD_RATE_RULES,
   validateCalculationInput,
 } = require('./pricingInputs');
 
@@ -152,7 +153,7 @@ function distinctIdentifiers(values) {
  *      percent of the gold value ("12%", or the unit 'Percent');
  *   2. the matched item's own labour in Masters -> Item Code, in the unit
  *      it was saved in (per gram, per 10 g, or a percent of the gold value);
- *      rules 2 only, as the builds before it never charged it;
+ *      from rules 2, as the builds before it never charged it;
  *   3. the shop's labour charge: an AMOUNT per its own unit, or a PERCENTAGE
  *      of the gold value.
  * The weight a per-gram charge runs on is the request's when it names one,
@@ -173,7 +174,7 @@ function resolveLabour({ manualLabour, labourWeightBasis, itemRow, globalLabour,
       chargeType: manualLabour.unit === LABOUR_UNIT_PERCENT ? 'PERCENTAGE_MANUAL' : 'AMOUNT_MANUAL',
     };
   }
-  const itemLabour = rules >= CURRENT_PRICING_RULES ? itemLabourOf(itemRow) : null;
+  const itemLabour = rules >= ITEM_PREFIX_RULES ? itemLabourOf(itemRow) : null;
   if (itemLabour) {
     return {
       ratePerUnit: itemLabour.amount,
@@ -331,7 +332,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   // A build on rules 1 bills no wastage line for an item it did not name
   // exactly, so there the item is the one whose code is exactly the item
   // code sent, as it always was.
-  const itemMatch = rules >= CURRENT_PRICING_RULES
+  const itemMatch = rules >= ITEM_PREFIX_RULES
     ? findItemOnTag(identifiers, itemRows)
     : findItemExactly(request.itemCode, itemRows);
   const itemRow = itemMatch?.row || null;
@@ -363,6 +364,11 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     labourUnit: labour.unit,
     labourWeightBasis: labour.basis,
     wastagePercent: wastage.percent,
+    // From rules 3 the card's Wastage tile names the weight (net unless it
+    // says gross) and wastage is priced at the current gold rate; the builds
+    // before it bill the net weight at the 24K rate, and are priced so.
+    wastageWeightBasis: request.wastageWeightBasis || 'net',
+    wastageAtCurrentGoldRate: rules >= WASTAGE_AT_GOLD_RATE_RULES,
     otherCharges: request.otherCharges,
     labourChargeType: labour.chargeType,
     wastageCode: wastage.code,
@@ -385,7 +391,9 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     labourChargeType: breakdown.labourChargeType,
     labourAmount: breakdown.labourAmount,
     wastagePercent: breakdown.wastagePercent,
+    wastageWeightBasis: breakdown.wastageWeightBasis,
     wastageWeightGrams: breakdown.wastageWeightGrams,
+    wastageRatePerGram: breakdown.wastageRatePerGram,
     wastageAmount: breakdown.wastageAmount,
     otherChargesAmount: breakdown.otherCharges,
     subtotal: breakdown.subtotal,
@@ -457,21 +465,23 @@ const stoneWeightOf = (stone) => {
  *   - the karat from the karat field, the purity (tunch) or a fineness;
  *   - diamond rates from the account's own table (or the shop's), a stone's
  *     packet code first, else its printed rate;
- *   - rules 2: stone weights in their printed unit; a colour stone's rate
- *     from its packet's row, else its colour and clarity's (non-packet) row,
- *     else its printed rate;
+ *   - rules 2 and 3: stone weights in their printed unit; a colour stone's
+ *     rate from its packet's row, else its colour and clarity's (non-packet)
+ *     row, else its printed rate;
  *   - rules 1 (builds up to 1.0.366): stone weights in carats, which is all
  *     they send; a colour stone's rate from the first row with its colour
  *     and clarity, a miss clearing the printed rate, as those cards do;
  *   - the labour the card starts with (pricingInputs appLabourFields): the
- *     tag's, else (rules 2) the item's, else the shop's charge;
+ *     tag's, else (rules 2 and 3) the item's, else the shop's charge;
+ *   - rules 3: wastage on the net weight, the Wastage tile's Weight Used as
+ *     the card opens;
  *   - the item code and every identifier on the tag, for the Masters item
  *     and wastage code; the mode from the scan session.
  */
 async function deriveInputFromReading({ user, structuredData, scan, prefetched = null, rules = 1 }) {
   const data = structuredData || {};
   const scope = settingsScope(user);
-  const currentRules = rules >= CURRENT_PRICING_RULES;
+  const currentRules = rules >= ITEM_PREFIX_RULES;
   const serialNumber = stoneField(data, 'serialNumber');
   const tagIdentifiers = tagIdentifiersOf({
     structuredData: data,
@@ -550,6 +560,7 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
     diamonds,
     colorstones,
     ...labourFields,
+    ...(rules >= WASTAGE_AT_GOLD_RATE_RULES ? { wastageWeightBasis: 'net' } : {}),
     otherCharges: readFigure(stoneField(data, 'otherCharges')),
     ...(serialNumber ? { itemCode: serialNumber } : {}),
     // So the price worked out with the reading finds the Masters item and

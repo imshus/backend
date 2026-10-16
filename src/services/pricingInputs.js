@@ -345,11 +345,21 @@ function itemLabourOf(itemRow) {
 
 /**
  * The header an app build sends to say which pricing rules it prices and
- * bills with. Builds up to 1.0.366 send none (rules 1); 1.0.367 sends 2.
+ * bills with. Builds up to 1.0.366 send none (rules 1); 1.0.367 sends 2;
+ * the build whose Wastage tile chooses the weight sends 3.
  *
- * Rules 2: the Masters item is found from the tag number by prefix (GR10286
- * is item GR) and its wastage and labour are charged; the app sends each
- * stone's unit, a tag's "12%" labour as a percent, and the item's labour.
+ * Rules 3: wastage is the shop's percent of the net or the gross weight
+ * (wastageWeightBasis, the Wastage tile's Weight Used; net when not sent)
+ * priced at the current gold rate the Gold tile shows, the 24K rate after
+ * the piece's purity, and that build's invoice bills the wastage grams at
+ * that rate. Rules 1 and 2 keep the net weight at the 24K rate: their
+ * invoices print the 24K rate on the wastage line, so pricing them by rules
+ * 3 would bill a wastage line that is not the MRP's.
+ *
+ * Rules 2 (and 3): the Masters item is found from the tag number by prefix
+ * (GR10286 is item GR) and its wastage and labour are charged; the app
+ * sends each stone's unit, a tag's "12%" labour as a percent, and the
+ * item's labour.
  * Rules 1 (the builds already in shops): the item is found by its exact
  * code only and its labour is not charged, as before. Those builds bill no
  * wastage line (1.0.360-1.0.364) and never send a unit or percent labour,
@@ -357,14 +367,26 @@ function itemLabourOf(itemRow) {
  * the card quoted.
  */
 const PRICING_RULES_HEADER = 'x-pricing-rules';
-const CURRENT_PRICING_RULES = 2;
+/** The rules from which the Masters item is found by prefix and its labour charged. */
+const ITEM_PREFIX_RULES = 2;
+/** The rules from which wastage is priced at the current gold rate, on the weight the card names. */
+const WASTAGE_AT_GOLD_RATE_RULES = 3;
+const CURRENT_PRICING_RULES = 3;
 
+/**
+ * The rules the asking build prices by: 1 when it sends no header (or one
+ * that is no number); a build newer than this server gets the newest rules
+ * the server knows. Each comparison is against the rules a change came in
+ * with (ITEM_PREFIX_RULES, WASTAGE_AT_GOLD_RATE_RULES), never against the
+ * current rules, so a build on rules 2 keeps rules 2 when they move on.
+ */
 function pricingRulesOf(req) {
   const raw = typeof req?.get === 'function'
     ? req.get(PRICING_RULES_HEADER)
     : req?.headers?.[PRICING_RULES_HEADER];
   const rules = Number.parseInt(String(raw ?? ''), 10);
-  return Number.isFinite(rules) && rules >= CURRENT_PRICING_RULES ? CURRENT_PRICING_RULES : 1;
+  if (!Number.isFinite(rules) || rules < ITEM_PREFIX_RULES) return 1;
+  return Math.min(rules, CURRENT_PRICING_RULES);
 }
 
 // ── What the app's card starts with, per build ───────────────────────────
@@ -423,10 +445,10 @@ function legacyAppTagLabour(raw) {
  * The labour fields the app's review card starts a reading with, and so
  * sends with its first price (processing.tsx), for the build that asks:
  *
- *   rules 2 (1.0.367): the tag's labour (parseTagLabour: "12%" a percent of
- *     the gold value) on the net weight; else the Masters item's labour in
- *     its unit; else the shop's charge, AMOUNT per its unit or PERCENTAGE as
- *     a percent; the shop's weight basis for both of those;
+ *   rules 2 and 3 (1.0.367 on): the tag's labour (parseTagLabour: "12%" a
+ *     percent of the gold value) on the net weight; else the Masters item's
+ *     labour in its unit; else the shop's charge, AMOUNT per its unit or
+ *     PERCENTAGE as a percent; the shop's weight basis for both of those;
  *   rules 1 (up to 1.0.366): the tag's labour as those builds read it (no
  *     percent); else the shop's AMOUNT charge with its unit and basis; a
  *     PERCENTAGE charge is left to the server (sent blank).
@@ -436,7 +458,7 @@ function legacyAppTagLabour(raw) {
  */
 function appLabourFields({ tagLabour, itemRow, labourDoc, rules }) {
   const shop = shopLabourAsApp(labourDoc);
-  if (rules >= CURRENT_PRICING_RULES) {
+  if (rules >= ITEM_PREFIX_RULES) {
     const fromTag = parseTagLabour(tagLabour);
     if (fromTag) {
       return {
@@ -608,6 +630,7 @@ function validateCalculationInput(input) {
     manualLabour: null,
     labourWeightBasis: null,
     wastagePercent: undefined,
+    wastageWeightBasis: null,
     otherCharges: bodyNumber(body.otherCharges, 'otherCharges', MAX_AMOUNT),
     calculationMode: undefined,
     itemCode: '',
@@ -635,6 +658,13 @@ function validateCalculationInput(input) {
 
   if (!isBlank(body.wastagePercent)) {
     out.wastagePercent = bodyNumber(body.wastagePercent, 'wastagePercent', 100);
+  }
+  // The weight the Wastage tile takes the percent of. Only rules 3 prices
+  // by it, but a figure no build sends is refused for every build alike.
+  if (!isBlank(body.wastageWeightBasis)) {
+    const basis = typeof body.wastageWeightBasis === 'string' ? body.wastageWeightBasis.trim().toLowerCase() : '';
+    if (basis !== 'net' && basis !== 'gross') throw invalidPricingInput('wastageWeightBasis must be "net" or "gross"');
+    out.wastageWeightBasis = basis;
   }
 
   if (!isBlank(body.calculationMode)) {
@@ -679,6 +709,8 @@ module.exports = {
   ITEM_LABOUR_UNITS,
   itemLabourOf,
   PRICING_RULES_HEADER,
+  ITEM_PREFIX_RULES,
+  WASTAGE_AT_GOLD_RATE_RULES,
   CURRENT_PRICING_RULES,
   pricingRulesOf,
   appLabourFields,

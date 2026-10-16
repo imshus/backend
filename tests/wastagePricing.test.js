@@ -6,14 +6,16 @@ const { aggregateJewelleryMrp } = require('../src/services/pricingAggregation.se
 /**
  * Wastage: the metal the making consumes, charged as gold.
  *
- * It runs on the NET weight — the stones in a piece are not gold, and nothing
- * is lost off them — and at the 24K rate, the same rate the gold line itself
- * is priced at.
+ * For the builds on pricing rules 1 and 2 it runs on the NET weight at the
+ * 24K rate, the rate their invoices print on the wastage line; these figures
+ * are theirs. From rules 3 the card's Wastage tile chooses net or gross and
+ * the rate is the current gold rate (the 24K rate after purity): those are
+ * in tests/wastageCurrentRate.test.js.
  *
  * The design's worked example bills the same 8% against the gross weight
- * (18.500 g at ₹3,790 comes to its printed ₹5,609). The shop asked for net,
- * so net is what is charged, and the gross figure is kept in a test below to
- * make the difference visible rather than something to rediscover later.
+ * (18.500 g at ₹3,790 comes to its printed ₹5,609). Rules 1 and 2 charge
+ * net, and the gross figure is kept in a test below to make the difference
+ * visible rather than something to rediscover later.
  */
 
 const GROSS_WT = 18.5;
@@ -24,12 +26,12 @@ const GOLD_RATE_PER_GRAM = 3790;
 const wastageAmountFor = (weightGrams, percent, ratePerGram) =>
   (percent > 0 ? weightGrams * (percent / 100) : 0) * ratePerGram;
 
-test('wastage is a share of the net weight priced at the 24K rate', () => {
+test('rules 1-2: wastage is a share of the net weight priced at the 24K rate', () => {
   const amount = wastageAmountFor(NET_WT, WASTAGE_PERCENT, GOLD_RATE_PER_GRAM);
   assert.equal(Math.round(amount), 5124);
 });
 
-test('charging it on the gross weight would bill more, and does not', () => {
+test('rules 1-2: charging it on the gross weight would bill more, and they do not', () => {
   const onGross = wastageAmountFor(GROSS_WT, WASTAGE_PERCENT, GOLD_RATE_PER_GRAM);
   assert.equal(Math.round(onGross), 5609);
   assert.ok(onGross > wastageAmountFor(NET_WT, WASTAGE_PERCENT, GOLD_RATE_PER_GRAM));

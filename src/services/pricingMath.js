@@ -23,6 +23,14 @@ const { roundHalfUp } = require('../utils/money');
  *                              unit is per gram
  *   labourWeightBasis          'gross' or 'net'
  *   wastagePercent
+ *   wastageWeightBasis         'gross' or 'net': the weight wastagePercent is
+ *                              a share of (gross falls back to net when no
+ *                              gross weight is known); read only with
+ *                              wastageAtCurrentGoldRate, net otherwise
+ *   wastageAtCurrentGoldRate   true (pricing rules 3): wastage is priced at
+ *                              the current gold rate, the 24K rate after the
+ *                              piece's purity; false (rules 1-2): on the net
+ *                              weight at the 24K rate, as those builds bill it
  *   otherCharges
  *   labourChargeType, wastageCode   carried into the breakdown as they are
  *
@@ -49,6 +57,8 @@ function computePricing(inputs) {
     labourUnit,
     labourWeightBasis,
     wastagePercent: resolvedWastagePercent,
+    wastageWeightBasis: requestedWastageBasis,
+    wastageAtCurrentGoldRate = false,
     otherCharges: otherChargesAmount,
     labourChargeType,
     wastageCode,
@@ -124,13 +134,21 @@ function computePricing(inputs) {
     }
   }
 
-  // Wastage: the metal the making consumes, charged as gold. It is a share of
-  // the metal in the piece, so it runs on the NET weight — the stones are not
-  // gold and nothing is lost off them — and at the 24K rate, the same rate
-  // the gold line is priced at rather than the rate after karat purity.
+  // Wastage: the metal the making consumes, charged as gold. From pricing
+  // rules 3 it is the shop's percent of the net or the gross weight (the
+  // Wastage tile's Weight Used, like the Labour tile's) at the current gold
+  // rate the Gold tile shows, the 24K rate after the piece's purity, which is
+  // how the shop works it out: 8% of 10 g of 22K at 1,50,000 a 10 g is 0.8 g
+  // at 13,740 a gram. Builds on rules 1-2 priced it on the net weight at the
+  // 24K rate, and their invoices print that rate on the wastage line, so a
+  // price for them stays as it was.
+  const wastageWeightBasis =
+    wastageAtCurrentGoldRate && requestedWastageBasis === 'gross' && numericGrossWt > 0 ? 'gross' : 'net';
+  const wastageBaseWeight = wastageWeightBasis === 'gross' ? numericGrossWt : numericNetWt;
+  const wastageRatePerGram = wastageAtCurrentGoldRate ? purityAdjustedGoldRatePerGram : selected24kGoldRatePerGram;
   const wastageWeightGrams =
-    resolvedWastagePercent > 0 ? numericNetWt * (resolvedWastagePercent / 100) : 0;
-  const wastageAmount = wastageWeightGrams * selected24kGoldRatePerGram;
+    resolvedWastagePercent > 0 ? wastageBaseWeight * (resolvedWastagePercent / 100) : 0;
+  const wastageAmount = wastageWeightGrams * wastageRatePerGram;
 
   const aggregation = aggregateJewelleryMrp({
     goldAmount,
@@ -154,7 +172,12 @@ function computePricing(inputs) {
       // the item code is never shown as a wastage code.
       wastageCode,
       wastagePercent: resolvedWastagePercent,
+      // The weight the percent was taken of, and the rate a gram of wastage
+      // was priced at: the invoice bills wastageWeightGrams at this rate, so
+      // its wastage line comes to wastageAmount.
+      wastageWeightBasis,
       wastageWeightGrams,
+      wastageRatePerGram,
       wastageAmount: aggregation.wastageAmount,
       otherCharges: aggregation.otherChargesAmount,
       subtotal: aggregation.subtotal,

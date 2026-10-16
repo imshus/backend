@@ -6,9 +6,10 @@
  * ones; the database and the live rates are stood in for.
  *
  * The rates themselves (half-up rounding, no rate without an MCX) are in
- * tests/ratesHalfUp.test.js. Requests here come from the current app
+ * tests/ratesHalfUp.test.js. Requests here come from 1.0.367
  * (X-Pricing-Rules: 2); the builds before it, and the follow-up findings,
- * are in tests/pricingFollowups.test.js.
+ * are in tests/pricingFollowups.test.js, and rules 3's wastage in
+ * tests/wastageCurrentRate.test.js.
  */
 process.env.USE_MEMORY_STORE = 'true';
 
