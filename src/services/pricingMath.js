@@ -146,8 +146,14 @@ function computePricing(inputs) {
     wastageAtCurrentGoldRate && requestedWastageBasis === 'gross' && numericGrossWt > 0 ? 'gross' : 'net';
   const wastageBaseWeight = wastageWeightBasis === 'gross' ? numericGrossWt : numericNetWt;
   const wastageRatePerGram = wastageAtCurrentGoldRate ? purityAdjustedGoldRatePerGram : selected24kGoldRatePerGram;
-  const wastageWeightGrams =
+  // From rules 3 the grams are taken to the milligram first, as the invoice
+  // prints them (the owner's call, 16 Oct 2026): 8% of 10.456 g is 0.836 g,
+  // so the wastage line prints the Current Gold Rate itself and comes to the
+  // rupee the MRP carries. Unrounded it was 0.83648 g, and the line had to
+  // print a rate a few rupees off to add up.
+  const rawWastageGrams =
     resolvedWastagePercent > 0 ? wastageBaseWeight * (resolvedWastagePercent / 100) : 0;
+  const wastageWeightGrams = wastageAtCurrentGoldRate ? roundHalfUp(rawWastageGrams, 3) : rawWastageGrams;
   const wastageAmount = wastageWeightGrams * wastageRatePerGram;
 
   const aggregation = aggregateJewelleryMrp({
@@ -174,11 +180,9 @@ function computePricing(inputs) {
       wastagePercent: resolvedWastagePercent,
       // The weight the percent was taken of, and the rate a gram of wastage
       // was priced at: wastageWeightGrams x wastageRatePerGram is
-      // wastageAmount. The grams are not rounded (8% of 8.765 g is
-      // 0.7012 g), while the invoice prints them to the milligram and bills
-      // whole rupees, so its wastage line prints this rate only where the
-      // printed grams at it come to the rupees billed; elsewhere it prints
-      // the price that does (see invoice.controller).
+      // wastageAmount. From rules 3 the grams are to the milligram, as the
+      // invoice prints them, so its wastage line prints this rate. (Rules
+      // 1-2 keep unrounded grams; see invoice.controller.)
       wastageWeightBasis,
       wastageWeightGrams,
       wastageRatePerGram,
