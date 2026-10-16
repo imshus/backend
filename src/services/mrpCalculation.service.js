@@ -476,6 +476,7 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
   const tagIdentifiers = tagIdentifiersOf({
     structuredData: data,
     unknownFields: scan?.analysisResult?.unknownFields,
+    rawText: scan?.analysisResult?.rawText,
   });
   const identifiers = distinctIdentifiers([serialNumber, ...tagIdentifiers]);
   const [diamondRows, colorstoneRows, taxSettings, labourDoc, itemRows] = await Promise.all([

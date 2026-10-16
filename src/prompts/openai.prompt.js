@@ -414,9 +414,9 @@ Partial token
 If the middle part is not a recognisable colour (for example PCEFGSI), the
 token is still split: shape and clarity are taken from the recognisable
 ends (PC and SI) and go into their fields; the middle part goes into the
-colour field exactly as printed with confidence below 70, and the whole
-token is added to unknownFields. Never leave shape, colour and clarity all
-empty because one part of the token is doubtful.
+colour field exactly as printed with confidence below 70. Never leave
+shape, colour and clarity all empty because one part of the token is
+doubtful.
 
 --------------------------------------------------
 PATTERN 2B — SEPARATOR GLYPHS ARE NEVER DIGITS
@@ -518,8 +518,8 @@ Preserve the exact detected colour and clarity values.
 
 Do NOT invent a split if the token cannot be decomposed at all. If the
 shape and clarity ends are recognisable, fill those two fields and keep the
-middle part as the colour exactly as printed with confidence below 70; add
-the whole token to unknownFields as well (see Partial token).
+middle part as the colour exactly as printed with confidence below 70 (see
+Partial token).
 
 --------------------------------------------------
 PATTERN 3 — MULTIPLE STONES
@@ -899,8 +899,6 @@ If an abbreviation is clearly a close OCR mistake of a known abbreviation,
 
 map it directly.
 
-Do NOT place corrected values into unknownFields.
-
 -------------------------
 READING ORDER
 -------------------------
@@ -971,7 +969,7 @@ Readable but slightly uncertain.
 
 Below 70
 
-Place the field in unknownFields.
+Keep the value in its field; the low confidence marks it for review.
 
 Confidence applies independently to every extracted field; it is the second element of that field's array.
 
@@ -1013,8 +1011,8 @@ ABSOLUTE RULES
    The item's number goes into structuredData.serialNumber, exactly as printed
    (letters included, e.g. GR10286). When a tag prints more than one identifier,
    choose in this order: ITEM NO, STYLE NO, DESIGN NO, ST NO, TAG NO, then
-   SR NO / S NO / SL NO. Put every other identifier (and HUID) into
-   unknownFields as { "label": "SR NO", "value": "261440" }.
+   SR NO / S NO / SL NO. Every other identifier (and HUID) stays in
+   rawText.merged with its label, exactly as printed (e.g. "SR NO 261440").
    A tag often prints its item number with NO label at all: a short group
    of letters followed by a number — "PSE 1086", "GR10286", "LR 2231" —
    usually on the first line or at the top of the tag. That line IS the
@@ -1056,9 +1054,7 @@ ABSOLUTE RULES
 
 Do NOT populate it.
 
-7. If a visible number or abbreviation cannot be confidently mapped to a known field,
-
-place it inside unknownFields.
+7. A visible number or abbreviation that maps to no field is written in rawText.merged only.
 
 8. If multiple images are provided,
 merge information from all images before deciding that a field is missing.
@@ -1079,7 +1075,7 @@ These values are provided dynamically by the backend for every scan.
 
 Use these values to recognise and format what the tag prints: matching case, spacing, punctuation and known synonyms (for example "Princess" or "PRINC" for a master shape "PC").
 
-Normalizing means writing the SAME value the way the master list spells it. A grade is never changed to a different grade: if the tag prints a colour or clarity that is not in the master list (for example the tag prints FG and the list has EF and GH), keep the printed value exactly IN ITS FIELD (for example diamonds[].color = "FG"; the field is never left empty) and ADDITIONALLY list it in unknownFields with the nearest master value as suggestedMeaning.
+Normalizing means writing the SAME value the way the master list spells it. A grade is never changed to a different grade: if the tag prints a colour or clarity that is not in the master list (for example the tag prints FG and the list has EF and GH), keep the printed value exactly IN ITS FIELD (for example diamonds[].color = "FG"; the field is never left empty).
 
 The same applies to shapes and packet codes: the printed value stays; the master list only fixes its spelling.
 
@@ -1225,7 +1221,7 @@ RD
 
 8. Never hallucinate packet codes, shapes, colors or clarities that are not visible.
 
-9. If confidence is below 70, keep the detected value and also include it in unknownFields.
+9. If confidence is below 70, keep the detected value in its field.
 
 10. Organization master data always has higher priority than the built-in dictionaries whenever both contain similar values.
 
@@ -1239,8 +1235,6 @@ the value as a string ("" when not present) and the confidence as a number (0 wh
 Do not wrap fields in objects.
 
 {
-  "provider": "openai-gpt-5.6-luna",
-
   "rawText": {
     "merged": ""
   },
@@ -1303,56 +1297,13 @@ Do not wrap fields in objects.
     ]
   },
 
-  "unknownFields": [
-    {
-      "abbreviation": "",
-      "detectedValue": "",
-      "suggestedMeaning": "",
-      "confidence": 0
-    }
-  ],
-
   "clarificationRequired": false,
 
   "overallConfidence": 0
 }
 
-==============================================================
-unknownFields RULES
-==============================================================
-
-Only include values that cannot be confidently mapped to structuredData.
-
-Do NOT duplicate information.
-
-If a value already exists in structuredData,
-remove it from unknownFields.
-
-Examples
-
-If purity = 14K
-
-↓
-
-Do NOT add standalone 14 to unknownFields.
-
-If diamond pieces = 16
-
-↓
-
-Do NOT add DR numbers again.
-
-If a field has confidence below 70,
-
-include it in unknownFields for manual review.
-
-Always set
-
-clarificationRequired = false
-
-The clarification workflow is disabled.
-
-Users will review unknown fields directly on the scanner review screen.`;
+Always set clarificationRequired = false. The clarification workflow is
+disabled: fields below 70 confidence are reviewed on the scanner review screen.`;
 
 const getUserPrompt = (jewelleryType, scanType, scannerSettings = {}) => {
   const typeContext = {

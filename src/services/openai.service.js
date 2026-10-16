@@ -456,13 +456,30 @@ const repairCompactGradeTokens = (parsedData, diamondCustoms) => {
   const shapes = new Set([...DEFAULT_DIAMOND_SHAPES, ...upper(diamondCustoms?.shapes)]);
   const colors = new Set([...DEFAULT_DIAMOND_COLORS, ...upper(diamondCustoms?.colors)]);
   const clarities = new Set([...DEFAULT_DIAMOND_CLARITIES, ...upper(diamondCustoms?.clarities)]);
+  // The tokens the reader could not place: once listed in unknownFields
+  // (readings stored before 16 Oct 2026), now looked for in the transcript,
+  // since the reader no longer writes that list. Only tokens printed in
+  // capitals, as grade codes are: an ordinary word is not split.
   const unknown = Array.isArray(parsedData.unknownFields) ? parsedData.unknownFields : [];
-  for (const entry of unknown) {
-    const token = String(entry?.detectedValue || entry?.abbreviation || '')
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '');
+  const transcript = typeof parsedData.rawText === 'string'
+    ? parsedData.rawText
+    : String(parsedData.rawText?.merged ?? '');
+  const tokens = [
+    ...unknown.map((entry) => String(entry?.detectedValue || entry?.abbreviation || '').toUpperCase()),
+    ...transcript.split(/[\s,;:|]+/).filter((word) => /^[A-Z0-9-]+$/.test(word)),
+  ];
+  // A grade another row already carries is that row's, not the empty one's.
+  const upperValue = (field) => String(field?.value ?? '').trim().toUpperCase();
+  const placed = new Set(
+    sd.diamonds
+      .filter((d) => d && hasFieldValue(d.shape) && hasFieldValue(d.clarity))
+      .map((d) => `${upperValue(d.shape)}|${upperValue(d.clarity)}`),
+  );
+  for (const rawToken of tokens) {
+    const token = rawToken.replace(/[^A-Z0-9]/g, '');
     const parsed = splitCompactGrade(token, shapes, colors, clarities);
     if (!parsed) continue;
+    if (placed.has(`${parsed.shape}|${parsed.clarity}`)) continue;
     // Only a row the reader left completely empty can be the one this token
     // belongs to, and only when it is the sole candidate: filling in the
     // first row that happens to be missing a colour put one stone's grades
@@ -472,8 +489,8 @@ const repairCompactGradeTokens = (parsedData, diamondCustoms) => {
     );
     if (candidates.length !== 1) return;
     const target = candidates[0];
-    // The token was in unknownFields because the reader could not place it,
-    // so what is recovered from it is always reviewed.
+    // The reader did not place this token itself, so what is recovered
+    // from it is always reviewed.
     target.shape = { value: parsed.shape, confidence: 70 };
     target.clarity = { value: parsed.clarity, confidence: 70 };
     target.color = { value: parsed.color, confidence: parsed.colorKnown ? 70 : 55 };
@@ -1579,6 +1596,10 @@ const analyzeImages = async (
         synthesizeStoneArrays(parsedData);
       }
 
+      // The model that read the tag, stamped here: the reader used to copy a
+      // fixed "openai-gpt-5.6-luna" from the prompt into every answer, which
+      // logs and billing records kept after the switch to gpt-6-luna.
+      parsedData.provider = `openai-${model}`;
       parsedData.billingMeta = {
         provider: 'openai',
         model,
