@@ -1,5 +1,5 @@
 const redisClient = require('../redis/redisClient');
-const { loginLookupOf } = require('../utils/phone');
+const { loginLookupOf, normalizeIndianMobile } = require('../utils/phone');
 
 const gstRateLimiter = async (req, res, next) => {
   try {
@@ -154,6 +154,26 @@ const employeePhoneCheckLimiter = perUserLimiter({
   message: 'Too many number checks this hour. Please try again later.',
 });
 
+// The code the owner has sent to an employee's phone, counted per number as
+// the sign-in codes are (same limits, same reasons), in buckets of its own so
+// adding someone never uses up their own sign-in codes. The number is read as
+// the roster stores it, so "+91 98765 43210" and "9876543210" are one bucket.
+const employeePhoneOf = (req) => normalizeIndianMobile(req.body?.phone);
+const employeeOtpSendLimiter = bodyKeyLimiter({
+  name: 'employee_otp_send',
+  limit: 10,
+  windowSeconds: 3600,
+  message: 'Too many codes were sent to this number. Please try again in an hour.',
+  pick: employeePhoneOf,
+});
+const employeeOtpVerifyLimiter = bodyKeyLimiter({
+  name: 'employee_otp_verify',
+  limit: 15,
+  windowSeconds: 3600,
+  message: 'Too many attempts for this number. Please try again in an hour.',
+  pick: employeePhoneOf,
+});
+
 // One gallery pick is one detection; 120 an hour is far beyond a person
 // and a firm cap on a script. A refused call just means framing by hand.
 const detectTagRateLimiter = perUserLimiter({
@@ -195,4 +215,6 @@ module.exports = {
   loginAttemptLimiter,
   loginIdentifierOf,
   employeePhoneCheckLimiter,
+  employeeOtpSendLimiter,
+  employeeOtpVerifyLimiter,
 };

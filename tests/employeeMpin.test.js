@@ -13,6 +13,10 @@
  * Runs against a real (in-memory) MongoDB and the real routes, so the unique
  * phone index, the RBAC middleware and the tokens are the ones production
  * uses. No paid API is reached: OTP and GST lookups are stubbed.
+ *
+ * Adding someone, or moving them to a new number, carries the token the
+ * employee-phone OTP check issues; it is minted directly here (the OTP round
+ * trip itself is employeePhoneOtp.test.js).
  */
 
 const test = require('node:test');
@@ -56,6 +60,7 @@ const { loginLookupOf } = require('../src/utils/phone');
 const { authenticateJWT } = require('../src/middleware/auth.middleware');
 const { requirePermission } = require('../src/middleware/rbac.middleware');
 const errorHandler = require('../src/middleware/errorHandler');
+const { signEmployeePhoneToken } = require('../src/utils/employeePhoneToken');
 
 // Nothing here may text anyone or call the GST registry.
 const otpCalls = { sent: [] };
@@ -105,6 +110,9 @@ async function api(method, path, { token, body } = {}) {
 
 const ownerToken = (shop) =>
   authService.generateTokens(String(shop.id), String(shop.ownerId), 'OWNER').accessToken;
+
+// What POST /employees/phone-otp/verify returns once the shop has proved the number.
+const verified = (shop, phone) => signEmployeePhoneToken({ businessId: String(shop.id), phone });
 
 /** Every string anywhere in a value, for "is this plain MPIN stored anywhere?". */
 function containsExactString(value, needle) {
@@ -233,6 +241,7 @@ test('adding an employee with an MPIN creates them and their EMP sign-in record,
       mpin: '0451',
       confirmMpin: '0451',
       permissions: { manageFormulae: true, editRateGold: false },
+      phoneVerificationToken: verified(shopA, '9811100001'),
     },
   });
 
@@ -293,7 +302,10 @@ test('a number that is anyone\'s is refused with 409 and nothing is written', as
 
   for (const [label, phone] of cases) {
     const before = await counts();
-    const { status, body } = await api('POST', '/employees', { token, body: { ...base, phone } });
+    const { status, body } = await api('POST', '/employees', {
+      token,
+      body: { ...base, phone, phoneVerificationToken: verified(shopA, phone) },
+    });
     assert.equal(status, 409, label);
     assert.deepEqual(body, {
       success: false,
@@ -306,7 +318,7 @@ test('a number that is anyone\'s is refused with 409 and nothing is written', as
   // The same number from another shop's owner: refused, without saying whose.
   const fromB = await api('POST', '/employees', {
     token: ownerToken(shopB),
-    body: { ...base, phone: '9811100001' },
+    body: { ...base, phone: '9811100001', phoneVerificationToken: verified(shopB, '9811100001') },
   });
   assert.equal(fromB.status, 409);
   assert.equal(JSON.stringify(fromB.body).includes('Shree'), false);
@@ -425,7 +437,14 @@ test('switching an employee back on re-checks their number: one taken meanwhile 
   // ...and shop A is given it.
   const taken = await api('POST', '/employees', {
     token: ownerToken(shopA),
-    body: { name: 'New Hire', phone: '9811100008', designation: 'Sales', mpin: '8080', confirmMpin: '8080' },
+    body: {
+      name: 'New Hire',
+      phone: '9811100008',
+      designation: 'Sales',
+      mpin: '8080',
+      confirmMpin: '8080',
+      phoneVerificationToken: verified(shopA, '9811100008'),
+    },
   });
   assert.equal(taken.status, 201, JSON.stringify(taken.body));
   created.newHire = taken.body.data.employee;
@@ -489,7 +508,7 @@ test('switching an employee back on re-checks their number: one taken meanwhile 
   assert.equal(account.gstNumber, '07BBBBB1111B1Z5');
 });
 
-test('the older two-step add still works, refuses taken numbers, and gives the same session', async () => {
+test('the older two-step add keeps its draft step, needs the proved number to finish, refuses taken numbers, and gives the same session', async () => {
   const token = ownerToken(shopA);
 
   // Step one with a taken number: refused, no draft kept.
@@ -500,7 +519,10 @@ test('the older two-step add still works, refuses taken numbers, and gives the s
   // A finish whose (older) draft holds a taken number: refused, nothing written.
   await redisClient.set(`emp_draft:${shopA.id}`, JSON.stringify({ name: 'Old Draft', phone: OWNER_B_PHONE }), 'EX', 3600);
   const before = await counts();
-  const takenFinish = await api('POST', '/employees', { token, body: { password: 'secret12' } });
+  const takenFinish = await api('POST', '/employees', {
+    token,
+    body: { password: 'secret12', phoneVerificationToken: verified(shopA, OWNER_B_PHONE) },
+  });
   assert.equal(takenFinish.status, 409);
   assert.deepEqual(await counts(), before);
 
@@ -517,8 +539,20 @@ test('the older two-step add still works, refuses taken numbers, and gives the s
   assert.equal(draft.status, 200);
   assert.equal(draft.body.message, 'Draft saved successfully');
 
+  // Those builds finish without proving the number: told to update, nothing
+  // written, and the draft kept for when they can.
+  const unproved = await api('POST', '/employees', { token, body: { password: 'secret12', name: 'Sita Devi' } });
+  assert.equal(unproved.status, 403);
+  assert.equal(unproved.body.error, 'EMPLOYEE_PHONE_NOT_VERIFIED');
+  assert.match(unproved.body.message, /update the MRPscan app/);
+  assert.deepEqual(await counts(), before);
+  assert.notEqual(await redisClient.get(`emp_draft:${shopA.id}`), null);
+
   // What the finishing request sends wins over the draft.
-  const finish = await api('POST', '/employees', { token, body: { password: 'secret12', name: 'Sita Devi' } });
+  const finish = await api('POST', '/employees', {
+    token,
+    body: { password: 'secret12', name: 'Sita Devi', phoneVerificationToken: verified(shopA, '9811100002') },
+  });
   assert.equal(finish.status, 201, JSON.stringify(finish.body));
   assert.equal(finish.body.data.name, 'Sita Devi');
   assert.equal(finish.body.data.employee.hasMpin, false);
@@ -713,7 +747,10 @@ test('editing an employee\'s number re-checks it, excluding themselves', async (
   const token = ownerToken(shopA);
   const id = created.ravi._id;
 
-  const clash = await api('PUT', `/employees/${id}`, { token, body: { phone: OWNER_B_PHONE } });
+  const clash = await api('PUT', `/employees/${id}`, {
+    token,
+    body: { phone: OWNER_B_PHONE, phoneVerificationToken: verified(shopA, OWNER_B_PHONE) },
+  });
   assert.equal(clash.status, 409);
   assert.equal(clash.body.message, 'This number is already registered');
   assert.equal((await Employee.findById(id).lean()).phone, '9811100001');
@@ -722,7 +759,10 @@ test('editing an employee\'s number re-checks it, excluding themselves', async (
   const same = await api('PUT', `/employees/${id}`, { token, body: { phone: '9811100001', name: 'Ravi K' } });
   assert.equal(same.status, 200, 'keeping one\'s own number is not a clash');
 
-  const moved = await api('PUT', `/employees/${id}`, { token, body: { phone: '98111 00005' } });
+  const moved = await api('PUT', `/employees/${id}`, {
+    token,
+    body: { phone: '98111 00005', phoneVerificationToken: verified(shopA, '9811100005') },
+  });
   assert.equal(moved.status, 200);
   const account = await BusinessUser.findOne({ employeeId: id }).lean();
   assert.equal(account.phone, '9811100005');
@@ -800,7 +840,14 @@ test('an owner record left on an old GSTIN is healed before the employee copies 
 
   const add = await api('POST', '/employees', {
     token: ownerToken(shopC),
-    body: { name: 'Surat Staff', phone: '9833300001', designation: 'Sales', mpin: '4545', confirmMpin: '4545' },
+    body: {
+      name: 'Surat Staff',
+      phone: '9833300001',
+      designation: 'Sales',
+      mpin: '4545',
+      confirmMpin: '4545',
+      phoneVerificationToken: verified(shopC, '9833300001'),
+    },
   });
   assert.equal(add.status, 201, JSON.stringify(add.body));
   const employeeId = add.body.data.employee._id;

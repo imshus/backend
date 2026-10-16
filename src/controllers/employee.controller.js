@@ -4,9 +4,15 @@ const redisClient = require('../redis/redisClient');
 const Employee = require('../models/employee.model');
 const licenseService = require('../services/license.service');
 const employeeAccounts = require('../services/employeeAccount.service');
+const otpService = require('../services/otp.service');
 const { isOwnerRole } = require('../services/userScope.service');
 const { normalizeIndianMobile } = require('../utils/phone');
 const { toPlainPermissions } = require('../utils/permissions');
+const {
+  EMPLOYEE_PHONE_TOKEN_TTL_SECONDS,
+  signEmployeePhoneToken,
+  isEmployeePhoneVerified,
+} = require('../utils/employeePhoneToken');
 
 /**
  * The shop's roster. Every write here is the owner's (the routes refuse
@@ -18,8 +24,15 @@ const { toPlainPermissions } = require('../utils/permissions');
  * (business_users, role EMP). A number that is already anyone's, owner or
  * employee, in any shop, is refused before anything is written.
  *
- * Builds 1.0.360/1.0.361 add in two steps (a draft in Redis, then a password)
- * and keep working; the duplicate-number rule applies to them too.
+ * The number is the employee's sign-in, so it is proved first: a code is
+ * texted to it (POST /phone-otp), the owner types it in (POST
+ * /phone-otp/verify), and the token that returns has to come back on the
+ * request that adds them, or that moves an existing employee to a new number.
+ *
+ * Builds 1.0.360/1.0.361 add in two steps (a draft in Redis, then a password).
+ * The draft step still works; the finishing step needs the same token, which
+ * those builds cannot get, so they are told to update. The duplicate-number
+ * rule applies to them too.
  */
 
 const PHONE_TAKEN = {
@@ -27,6 +40,34 @@ const PHONE_TAKEN = {
   error: 'PHONE_ALREADY_REGISTERED',
   message: 'This number is already registered',
 };
+
+const PHONE_NOT_VERIFIED = {
+  success: false,
+  error: 'EMPLOYEE_PHONE_NOT_VERIFIED',
+  message: "Verify the employee's phone number with the OTP sent to it. If you don't see an OTP step, update the MRPscan app.",
+};
+
+const OTP_SEND_FAILED = {
+  success: false,
+  error: 'OTP_SEND_FAILED',
+  message: "Couldn't send the OTP right now. Please try again.",
+};
+
+// What a refused code is called, and what the owner is told.
+const OTP_REFUSALS = {
+  OTP_INVALID: 'Wrong OTP',
+  OTP_EXPIRED: 'OTP expired, send a new one',
+  OTP_NOT_FOUND: 'No OTP was sent to this number. Send one first.',
+  OTP_ALREADY_USED: 'This OTP was already used, send a new one',
+};
+
+const EMPLOYEE_PHONE_FLOW = 'EMPLOYEE_PHONE';
+const OTP_TTL_SECONDS = 10 * 60; // as otp.service stores it
+const OTP_RESEND_AFTER_SECONDS = 30;
+
+/** Whether the request carries the proof for this shop and this number. */
+const phoneVerified = (body, businessId, phone) =>
+  isEmployeePhoneVerified(body.phoneVerificationToken, { businessId, phone });
 
 const NOT_FOUND = { success: false, error: 'EMPLOYEE_NOT_FOUND', message: 'Employee not found' };
 
@@ -104,6 +145,7 @@ const createEmployee = async (req, res) => {
     // This build: everything in one request, the MPIN set by the owner.
     if (body.mpin) {
       const phone = normalizeIndianMobile(body.phone);
+      if (!phoneVerified(body, businessId, phone)) return res.status(403).json(PHONE_NOT_VERIFIED);
       if (await employeeAccounts.isPhoneRegistered(phone)) {
         return res.status(409).json(PHONE_TAKEN);
       }
@@ -136,6 +178,8 @@ const createEmployee = async (req, res) => {
       }
 
       const phone = normalizeIndianMobile(draft.phone);
+      // No number, or one never proved: refused like the MPIN path.
+      if (!phoneVerified(body, businessId, phone)) return res.status(403).json(PHONE_NOT_VERIFIED);
       if (phone && await employeeAccounts.isPhoneRegistered(phone)) {
         return res.status(409).json(PHONE_TAKEN);
       }
@@ -226,6 +270,80 @@ const checkPhone = async (req, res) => {
   }
 };
 
+/**
+ * POST /employees/phone-otp — texts a code to the number being added. A
+ * number that is already anyone's is refused exactly as check-phone answers
+ * it, before anything is sent.
+ */
+const sendPhoneOtp = async (req, res) => {
+  try {
+    const { phone } = req.validated || {};
+    if (await employeeAccounts.isPhoneRegistered(phone)) {
+      return res.status(409).json(PHONE_TAKEN);
+    }
+
+    try {
+      await otpService.sendMobileOtp({
+        mobile: phone,
+        flow: EMPLOYEE_PHONE_FLOW,
+        otpType: 'PHONE',
+        businessId: req.user.businessId,
+        destination: phone,
+        route: '/api/v1/employees/phone-otp',
+      });
+    } catch (error) {
+      if (String(error.message).startsWith('MSG91_')) return res.status(502).json(OTP_SEND_FAILED);
+      throw error;
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: { phone, expiresInSeconds: OTP_TTL_SECONDS, resendAfterSeconds: OTP_RESEND_AFTER_SECONDS },
+    });
+  } catch (error) {
+    console.error('Send Employee Phone OTP Error:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
+ * POST /employees/phone-otp/verify — checks the code against the latest one
+ * this shop sent to the number (another shop's code never counts), once, and
+ * answers with the token the add or the number change carries.
+ */
+const verifyPhoneOtp = async (req, res) => {
+  try {
+    const { phone, otp } = req.validated || {};
+    const businessId = req.user.businessId;
+
+    try {
+      await otpService.verifyOtpByMobile({
+        mobile: phone,
+        otp,
+        flow: EMPLOYEE_PHONE_FLOW,
+        businessId,
+        rejectAlreadyVerified: true,
+        route: '/api/v1/employees/phone-otp/verify',
+      });
+    } catch (error) {
+      const message = OTP_REFUSALS[error.message];
+      if (message) return res.status(400).json({ success: false, error: error.message, message });
+      throw error;
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        phoneVerificationToken: signEmployeePhoneToken({ businessId, phone }),
+        expiresInSeconds: EMPLOYEE_PHONE_TOKEN_TTL_SECONDS,
+      },
+    });
+  } catch (error) {
+    console.error('Verify Employee Phone OTP Error:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 const updateEmployee = async (req, res) => {
   try {
     const body = req.validated || req.body || {};
@@ -257,6 +375,11 @@ const updateEmployee = async (req, res) => {
     if (body.phone !== undefined) {
       const nextPhone = normalizeIndianMobile(body.phone);
       if (nextPhone !== normalizeIndianMobile(before.phone)) {
+        // A new number becomes their sign-in, so it is proved like a new
+        // employee's. The same number (however written) needs nothing.
+        if (!phoneVerified(body, req.user.businessId, nextPhone)) {
+          return res.status(403).json(PHONE_NOT_VERIFIED);
+        }
         if (await isTaken(nextPhone)) return res.status(409).json(PHONE_TAKEN);
         phoneChanged = true;
       }
@@ -374,6 +497,8 @@ module.exports = {
   createEmployee,
   getEmployees,
   checkPhone,
+  sendPhoneOtp,
+  verifyPhoneOtp,
   updateEmployee,
   setEmployeeMpin,
   getEmployeeMpin,

@@ -355,6 +355,7 @@ async function verifyOtpByMobile({
   otp,
   route = '/api/v1/auth/verify-otp',
   flow,
+  businessId = null,
   rejectAlreadyVerified = false,
 }) {
   const timestamp = nowIso();
@@ -364,9 +365,15 @@ async function verifyOtpByMobile({
   logContext({ mobile, timestamp, requestId, route });
 
   const normalizedMobile = ensureMobile(mobile);
-  const latest = flow
-    ? await otpRepository.findLatestByMobileAndFlow(normalizedMobile, flow)
-    : await otpRepository.findLatestByMobile(normalizedMobile);
+  // With a business, only a code that business asked for (in that flow) counts.
+  let latest;
+  if (businessId) {
+    latest = await otpRepository.findLatestByMobileFlowAndBusiness(normalizedMobile, flow, businessId);
+  } else {
+    latest = flow
+      ? await otpRepository.findLatestByMobileAndFlow(normalizedMobile, flow)
+      : await otpRepository.findLatestByMobile(normalizedMobile);
+  }
 
   if (!latest) {
     console.log('OTP Found: NO');
@@ -375,10 +382,10 @@ async function verifyOtpByMobile({
 
   console.log('OTP Found: YES');
 
-  // New OTP records carry an explicit TTL. Password-reset verification also
-  // applies a createdAt fallback so an old record can never become an
-  // unlimited recovery credential during a rolling backend deployment.
-  if (latest.expiresAt || flow === 'PASSWORD_RESET') {
+  // New OTP records carry an explicit TTL. Password-reset and employee-phone
+  // verification also apply a createdAt fallback so an old record can never
+  // become an unlimited credential during a rolling backend deployment.
+  if (latest.expiresAt || flow === 'PASSWORD_RESET' || flow === 'EMPLOYEE_PHONE') {
     const expiresAt = latest.expiresAt
       ? new Date(latest.expiresAt).getTime()
       : new Date(latest.createdAt).getTime() + (10 * 60 * 1000);

@@ -16,6 +16,12 @@ const findLatestByMobileAndFlow = async (mobile, flow) => {
   return OtpVerification.findOne({ mobile, flow }).sort({ createdAt: -1 });
 };
 
+// The latest code one shop asked for: another shop's code to the same number
+// is never read in its place.
+const findLatestByMobileFlowAndBusiness = async (mobile, flow, businessId) => {
+  return OtpVerification.findOne({ mobile, flow, businessId }).sort({ createdAt: -1 });
+};
+
 const findLatestByBusinessAndType = async (businessId, otpType) => {
   return OtpVerification.findOne({ businessId, otpType }).sort({ createdAt: -1 });
 };
@@ -25,5 +31,6 @@ module.exports = {
   updateOtpRecord,
   findLatestByMobile,
   findLatestByMobileAndFlow,
+  findLatestByMobileFlowAndBusiness,
   findLatestByBusinessAndType,
 };

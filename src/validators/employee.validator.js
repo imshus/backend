@@ -57,6 +57,21 @@ const designationSchema = Joi.string().trim().max(80).messages({
 // typed, and an email was never checked before.
 const emailSchema = Joi.string().trim().lowercase().max(254).allow('', null);
 
+// What POST /employees/phone-otp/verify returned. Optional here: whether a
+// request needs one is the controller's call, and a missing one gets the
+// "verify the number" answer rather than a validation error.
+const phoneVerificationTokenSchema = Joi.string().trim().max(2048).allow('', null);
+
+const otpSchema = Joi.string()
+  .trim()
+  .pattern(/^[0-9]{6}$/)
+  .messages({
+    'string.base': 'Enter the 6-digit OTP',
+    'string.pattern.base': 'Enter the 6-digit OTP',
+    'string.empty': 'Enter the 6-digit OTP',
+    'any.required': 'Enter the 6-digit OTP',
+  });
+
 /**
  * POST /employees, three ways:
  *  - with an MPIN (this build): name, phone, designation, mpin and confirmMpin
@@ -64,6 +79,8 @@ const emailSchema = Joi.string().trim().lowercase().max(254).allow('', null);
  *  - with a password (builds 1.0.360/1.0.361 finishing a draft): the draft
  *    supplies whatever the body leaves out;
  *  - with neither (those builds' first step): a draft is stored.
+ * The first two create someone, so they also carry the phoneVerificationToken
+ * for the employee's number.
  */
 const createEmployeeSchema = Joi.object({
   name: nameSchema.when('mpin', { is: Joi.exist(), then: Joi.required() }),
@@ -83,10 +100,12 @@ const createEmployeeSchema = Joi.object({
     otherwise: Joi.forbidden(),
   }),
   password: Joi.string().min(1).max(128),
+  phoneVerificationToken: phoneVerificationTokenSchema,
 })
   .oxor('mpin', 'password')
   .messages({ 'object.oxor': 'Send an MPIN or a password, not both' });
 
+// A changed phone also carries the phoneVerificationToken for the new number.
 const updateEmployeeSchema = Joi.object({
   name: nameSchema,
   phone: phoneSchema,
@@ -94,6 +113,7 @@ const updateEmployeeSchema = Joi.object({
   designation: designationSchema.allow(''),
   permissions: permissionsSchema,
   isActive: Joi.boolean(),
+  phoneVerificationToken: phoneVerificationTokenSchema,
 });
 
 const employeeMpinSchema = Joi.object({
@@ -105,9 +125,20 @@ const checkPhoneSchema = Joi.object({
   phone: phoneSchema.required(),
 });
 
+const employeePhoneOtpSchema = Joi.object({
+  phone: phoneSchema.required(),
+});
+
+const verifyEmployeePhoneOtpSchema = Joi.object({
+  phone: phoneSchema.required(),
+  otp: otpSchema.required(),
+});
+
 module.exports = {
   createEmployeeSchema,
   updateEmployeeSchema,
   employeeMpinSchema,
   checkPhoneSchema,
+  employeePhoneOtpSchema,
+  verifyEmployeePhoneOtpSchema,
 };
