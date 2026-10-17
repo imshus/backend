@@ -16,7 +16,8 @@ const scanHistory = require('../services/scanHistory.service');
  * invoice bills.
  *
  * Every price it returns is also the scan's line in Tag scan history
- * (scanHistory.service), written after the answer has gone.
+ * (scanHistory.service), with the inputs and workings behind it, written
+ * after the answer has gone.
  */
 const calculateMRP = async (req, res, next) => {
   // When this price was asked for: of two prices for one scan in flight, the
@@ -46,7 +47,7 @@ const calculateMRP = async (req, res, next) => {
       }
       throw error;
     }
-    const { resultData, resolvedScanId, scan, snapshot, resolvedMode, request, itemRow } = computed;
+    const { resultData, resolvedScanId, scan, snapshot, resolvedMode, request, itemRow, applied } = computed;
 
     // Send the amount as soon as it is calculated. Persisting the calculation
     // is still awaited for reliability, but no longer delays the client UI.
@@ -67,12 +68,13 @@ const calculateMRP = async (req, res, next) => {
       }
     }
 
-    // The scan's line in Settings -> History, the latest price replacing
-    // any earlier one. Filed under the scan that was priced: the requested
-    // one, or the newer scan it resolved to. Only a scan record (one the
-    // caller may see) starts a line; priced without one, an existing line
-    // of the caller's is updated and no new one made. The price is already
-    // sent, and a failure here only costs the history line.
+    // The scan's line in Settings -> History, the latest price (with what
+    // it was worked on) replacing any earlier one. Filed under the scan that
+    // was priced: the requested one, or the newer scan it resolved to. Only
+    // a scan record (one the caller may see) starts a line; priced without
+    // one, an existing line of the caller's is updated and no new one made.
+    // The price is already sent, and a failure here only costs the history
+    // line.
     const historyScanId = resolvedScanId || scanId;
     try {
       await scanHistory.recordPricedScan({
@@ -80,6 +82,7 @@ const calculateMRP = async (req, res, next) => {
         scanId: historyScanId,
         ...scanHistory.historyEntryOf({ request, itemRow, scan }),
         finalMRP: resultData.finalMRPRounded,
+        pricing: scanHistory.pricingRecordOf({ request, resultData, resolvedMode, applied }),
         pricedAt: receivedAt,
         mayCreate: Boolean(scan),
       });

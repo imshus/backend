@@ -19,7 +19,7 @@ const ReferralCode = require('../src/models/referralCode.model');
 let mongoServer;
 
 test.before(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryServer.create({ instance: { launchTimeout: 120000 } });
   const uri = mongoServer.getUri();
   await mongoose.connect(uri);
 });

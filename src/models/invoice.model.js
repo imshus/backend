@@ -20,6 +20,17 @@ const lineItemSchema = new mongoose.Schema({
   igst_amount: { type: Number, default: 0 },
 }, { _id: false });
 
+// One piece a cart invoice bills, as the cart listed it: its name, tag and
+// MRP, and the wishlist item and scan it came from when the app said. The
+// invoice's figures are its lines; these only say which pieces they were.
+const pieceSchema = new mongoose.Schema({
+  itemName: { type: String, default: '' },
+  tagCode: { type: String, default: '' },
+  mrp: { type: Number, default: 0 },
+  wishlistItemId: { type: String, default: '' },
+  scanId: { type: String, default: '' },
+}, { _id: false });
+
 const invoiceSchema = new mongoose.Schema({
   businessId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -75,6 +86,10 @@ const invoiceSchema = new mongoose.Schema({
   // history ("Cart · 2 items"), which lists invoices without their lines.
   // Absent on invoices issued before it was kept: unknown, not zero.
   pieceCount: { type: Number },
+  // The pieces a cart invoice bills (Wishlist -> Add to cart -> Generate
+  // Invoice), one per piece; pieceCount is then their number. Absent on an
+  // invoice billed without a cart, and on every one issued before it.
+  pieces: { type: [pieceSchema], default: undefined },
   amountInWords: { type: String, default: '' },
   termsAndConditions: { type: String, default: '' },
 
@@ -121,6 +136,11 @@ const invoiceSchema = new mongoose.Schema({
 });
 
 invoiceSchema.index({ businessId: 1, invoiceNumber: 1 }, { unique: true });
-invoiceSchema.index({ businessId: 1, userId: 1, createdAt: -1 });
+// The lists' order with its tie-break (GET /invoices, and Checkout history,
+// historyPage): an employee's own, and the owner's whole shop. The first
+// replaces { businessId, userId, createdAt }, which it covers; startup's
+// Invoice.syncIndexes (userScope.service) swaps them.
+invoiceSchema.index({ businessId: 1, userId: 1, createdAt: -1, _id: -1 });
+invoiceSchema.index({ businessId: 1, createdAt: -1, _id: -1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

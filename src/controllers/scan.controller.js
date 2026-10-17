@@ -12,6 +12,7 @@ const { sendSuccess } = require('../utils/apiResponse');
 const { toSessionContext } = require('../utils/scanAccess');
 const { tagIdentifiersOf } = require('../utils/tagIdentifiers');
 const { recordScanTiming } = require('../services/scanTiming');
+const scanHistory = require('../services/scanHistory.service');
 
 const createScan = async (req, res, next) => {
   try {
@@ -98,6 +99,7 @@ const analyzeScan = async (req, res, next) => {
     // failure leaves pricing out; the card then prices itself as before.
     let pricing = null;
     let pricingInput = null;
+    let computed = null;
     // Why there is no price, when the reason is one the card can say
     // (no live rate, a reading that cannot be priced); null otherwise.
     let pricingError = null;
@@ -113,7 +115,7 @@ const analyzeScan = async (req, res, next) => {
         prefetched: pricingReads,
         rules,
       });
-      const computed = await computeMrp({
+      computed = await computeMrp({
         user: req.user,
         sessionContext: toSessionContext(req.user),
         scanId: updated.scanId,
@@ -159,6 +161,23 @@ const analyzeScan = async (req, res, next) => {
         pricingInput,
         pricingError,
     });
+
+    // The scan's line in Settings -> History starts here, the moment the tag
+    // is read: everything read, and the price above when there is one. The
+    // reading is already sent, and a failure here only costs the line.
+    try {
+      const itemRows = computed ? [] : await pricingReads.itemRows.catch(() => []);
+      await scanHistory.recordReadScan({
+        user: req.user,
+        scanId: updated.scanId,
+        ...scanHistory.readEntryOf({ scan: updated, computed, itemRows }),
+      });
+    } catch (historyError) {
+      console.warn('[SCAN_HISTORY_READ_WRITE_FAILED]', {
+        scanId: updated.scanId,
+        message: historyError?.message,
+      });
+    }
   } catch (err) {
     next(err);
   }

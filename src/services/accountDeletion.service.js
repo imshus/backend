@@ -24,6 +24,7 @@ const ReferralCode = require('../models/referralCode.model');
 const ScanBilling = require('../models/scanBilling.model');
 const ScanHistory = require('../models/scanHistory.model');
 const Wishlist = require('../models/wishlist.model');
+const WishlistHistory = require('../models/wishlistHistory.model');
 
 /**
  * Permanently deletes an account and wipes off all database resources linked to it.
@@ -71,6 +72,7 @@ async function deleteAccount({ businessId, userId, role }) {
       ScanBilling.deleteMany({ businessId: bId }),
       ScanHistory.deleteMany({ businessId: bId }),
       Wishlist.deleteMany({ businessId: bId }),
+      WishlistHistory.deleteMany({ businessId: bId }),
     ]);
 
     return {
@@ -90,6 +92,7 @@ async function deleteAccount({ businessId, userId, role }) {
       Wishlist.deleteMany({ userId }),
       ScanBilling.deleteMany({ userId }),
       ScanHistory.deleteMany({ userId: String(userId) }),
+      WishlistHistory.deleteMany({ userId: String(userId) }),
     ]);
 
     return {

@@ -2,6 +2,7 @@ const Wishlist = require('../models/wishlist.model');
 const Employee = require('../models/employee.model');
 const { sendSuccess } = require('../utils/apiResponse');
 const { isOwnerRole } = require('../services/userScope.service');
+const wishlistHistory = require('../services/wishlistHistory.service');
 
 /**
  * Whose items a request may see and touch. An employee's wishlist is their
@@ -32,8 +33,9 @@ const attachSavedBy = async (items, user) => {
 
 /**
  * POST /api/v1/wishlist
- * Saves a new wishlist item to MongoDB.
- * Body: { itemId, title, tagCode, totalMrp, priceBadge, calculationRate, scanTimestamp, snapshot }
+ * Saves a new wishlist item to MongoDB, and a copy of it to Wishlist history.
+ * Body: { itemId, title, tagCode, totalMrp, priceBadge, calculationRate, scanTimestamp, snapshot,
+ *         scanId?, itemName? } (the last two only name the history line)
  */
 const addToWishlist = async (req, res, next) => {
   try {
@@ -73,8 +75,18 @@ const addToWishlist = async (req, res, next) => {
       },
       { upsert: true, new: true, runValidators: true }
     );
+    const saved = item.toObject();
 
-    sendSuccess(res, { item: { ...item.toObject(), savedBy: null } });
+    // Its line in Settings -> History -> Wishlist history, kept after the
+    // item leaves the wishlist. Written before answering, so the history
+    // opened straight afterwards has it; a failure costs only the line.
+    try {
+      await wishlistHistory.recordWishlistAdd({ item: saved, itemName: req.body.itemName, scanId: req.body.scanId });
+    } catch (historyError) {
+      console.warn('[WISHLIST_HISTORY_WRITE_FAILED]', { itemId, message: historyError.message });
+    }
+
+    sendSuccess(res, { item: { ...saved, savedBy: null } });
   } catch (err) {
     next(err);
   }

@@ -139,6 +139,10 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
   Under rules 3 the card opens with its Wastage tile on the net weight, so
   `pricingInput` carries `wastageWeightBasis: "net"` and the wastage is priced
   on the net weight at the current gold rate.
+- Every reading returned also starts the scan's line in Tag scan history
+  (8.1): status `read`, `finalMRP` the `pricing.finalMRPRounded` above (null
+  when it could not be priced), and `details`, everything read (8.2). Written
+  after the answer; a failed write is logged, never the reading's failure.
 
 2.5 GET /api/v1/scans/:scanId/clarification
 - Auth: optional
@@ -165,10 +169,13 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
 - Auth: JWT required (`authenticateJWT`)
 - Controller: `calculationController.calculateMRP`
 - Description: Calculate final MRP using scan + rates (protected route for pricing/calculation).
-- Every price returned is also the scan's line in Tag scan history (8.1),
-  written after the answer; a failed write is logged, never the price's failure.
-  A line is started only for a scan on record (one the caller may see); a
-  price without one updates the caller's existing line for that id, if any.
+- Every price returned is also the scan's line in Tag scan history (8.1):
+  status `priced`, `finalMRP` the `finalMRPRounded`, and `pricing` (8.2), the
+  inputs and workings; the line keeps the time the tag was read and what was
+  read. Written after the answer; a failed write is logged, never the price's
+  failure. A line is started only for a scan on record (one the caller may
+  see); a price without one updates the caller's existing line for that id,
+  if any. Of two prices for one scan in flight, the later request's stays.
 - Header `X-Pricing-Rules`: `3` from the app build whose Wastage tile chooses
   the weight: everything in rules 2, and wastage priced at the current gold
   rate on the net or the gross weight (`wastageWeightBasis`, below). `2` from
@@ -274,6 +281,20 @@ All invoice routes require JWT.
 - `piece_count` (optional): how many pieces the invoice bills, a whole number
   from 1 to the number of line items; 1 when absent (the one scanned piece).
   Kept as `pieceCount`. Anything else → 400 before a number is spent.
+- `pieces` (optional): a cart's pieces (Wishlist -> Add to cart -> Generate
+  Invoice), one invoice for all of them:
+  `[{ wishlist_item_id?, scan_id?, item_name, tag_code, mrp }]`, 1-50 of
+  them and no more than the line items. `item_name` is required (text up to
+  200 characters, as are the others); `mrp` an amount >= 0 (number or
+  numeric text). With `pieces`, `pieceCount` is their number and a
+  `piece_count` sent beside them must equal it. Every piece's lines are in
+  `line_items`: the figures are worked out from the lines and checked
+  against the client's totals exactly as without a cart; the pieces' MRPs
+  are not added up. Kept on the invoice as `pieces: [{ itemName, tagCode,
+  mrp, wishlistItemId, scanId }]` ('' for an id not sent). Anything wrong →
+  400 naming the field (`pieces[1].mrp ...`) before a number is spent.
+- POST /api/v1/invoices/preview-html checks `pieces` and `piece_count` the
+  same way and refuses with the same 400.
 
 4.2 GET /api/v1/invoices/preview/next-number
 - Controller: `invoiceController.getNextInvoiceNumber`
@@ -283,7 +304,8 @@ All invoice routes require JWT.
 - Controller: `invoiceController.getInvoices`
 - Description: List invoices for a business (an employee's own), newest first,
   without `lineItems`. Each carries `pieceCount` (null on invoices issued
-  before it was kept), `grandTotal` and `createdAt` for Checkout history.
+  before it was kept), `grandTotal` and `createdAt`. Checkout history reads
+  8.5, which adds the cart's pieces and pages by cursor.
 
 4.4 GET /api/v1/invoices/:id
 - Controller: `invoiceController.getInvoice`
@@ -296,6 +318,12 @@ All wishlist routes require JWT.
 
 5.1 POST /api/v1/wishlist
 - Controller: `wishlistController.addToWishlist`
+- Also copies the item it adds into Wishlist history (8.3), before
+  answering: one line per `itemId`, never removed by 5.3 / 5.4. Optional
+  `scanId` (the scan it was priced from) and `itemName` only name that line;
+  without `itemName` it is `snapshot.scanData.itemName`, else "<karat>
+  <type>" ("22K Gold"). A failed history write is logged, never the add's
+  failure.
 
 5.2 GET /api/v1/wishlist
 - Controller: `wishlistController.getWishlist`
@@ -407,19 +435,88 @@ current ones; a user record whose copy fell behind is healed on that login.
 
 8. History (Settings -> History)
 
-8.1 GET /api/v1/history/scans?limit=30
-- Auth: JWT required; owner and employee alike.
+All routes: JWT required, owner and employee alike. The owner sees the
+shop's lines, an employee their own (as GET /invoices); a line the session
+may not see answers 404, as one that does not exist.
+
+Lists are newest first and paged by cursor: `?limit=` 1-100 (default 30)
+and `?before=<nextCursor of the previous page>`. Each answers
+`{ items, nextCursor }`; `nextCursor` is an opaque string, null on the last
+page. A cursor this server did not hand out →
+`400 { success:false, error:'INVALID_CURSOR', message }`. The order is
+`createdAt` then `_id`, both descending, so lines added while the list is
+open never repeat or skip one; every list runs on an index of its own scope
+plus `{ createdAt: -1, _id: -1 }`.
+
+8.1 GET /api/v1/history/scans?limit=30&before=
 - Controller: `historyController.getScanHistory`
-- `{ items: [{ scanId, itemName, tagCode, finalMRP, createdAt }] }`, newest
-  scan first; `limit` 1-100, default 30. The owner sees the shop's scans, an
-  employee their own (as GET /invoices).
-- One line per scan in `scan_history`, written by 2.9, the latest request's
-  price winning: `itemName` is the Masters item's name when the tag matched
-  one, else the karat and type priced ("22K Gold", "18K Diamond Jewellery");
-  `tagCode` the item number the card shows, or ''; `finalMRP` the rupee price.
-  Only a price for a scan on record starts a line. Lines expire 180 days
-  after the scan.
-- Wishlist history reads 5.2 and Checkout history 4.3.
+- `items: [{ id, scanId, itemName, tagCode, finalMRP, status, createdAt }]`.
+- One line per scan in `scan_history`, started by 2.4 when the tag is read
+  (`status: 'read'`, `finalMRP` the reading's price or null) and updated by
+  every price 2.9 returns (`status: 'priced'`, the latest request's price).
+  `createdAt` is when the tag was read. `itemName` is the Masters item's name
+  when the tag matched one, else the karat and type ("22K Gold", "18K
+  Diamond Jewellery"); `tagCode` the item number the card shows, or ''.
+  Lines written before readings were kept have no status and answer
+  `'priced'`. Lines expire 180 days after the scan.
+
+8.2 GET /api/v1/history/scans/:scanId
+- Controller: `historyController.getScanHistoryItem`
+- `{ item: { id, scanId, itemName, tagCode, finalMRP, status, createdAt,
+  updatedAt, details, pricing } }`; 404 `NOT_FOUND` when not visible.
+- `details` (null on lines from before readings were kept): everything read,
+  each field the reader's text without its confidence ('' when not printed):
+  `{ jewelleryType, grossWeight, netWeight, karat, purity, serialNumber,
+  itemCode (the Masters item matched, or ''), packetCode, tagIdentifiers[],
+  diamonds: [{ weight, unit, pieces, shape, quality, color, clarity, rate,
+  packetCode }], colorstones: [{ type, weight, unit, pieces, shape, quality,
+  color, clarity, rate, packetCode }], labour, wastage, otherCharges,
+  rawText }`.
+- `pricing` (null until 2.9 prices it): `{ inputs, breakdown, rules }`.
+  `inputs` is the card's request as read, named as 2.9's body: `{
+  jewelleryType, grossWt, netWt, purityKarat, customPurityPercent,
+  calculationMode (the mode priced in: cash | rtgs), diamonds[{ weight, rate,
+  discountPercent, unit }], colorstones[{ weight, rate, unit }],
+  labourChargeAmount, labourChargeUnit, labourWeightBasis, wastagePercent,
+  wastageWeightBasis, otherCharges, itemCode, tagIdentifiers }` (null where
+  not sent). `breakdown` is 2.9's breakdown (goldRateApplied, pureWeight,
+  goldAmount, diamondAmount, colorstoneAmount, labourAmount,
+  labourChargeType, wastagePercent, wastageCode, wastageWeightBasis,
+  wastageWeightGrams, wastageRatePerGram, wastageAmount, otherCharges,
+  subtotal, netWeightUsed, netWeightEstimated) plus `goldRatePer10g`,
+  `effectivePurityPercent`, `purityAdjustedGoldRatePerGram`,
+  `diamondLineItems[{ index, weight, rate, discountPercent, amount }]`,
+  `colorstoneLineItems[{ index, weight, rate, amount }]`, `labourRate`,
+  `labourUnit`, `labourWeightBasis`, `finalMRP`, `finalMRPRounded`. `rules`
+  is the X-Pricing-Rules it was priced by.
+
+8.3 GET /api/v1/history/wishlist?limit=30&before=
+- Controller: `historyController.getWishlistHistory`
+- `items: [{ id, itemName, tagCode, mrp, createdAt }]`: every item ever
+  added by 5.1 (`wishlist_history`), kept after it leaves the wishlist;
+  expires 180 days after it was added.
+
+8.4 GET /api/v1/history/wishlist/:id
+- Controller: `historyController.getWishlistHistoryItem`
+- `{ item: { id, wishlistItemId, scanId (or null), itemName, tagCode, mrp,
+  title, priceBadge, calculationRate, scanTimestamp, createdAt, snapshot } }`;
+  `snapshot` is the wishlist item's as it was added. 404 when not visible.
+
+8.5 GET /api/v1/history/checkouts?limit=30&before=
+- Controller: `historyController.getCheckoutHistory`
+- `items: [{ id (the invoice id), invoiceNumber, pieceCount, pieces: [{
+  itemName, tagCode, mrp }], grandTotal, createdAt }]`, every invoice. A
+  cart invoice (4.1 `pieces`) lists its pieces; one billed from the card has
+  `pieces: []` and `pieceCount: 1`; one issued before pieces were counted
+  has `pieces: []` and `pieceCount: null`.
+
+8.6 GET /api/v1/history/checkouts/:id
+- Controller: `historyController.getCheckoutHistoryItem`
+- `{ item: { id, invoiceNumber, invoiceDate, pieceCount, pieces: [{ itemName,
+  tagCode, mrp, wishlistItemId, scanId }], grandTotal, customerName,
+  invoiceUrl, createdAt } }`; the ids are null where the cart did not send
+  them, `invoiceUrl` (as 4.4's) null on an invoice without one. A piece's
+  `scanId` opens 8.2. 404 when not visible.
 
 
 Notes & file references

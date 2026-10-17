@@ -417,9 +417,22 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     calculationMode: resolvedMode,
   };
 
+  // What the price was worked on beyond the breakdown the card reads: the
+  // rate, purity, stone lines and labour applied. The scan's history line
+  // keeps them (scanHistory.service pricingRecordOf).
+  const applied = {
+    goldRatePer10g,
+    effectivePurityPercent,
+    purityAdjustedGoldRatePerGram: priced.purityAdjustedGoldRatePerGram,
+    diamondLineItems: priced.diamondLineItems,
+    colorstoneLineItems: priced.colorstoneLineItems,
+    labour,
+    rules,
+  };
+
   // `request` and `itemRow` (the Masters item the tag matched, or null) are
   // what the scan's history line names it by.
-  return { resultData, resolvedScanId, scan, snapshot, resolvedMode, request, itemRow };
+  return { resultData, resolvedScanId, scan, snapshot, resolvedMode, request, itemRow, applied };
 }
 
 // ── Deriving inputs from a fresh reading ──────────────────────────────

@@ -53,7 +53,7 @@ async function seedWallet(business, creditBalance = 10) {
 }
 
 test.before(async () => {
-  replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 }, instanceOpts: [{ launchTimeout: 120000 }] });
   await mongoose.connect(replSet.getUri());
   await Promise.all([
     ScanBilling.syncIndexes(),

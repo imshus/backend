@@ -236,11 +236,23 @@ test('a priced scan is written with the Masters item name, the tag number and th
 
   const { status, body } = await history(people.owner);
   assert.equal(status, 200);
-  assert.deepEqual(Object.keys(body.data.items[0]).sort(), ['createdAt', 'finalMRP', 'itemName', 'scanId', 'tagCode']);
+  assert.deepEqual(
+    Object.keys(body.data.items[0]).sort(),
+    ['createdAt', 'finalMRP', 'id', 'itemName', 'scanId', 'status', 'tagCode'],
+  );
   assert.deepEqual(
     { ...body.data.items[0], createdAt: undefined },
-    { scanId: 'scan-owner-1', itemName: 'Gold Necklace', tagCode: 'NK10432', finalMRP: mrp, createdAt: undefined },
+    {
+      id: String(line._id),
+      scanId: 'scan-owner-1',
+      itemName: 'Gold Necklace',
+      tagCode: 'NK10432',
+      finalMRP: mrp,
+      status: 'priced',
+      createdAt: undefined,
+    },
   );
+  assert.equal(body.data.nextCursor, null, 'one line: no further page');
 });
 
 test('pricing the same scan again replaces its line: one line, the latest price, the first time', async () => {
@@ -437,23 +449,40 @@ test("a History open reads the lines it shows, not the whole shop's", async () =
     ['owner', { businessId: busyShop, userId: ownerId, role: 'OWNER' }],
     ['employee', { businessId: busyShop, userId: clerkId, role: 'EMP' }],
   ]) {
-    const explained = await scanHistory.scansQuery(user, { limit: 30 }).explain('executionStats');
-    const { queryPlanner, executionStats } = Array.isArray(explained) ? explained[0] : explained;
-    const plan = JSON.stringify(queryPlanner.winningPlan);
-    assert.doesNotMatch(plan, /"stage":"SORT"/, `${label}: ordered by an index, not sorted in memory`);
-    assert.equal(executionStats.nReturned, 30, label);
-    assert.ok(executionStats.totalDocsExamined <= 30, `${label}: read ${executionStats.totalDocsExamined} lines for 30`);
+    // The first page, and one further down by its cursor. A page reads one
+    // line more than it shows, to know whether another page follows.
+    const { nextCursor } = await scanHistory.listScans(user, { limit: 30 });
+    for (const [page, before] of [['first page', undefined], ['next page', nextCursor]]) {
+      const explained = await scanHistory.scansQuery(user, { limit: 30, before }).explain('executionStats');
+      const { queryPlanner, executionStats } = Array.isArray(explained) ? explained[0] : explained;
+      const plan = JSON.stringify(queryPlanner.winningPlan);
+      assert.doesNotMatch(plan, /"stage":"SORT"/, `${label}, ${page}: ordered by an index, not sorted in memory`);
+      assert.equal(executionStats.nReturned, 31, `${label}, ${page}`);
+      assert.ok(executionStats.totalDocsExamined <= 31,
+        `${label}, ${page}: read ${executionStats.totalDocsExamined} lines for 30`);
+    }
   }
 
-  // And the order is the one the index keeps: newest first, ties by id.
-  const listed = await scanHistory.listScans({ businessId: busyShop, userId: ownerId, role: 'OWNER' }, { limit: 4 });
+  // And the order is the one the index keeps: newest first, ties by id,
+  // page after page without a line twice or a line missed.
+  const owner = { businessId: busyShop, userId: ownerId, role: 'OWNER' };
   const expected = await ScanHistory.find({ businessId: busyShop }).lean();
   const byIdDescending = (a, b) => {
     if (String(a._id) === String(b._id)) return 0;
     return String(a._id) < String(b._id) ? 1 : -1;
   };
   expected.sort((a, b) => (b.createdAt - a.createdAt) || byIdDescending(a, b));
-  assert.deepEqual(listed.map((item) => item.scanId), expected.slice(0, 4).map((line) => line.scanId));
+  const listed = await scanHistory.listScans(owner, { limit: 4 });
+  assert.deepEqual(listed.items.map((item) => item.scanId), expected.slice(0, 4).map((line) => line.scanId));
+
+  const seen = [];
+  let before;
+  do {
+    const page = await scanHistory.listScans(owner, { limit: 7, before });
+    seen.push(...page.items.map((item) => item.scanId));
+    before = page.nextCursor;
+  } while (before);
+  assert.deepEqual(seen, expected.map((line) => line.scanId), 'every line once, in order');
 });
 
 test('a history write that fails never fails the price', async () => {
