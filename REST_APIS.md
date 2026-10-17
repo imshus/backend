@@ -322,8 +322,10 @@ All wishlist routes require JWT.
   answering: one line per `itemId`, never removed by 5.3 / 5.4. Optional
   `scanId` (the scan it was priced from) and `itemName` only name that line;
   without `itemName` it is `snapshot.scanData.itemName`, else "<karat>
-  <type>" ("22K Gold"). A failed history write is logged, never the add's
-  failure.
+  <type>" ("22K Gold"). The wishlist item has no scan field of its own: the
+  app keeps the scan in `snapshot.scanId` (stored with the snapshot), which
+  the line also falls back to. A failed history write is logged, never the
+  add's failure.
 
 5.2 GET /api/v1/wishlist
 - Controller: `wishlistController.getWishlist`
