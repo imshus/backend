@@ -19,6 +19,9 @@ const scanHistory = require('../services/scanHistory.service');
  * (scanHistory.service), written after the answer has gone.
  */
 const calculateMRP = async (req, res, next) => {
+  // When this price was asked for: of two prices for one scan in flight, the
+  // history keeps the later request's, whichever finishes last.
+  const receivedAt = new Date();
   try {
     const { scanId } = req.params;
     let computed;
@@ -66,8 +69,10 @@ const calculateMRP = async (req, res, next) => {
 
     // The scan's line in Settings -> History, the latest price replacing
     // any earlier one. Filed under the scan that was priced: the requested
-    // one, or the newer scan it resolved to. The price is already sent, and
-    // a failure here only costs the history line.
+    // one, or the newer scan it resolved to. Only a scan record (one the
+    // caller may see) starts a line; priced without one, an existing line
+    // of the caller's is updated and no new one made. The price is already
+    // sent, and a failure here only costs the history line.
     const historyScanId = resolvedScanId || scanId;
     try {
       await scanHistory.recordPricedScan({
@@ -75,6 +80,8 @@ const calculateMRP = async (req, res, next) => {
         scanId: historyScanId,
         ...scanHistory.historyEntryOf({ request, itemRow, scan }),
         finalMRP: resultData.finalMRPRounded,
+        pricedAt: receivedAt,
+        mayCreate: Boolean(scan),
       });
     } catch (historyError) {
       console.warn('[SCAN_HISTORY_WRITE_FAILED]', {

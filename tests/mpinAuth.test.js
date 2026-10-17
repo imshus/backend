@@ -24,12 +24,14 @@ const registrationService = require('../src/services/registration.service');
  * about.
  */
 function fakeAccount(doc) {
-  const original = { findOne: BusinessUser.findOne, findById: Business.findById };
+  const original = { findOne: BusinessUser.findOne, updateOne: BusinessUser.updateOne, findById: Business.findById };
   BusinessUser.findOne = (filter) => {
     const wantsPhone = filter?.phone !== undefined;
     const matches = wantsPhone ? filter.phone === doc.phone : filter?.userId === doc.userId;
     return Promise.resolve(matches ? doc : null);
   };
+  // The sealed copy an MPIN-only login writes for an account without one.
+  BusinessUser.updateOne = () => Promise.resolve({ matchedCount: 1, modifiedCount: 1 });
   Business.findById = () => Promise.resolve({
     _id: 'b1',
     tradeName: 'Test Jewellers',
@@ -40,6 +42,7 @@ function fakeAccount(doc) {
   });
   return () => {
     BusinessUser.findOne = original.findOne;
+    BusinessUser.updateOne = original.updateOne;
     Business.findById = original.findById;
   };
 }

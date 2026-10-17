@@ -2,7 +2,8 @@
  * Settings -> History -> Tag scan history.
  *
  * Every price POST /scans/:scanId/calculate returns is the scan's line in
- * scan_history, one line per scan, the latest price winning. GET
+ * scan_history, one line per scan, the latest request's price winning; only
+ * a scan on record starts a line. GET
  * /history/scans lists them newest first: the shop's for the owner, an
  * employee's own for an employee. A line names the Masters item the tag
  * matched, else the karat and type priced, and carries the tag's item number.
@@ -28,6 +29,8 @@ process.env.MSG91_TEMPLATE_ID = 'test';
 process.env.OPENAI_API_KEY = 'test';
 process.env.SANDBOX_API_KEY = 'test';
 process.env.SANDBOX_API_SECRET = 'test';
+// Scan records in memory, where a scan id with no record is still priced.
+process.env.SCAN_STORE = 'memory';
 
 const express = require('express');
 const mongoose = require('mongoose');
@@ -102,11 +105,8 @@ async function lineOf(scanId, until = () => true) {
   return ScanHistory.findOne({ scanId }).lean();
 }
 
-/**
- * A scan session owned by `who`, then its price, as the review card asks;
- * with `settle`, once the line carries that price.
- */
-async function price(who, scanId, body, { jewelleryType = 'GOLD', settle = true } = {}) {
+/** A scan session owned by `who`, as the scan store holds it. */
+function openScan(who, scanId, jewelleryType = 'GOLD') {
   scans.set(scanId, {
     scanId,
     ownerUserId: String(who.userId),
@@ -115,16 +115,49 @@ async function price(who, scanId, body, { jewelleryType = 'GOLD', settle = true 
     calculationMode: 'rtgs',
     jewelleryType,
   });
-  const answer = await api('POST', `/scans/${scanId}/calculate`, {
-    token: tokenOf(who),
-    body: { jewelleryType: 'Gold', purityKarat: '22K', calculationMode: 'rtgs', ...body },
-    // The current app's rules: the Masters item is found by its prefix.
-    headers: { 'x-pricing-rules': '3' },
-  });
+}
+
+/** The price of a scan id as the review card asks it, whether or not there is a record. */
+const calculate = (who, scanId, body) => api('POST', `/scans/${scanId}/calculate`, {
+  token: tokenOf(who),
+  body: { jewelleryType: 'Gold', purityKarat: '22K', calculationMode: 'rtgs', ...body },
+  // The current app's rules: the Masters item is found by its prefix.
+  headers: { 'x-pricing-rules': '3' },
+});
+
+/**
+ * A scan session owned by `who`, then its price, as the review card asks;
+ * with `settle`, once the line carries that price.
+ */
+async function price(who, scanId, body, { jewelleryType = 'GOLD', settle = true } = {}) {
+  openScan(who, scanId, jewelleryType);
+  const answer = await calculate(who, scanId, body);
   if (settle && answer.status === 200) {
     await lineOf(scanId, (line) => line.finalMRP === answer.body.data.finalMRPRounded);
   }
   return answer;
+}
+
+/**
+ * What the controller's next history write comes to: the entry it was asked
+ * to write and whether a line was written. The write happens after the
+ * price is answered, so a test that expects nothing written waits on this.
+ */
+function nextHistoryWrite() {
+  const original = scanHistory.recordPricedScan;
+  return new Promise((resolve, reject) => {
+    scanHistory.recordPricedScan = async (entry) => {
+      scanHistory.recordPricedScan = original;
+      try {
+        const written = await original(entry);
+        resolve({ entry, written });
+        return written;
+      } catch (error) {
+        reject(error);
+        throw error;
+      }
+    };
+  });
 }
 
 const history = (who, query = '') => api('GET', `/history/scans${query}`, { token: tokenOf(who) });
@@ -279,27 +312,148 @@ test('the owner sees the whole shop, newest first; an employee sees only their o
 
 test("a scan id can only ever update its own scanner's line", async () => {
   const before = await ScanHistory.findOne({ scanId: 'scan-ravi-1' }).lean();
-  const written = await scanHistory.recordPricedScan({
-    user: people.sita,
-    scanId: 'scan-ravi-1',
-    itemName: 'Not Ravi',
-    karat: '22K',
-    tagCode: 'X',
-    finalMRP: 1,
-  });
-  assert.equal(written, false);
+  for (const mayCreate of [true, false]) {
+    const written = await scanHistory.recordPricedScan({
+      user: people.sita,
+      scanId: 'scan-ravi-1',
+      itemName: 'Not Ravi',
+      karat: '22K',
+      tagCode: 'X',
+      finalMRP: 1,
+      mayCreate,
+    });
+    assert.equal(written, false);
+  }
   const after = await ScanHistory.findOne({ scanId: 'scan-ravi-1' }).lean();
   assert.equal(after.userId, before.userId);
   assert.equal(after.finalMRP, before.finalMRP);
 
   // Two prices for one new scan at once (the prefetch and the card): one line.
-  const entry = { user: people.sita, scanId: 'scan-sita-2', itemName: '22K Gold', karat: '22K', tagCode: '' };
+  const entry = { user: people.sita, scanId: 'scan-sita-2', itemName: '22K Gold', karat: '22K', tagCode: '', mayCreate: true };
+  const pricedAt = new Date();
   const results = await Promise.all([
-    scanHistory.recordPricedScan({ ...entry, finalMRP: 100 }),
-    scanHistory.recordPricedScan({ ...entry, finalMRP: 100 }),
+    scanHistory.recordPricedScan({ ...entry, finalMRP: 100, pricedAt }),
+    scanHistory.recordPricedScan({ ...entry, finalMRP: 100, pricedAt }),
   ]);
   assert.deepEqual(results, [true, true]);
   assert.equal(await ScanHistory.countDocuments({ scanId: 'scan-sita-2' }), 1);
+});
+
+test('a price asked for earlier never replaces a later one, whichever lands last', async () => {
+  const entry = { user: people.sita, scanId: 'scan-sita-order', itemName: '22K Gold', karat: '22K', tagCode: '', mayCreate: true };
+  const asked = new Date(Date.now() - 60 * 1000);
+  const later = (seconds) => new Date(asked.getTime() + seconds * 1000);
+  assert.equal(await scanHistory.recordPricedScan({ ...entry, finalMRP: 200, pricedAt: later(1) }), true);
+  assert.equal(await scanHistory.recordPricedScan({ ...entry, finalMRP: 100, pricedAt: asked }), false,
+    'the earlier request, landing last, writes nothing');
+  assert.equal((await ScanHistory.findOne({ scanId: 'scan-sita-order' }).lean()).finalMRP, 200);
+  assert.equal(await scanHistory.recordPricedScan({ ...entry, finalMRP: 300, pricedAt: later(2) }), true);
+  assert.equal((await ScanHistory.findOne({ scanId: 'scan-sita-order' }).lean()).finalMRP, 300);
+
+  // End to end: the earlier request is held at its rate read until the
+  // later one has answered and written its line, then let go.
+  openScan(people.owner, 'scan-owner-race');
+  const originalRates = rateCalculationService.getLiveGoldRates;
+  let reached;
+  const atRateRead = new Promise((resolve) => { reached = resolve; });
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  rateCalculationService.getLiveGoldRates = async (...args) => {
+    rateCalculationService.getLiveGoldRates = originalRates;
+    reached();
+    await released;
+    return originalRates(...args);
+  };
+  try {
+    const first = calculate(people.owner, 'scan-owner-race', { netWt: 5, grossWt: 5 });
+    await atRateRead;
+    // So the two arrive in different milliseconds.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await calculate(people.owner, 'scan-owner-race', { netWt: 7, grossWt: 7 });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    const latest = second.body.data.finalMRPRounded;
+    assert.equal((await lineOf('scan-owner-race', (line) => line.finalMRP === latest)).finalMRP, latest);
+
+    const lateWrite = nextHistoryWrite();
+    release();
+    const earlier = await first;
+    assert.equal(earlier.status, 200, JSON.stringify(earlier.body));
+    assert.notEqual(earlier.body.data.finalMRPRounded, latest);
+    assert.equal((await lateWrite).written, false, 'the earlier price, finishing last, changes nothing');
+    assert.equal((await ScanHistory.findOne({ scanId: 'scan-owner-race' }).lean()).finalMRP, latest,
+      'the line keeps the price the card shows');
+  } finally {
+    rateCalculationService.getLiveGoldRates = originalRates;
+    release();
+  }
+});
+
+test('a scan id with no record starts no line; a card whose record was dropped still updates its own', async () => {
+  // Made up, or never scanned: priced from the request, as ever, but no line.
+  const write = nextHistoryWrite();
+  const madeUp = await calculate(people.sita, 'made-up-1', { netWt: 5, grossWt: 5 });
+  assert.equal(madeUp.status, 200, JSON.stringify(madeUp.body));
+  assert.ok(madeUp.body.data.finalMRPRounded > 0);
+  const attempt = await write;
+  assert.equal(attempt.entry.mayCreate, false);
+  assert.equal(attempt.written, false);
+  assert.equal(await ScanHistory.countDocuments({ scanId: 'made-up-1' }), 0);
+
+  // A card still open after the store dropped its record: its line follows.
+  assert.equal((await price(people.sita, 'scan-sita-dropped', { netWt: 2, grossWt: 2 })).status, 200);
+  scans.delete('scan-sita-dropped');
+  const rewrite = nextHistoryWrite();
+  const repriced = await calculate(people.sita, 'scan-sita-dropped', { netWt: 4, grossWt: 4 });
+  assert.equal(repriced.status, 200);
+  assert.equal((await rewrite).written, true);
+  const line = await ScanHistory.findOne({ scanId: 'scan-sita-dropped' }).lean();
+  assert.equal(line.finalMRP, repriced.body.data.finalMRPRounded);
+
+  // Another account naming that id without a record reaches nothing.
+  const foreign = nextHistoryWrite();
+  assert.equal((await calculate(people.ravi, 'scan-sita-dropped', { netWt: 9, grossWt: 9 })).status, 200);
+  assert.equal((await foreign).written, false);
+  assert.equal((await ScanHistory.findOne({ scanId: 'scan-sita-dropped' }).lean()).finalMRP, line.finalMRP);
+  assert.equal(await ScanHistory.countDocuments({ scanId: 'scan-sita-dropped' }), 1);
+});
+
+test("a History open reads the lines it shows, not the whole shop's", async () => {
+  const busyShop = new mongoose.Types.ObjectId();
+  const ownerId = String(new mongoose.Types.ObjectId());
+  const clerkId = String(new mongoose.Types.ObjectId());
+  const start = Date.now() - 60 * 60 * 1000;
+  await ScanHistory.insertMany(Array.from({ length: 400 }, (_, i) => ({
+    businessId: busyShop,
+    userId: i % 2 ? clerkId : ownerId,
+    scanId: `busy-${i}`,
+    itemName: '22K Gold',
+    karat: '22K',
+    finalMRP: 1000 + i,
+    // Pairs priced in the same millisecond, so the tie-break is in play.
+    createdAt: new Date(start + Math.floor(i / 2) * 1000),
+  })));
+
+  for (const [label, user] of [
+    ['owner', { businessId: busyShop, userId: ownerId, role: 'OWNER' }],
+    ['employee', { businessId: busyShop, userId: clerkId, role: 'EMP' }],
+  ]) {
+    const explained = await scanHistory.scansQuery(user, { limit: 30 }).explain('executionStats');
+    const { queryPlanner, executionStats } = Array.isArray(explained) ? explained[0] : explained;
+    const plan = JSON.stringify(queryPlanner.winningPlan);
+    assert.doesNotMatch(plan, /"stage":"SORT"/, `${label}: ordered by an index, not sorted in memory`);
+    assert.equal(executionStats.nReturned, 30, label);
+    assert.ok(executionStats.totalDocsExamined <= 30, `${label}: read ${executionStats.totalDocsExamined} lines for 30`);
+  }
+
+  // And the order is the one the index keeps: newest first, ties by id.
+  const listed = await scanHistory.listScans({ businessId: busyShop, userId: ownerId, role: 'OWNER' }, { limit: 4 });
+  const expected = await ScanHistory.find({ businessId: busyShop }).lean();
+  const byIdDescending = (a, b) => {
+    if (String(a._id) === String(b._id)) return 0;
+    return String(a._id) < String(b._id) ? 1 : -1;
+  };
+  expected.sort((a, b) => (b.createdAt - a.createdAt) || byIdDescending(a, b));
+  assert.deepEqual(listed.map((item) => item.scanId), expected.slice(0, 4).map((line) => line.scanId));
 });
 
 test('a history write that fails never fails the price', async () => {

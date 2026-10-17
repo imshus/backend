@@ -40,6 +40,8 @@ const Employee = require('../src/models/employee.model');
 const authService = require('../src/services/auth.service');
 const otpService = require('../src/services/otp.service');
 const employeeAccounts = require('../src/services/employeeAccount.service');
+const profileEditService = require('../src/services/profileEdit.service');
+const redisClient = require('../src/redis/redisClient');
 const { openMpin } = require('../src/utils/mpinVault');
 const errorHandler = require('../src/middleware/errorHandler');
 
@@ -93,6 +95,37 @@ async function createOwner(phone, mpin, extra = {}) {
 }
 
 const sealedMpinOf = async (id) => openMpin((await BusinessUser.findById(id).select('+mpinVault').lean()).mpinVault);
+
+/**
+ * Holds the next bcrypt comparison of `mpin` until let go: the moment a
+ * sign-in has loaded its record and is checking the MPIN on it. Every other
+ * comparison runs as usual.
+ */
+function holdNextCompare(mpin) {
+  const original = bcrypt.compare;
+  let reached;
+  const atCompare = new Promise((resolve) => { reached = resolve; });
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  let held = false;
+  bcrypt.compare = async (plain, hash) => {
+    if (!held && String(plain) === mpin) {
+      held = true;
+      bcrypt.compare = original;
+      reached();
+      await released;
+    }
+    return original(plain, hash);
+  };
+  return {
+    atCompare,
+    release,
+    restore: () => {
+      bcrypt.compare = original;
+      release();
+    },
+  };
+}
 
 test.before(async () => {
   mongoServer = await MongoMemoryServer.create({ instance: { launchTimeout: 120000 } });
@@ -294,4 +327,120 @@ test('a burst of wrong guesses from a fresh account is held to five comparisons'
   const statuses = answers.map((answer) => answer.status).sort();
   assert.equal(statuses.filter((status) => status === 400).length, 5);
   assert.equal(statuses.filter((status) => status === 429).length, 7);
+});
+
+test('a sign-in comparing the old MPIN while it is changed does not seal the old one back', async () => {
+  // No sealed copy yet, so the sign-in would write one.
+  const owner = await createOwner('9000000006', '1212');
+  const hold = holdNextCompare('1212');
+  try {
+    const signingIn = login('9000000006', '1212');
+    await hold.atCompare;
+    assert.equal((await changeMpin(ownerToken(owner), '1212', '3434')).status, 200);
+    hold.release();
+    assert.equal((await signingIn).status, 200, 'the MPIN was the one in force when that sign-in read it');
+  } finally {
+    hold.restore();
+  }
+  assert.equal(await sealedMpinOf(owner._id), '3434', 'Forgot MPIN shows the MPIN that signs in');
+  assert.equal((await login('9000000006', '3434')).status, 200);
+
+  // The same for an employee's sign-in.
+  const employee = await Employee.create({ businessId: shop.id, name: 'Meena', phone: '9811100003' });
+  await employeeAccounts.createAccountFor(employee, { mpin: '2468' });
+  await BusinessUser.updateOne({ employeeId: employee._id }, { $unset: { mpinVault: 1 } });
+  const employeeHold = holdNextCompare('2468');
+  try {
+    const signingIn = login('9811100003', '2468');
+    await employeeHold.atCompare;
+    assert.equal((await changeMpin(employeeToken(employee), '2468', '8642')).status, 200);
+    employeeHold.release();
+    assert.equal((await signingIn).status, 200);
+  } finally {
+    employeeHold.restore();
+  }
+  assert.equal(await employeeAccounts.readMpinOf(employee), '8642', "the owner's Show MPIN reads the MPIN in force");
+
+  // And for the Profile screen's MPIN check.
+  const editor = await createOwner('9000000008', '1357');
+  const editHold = holdNextCompare('1357');
+  try {
+    const starting = profileEditService.startProfileEdit({ businessId: shop.id, userId: editor._id }, '1357');
+    await editHold.atCompare;
+    assert.equal((await changeMpin(ownerToken(editor), '1357', '7531')).status, 200);
+    editHold.release();
+    assert.ok((await starting).editToken);
+  } finally {
+    editHold.restore();
+  }
+  assert.equal(await sealedMpinOf(editor._id), '7531');
+});
+
+test('with nothing changing it, a sign-in still seals an MPIN that has no readable copy', async () => {
+  const owner = await createOwner('9000000007', '5656');
+  assert.equal(await sealedMpinOf(owner._id), null);
+  assert.equal((await login('9000000007', '5656')).status, 200);
+  assert.equal(await sealedMpinOf(owner._id), '5656');
+
+  const employee = await Employee.create({ businessId: shop.id, name: 'Kiran', phone: '9811100004' });
+  await employeeAccounts.createAccountFor(employee, { mpin: '1928' });
+  await BusinessUser.updateOne({ employeeId: employee._id }, { $unset: { mpinVault: 1 } });
+  assert.equal(await employeeAccounts.readMpinOf(employee), null);
+  assert.equal((await login('9811100004', '1928')).status, 200);
+  assert.equal(await employeeAccounts.readMpinOf(employee), '1928');
+
+  const editor = await createOwner('9000000011', '3030');
+  assert.ok((await profileEditService.startProfileEdit({ businessId: shop.id, userId: editor._id }, '3030')).editToken);
+  assert.equal(await sealedMpinOf(editor._id), '3030');
+});
+
+test('an EXPIRE lost after its INCR takes the counter with it, so no lock is left without its window', async () => {
+  const account = await createOwner('9000000009', '9090');
+  const token = ownerToken(account);
+  const key = `change_mpin_attempts:${account._id}`;
+
+  const originalExpire = redisClient.expire;
+  redisClient.expire = async () => { throw new Error('Connection is closed.'); };
+  try {
+    assert.equal((await changeMpin(token, '0000', '1234')).status, 500);
+  } finally {
+    redisClient.expire = originalExpire;
+  }
+  assert.equal(await redisClient.get(key), null, 'the counter went rather than stay without a TTL');
+
+  // The count starts again, with its window.
+  assert.equal((await changeMpin(token, '0000', '1234')).body.error, 'MPIN_INCORRECT');
+  assert.equal(await redisClient.get(key), '1');
+  const ttl = await redisClient.ttl(key);
+  assert.ok(ttl > 0 && ttl <= 15 * 60, `TTL ${ttl}`);
+});
+
+test('a lock found without a TTL gets its window back, and the refusal says how long is left', async () => {
+  const account = await createOwner('9000000010', '1010');
+  const token = ownerToken(account);
+  const key = `change_mpin_attempts:${account._id}`;
+  const lockedFor = (minutes) => ({
+    success: false,
+    error: 'MPIN_ATTEMPTS_EXCEEDED',
+    message: `Too many wrong MPIN attempts. Please try again in ${minutes}.`,
+  });
+
+  // Five attempts counted and no TTL (an EXPIRE and its clean-up both lost).
+  await redisClient.set(key, '5');
+  assert.equal(await redisClient.ttl(key), -1);
+  const healed = await changeMpin(token, '1010', '1234');
+  assert.equal(healed.status, 429);
+  assert.deepEqual(healed.body, lockedFor('15 minutes'));
+  const ttl = await redisClient.ttl(key);
+  assert.ok(ttl > 0 && ttl <= 15 * 60, `the window runs from now (TTL ${ttl})`);
+
+  // Part of the window gone: the minutes that are left, not fifteen.
+  await redisClient.set(key, '5', 'EX', 90);
+  assert.deepEqual((await changeMpin(token, '1010', '1234')).body, lockedFor('2 minutes'));
+  await redisClient.set(key, '5', 'EX', 20);
+  assert.deepEqual((await changeMpin(token, '1010', '1234')).body, lockedFor('1 minute'));
+
+  // Once the window is over, the right MPIN changes it.
+  await redisClient.del(key);
+  assert.equal((await changeMpin(token, '1010', '1234')).status, 200);
 });

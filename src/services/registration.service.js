@@ -362,9 +362,15 @@ const login = async (mobile, credential) => {
     // Forgot MPIN could not show it and asked for a new one instead. This
     // is one of two moments the server holds the MPIN in plain text and has
     // just proved it right; the copy is written here, once, and from the
-    // next Forgot MPIN on the shop reads its own digits.
+    // next Forgot MPIN on the shop reads its own digits. Only while this MPIN
+    // is still the one in force and the copy still missing: a change or a
+    // reset that lands while this login was comparing has sealed its own
+    // MPIN, and must not get this older one back.
     if (!user.mpinVault) {
-      user.mpinVault = sealMpin(mpin);
+      await BusinessUser.updateOne(
+        { _id: user._id, mpinHash: user.mpinHash, mpinVault: null },
+        { $set: { mpinVault: sealMpin(mpin) } },
+      );
     }
   } else {
     if (!await bcrypt.compare(String(password || ''), user.passwordHash)) {
@@ -731,6 +737,45 @@ const CHANGE_MPIN_WINDOW_SECONDS = 15 * 60;
 const isFourDigitMpin = (value) => typeof value === 'string' && /^[0-9]{4}$/.test(value);
 
 /**
+ * Counts one change-MPIN attempt on the account's key, and refuses it once
+ * the five are spent (429 MPIN_ATTEMPTS_EXCEEDED, saying how much of the
+ * window is left).
+ *
+ * The key must never be left without its TTL: the lock is checked before the
+ * comparison and only a right MPIN clears it, so a counter without one would
+ * lock the account's MPIN changes for good. INCR and EXPIRE are two commands,
+ * so an EXPIRE that fails after its INCR takes the key with it (that attempt
+ * fails, uncounted), and a locked key found without a TTL all the same gets
+ * the window from now.
+ */
+async function countChangeMpinAttempt(key) {
+  const attempts = Number(await redisClient.incr(key));
+  if (attempts === 1) {
+    try {
+      await redisClient.expire(key, CHANGE_MPIN_WINDOW_SECONDS);
+    } catch (error) {
+      await redisClient.del(key).catch(() => {});
+      throw error;
+    }
+  }
+  if (attempts <= CHANGE_MPIN_ATTEMPT_LIMIT) return;
+
+  let secondsLeft = Number(await redisClient.ttl(key));
+  if (secondsLeft === -1) {
+    await redisClient.expire(key, CHANGE_MPIN_WINDOW_SECONDS);
+    secondsLeft = CHANGE_MPIN_WINDOW_SECONDS;
+  }
+  const minutes = Math.max(1, Math.ceil(secondsLeft / 60) || 1);
+  const error = new Error(
+    `Too many wrong MPIN attempts. Please try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+  );
+  error.code = 'MPIN_ATTEMPTS_EXCEEDED';
+  error.statusCode = 429;
+  error.expose = true;
+  throw error;
+}
+
+/**
  * The sign-in record whose MPIN a session changes. An owner's (or SUPER's)
  * token names their own business_users record; an employee's names their
  * Employee document, and the MPIN they sign in with lives on the EMP record
@@ -788,9 +833,7 @@ const changeMpin = async (sessionUser, { currentMpin, newMpin, confirmMpin } = {
   const account = await mpinAccountOf(sessionUser || {});
 
   const attemptsKey = `change_mpin_attempts:${account._id}`;
-  const attempts = Number(await redisClient.incr(attemptsKey));
-  if (attempts === 1) await redisClient.expire(attemptsKey, CHANGE_MPIN_WINDOW_SECONDS);
-  if (attempts > CHANGE_MPIN_ATTEMPT_LIMIT) throw new Error('MPIN_ATTEMPTS_EXCEEDED');
+  await countChangeMpinAttempt(attemptsKey);
   if (!(await bcrypt.compare(current, account.mpinHash))) throw new Error('MPIN_INCORRECT');
   await redisClient.del(attemptsKey);
 

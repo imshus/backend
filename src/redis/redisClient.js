@@ -61,6 +61,14 @@ function createMemoryStoreClient() {
       entry.expiresAt = Date.now() + (Number(ttlSeconds) * 1000);
       return 1;
     },
+
+    // As Redis answers TTL: -2 for no key, -1 for a key without an expiry.
+    async ttl(key) {
+      const entry = getEntry(key);
+      if (!entry) return -2;
+      if (!entry.expiresAt) return -1;
+      return Math.ceil((entry.expiresAt - Date.now()) / 1000);
+    },
   };
 }
 

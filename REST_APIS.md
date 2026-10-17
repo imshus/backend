@@ -74,7 +74,8 @@ This file lists all REST API routes provided by the backend (grouped and numbere
 - Refusals (`{ success:false, error, message }`, in this order): `400
   MPIN_INVALID` "Enter a 4-digit MPIN"; `400 MPIN_MISMATCH` "MPINs don't
   match"; `429 MPIN_ATTEMPTS_EXCEEDED` after five wrong current MPINs in 15
-  minutes for that account (a right one clears the count); `400
+  minutes for that account (a right one clears the count), "Too many wrong
+  MPIN attempts. Please try again in N minutes." with the minutes left; `400
   MPIN_INCORRECT` "Incorrect MPIN."; `400 MPIN_SAME` "Choose an MPIN
   different from the current one". No MPIN yet: `409 MPIN_NOT_SET` (owner),
   `409 EMPLOYEE_MPIN_NOT_SET` (employee).
@@ -166,6 +167,8 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
 - Description: Calculate final MRP using scan + rates (protected route for pricing/calculation).
 - Every price returned is also the scan's line in Tag scan history (8.1),
   written after the answer; a failed write is logged, never the price's failure.
+  A line is started only for a scan on record (one the caller may see); a
+  price without one updates the caller's existing line for that id, if any.
 - Header `X-Pricing-Rules`: `3` from the app build whose Wastage tile chooses
   the weight: everything in rules 2, and wastage priced at the current gold
   rate on the net or the gross weight (`wastageWeightBasis`, below). `2` from
@@ -410,12 +413,16 @@ current ones; a user record whose copy fell behind is healed on that login.
 - `{ items: [{ scanId, itemName, tagCode, finalMRP, createdAt }] }`, newest
   scan first; `limit` 1-100, default 30. The owner sees the shop's scans, an
   employee their own (as GET /invoices).
-- One line per scan in `scan_history`, written by 2.9, the latest price
-  winning: `itemName` is the Masters item's name when the tag matched one,
-  else the karat and type priced ("22K Gold", "18K Diamond Jewellery");
+- One line per scan in `scan_history`, written by 2.9, the latest request's
+  price winning: `itemName` is the Masters item's name when the tag matched
+  one, else the karat and type priced ("22K Gold", "18K Diamond Jewellery");
   `tagCode` the item number the card shows, or ''; `finalMRP` the rupee price.
-  Lines expire 180 days after the scan.
+  Only a price for a scan on record starts a line. Lines expire 180 days
+  after the scan.
 - Wishlist history reads 5.2 and Checkout history 4.3.
+
+
+Notes & file references
 - Routes live in `backend/src/routes/*.js` (see each file for mounting path). Controllers in `backend/src/controllers/*` and services in `backend/src/services/*`.
 - Authentication: `backend/src/middleware/auth.middleware.js` provides `authenticateJWT`, `authenticateJWTOptional`, `requireRole`.
 - Validation: `backend/src/middleware/validation.middleware.js` and route-level schemas in `backend/src/routes/*`.

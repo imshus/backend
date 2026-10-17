@@ -615,19 +615,27 @@ async function signInWithMpin(account, mpin) {
 
   const now = new Date();
   const accountUpdate = { lastLoginAt: now };
-  // As for the owner: an MPIN hashed before the sealed copy existed gets one
-  // the first time it is proved right.
-  if (!account.mpinVault) accountUpdate.mpinVault = sealMpin(String(mpin));
-  // And as the owner's login does for theirs: a copy of the shop's GST
-  // details that has fallen behind is brought up to date.
+  // As the owner's login does for theirs: a copy of the shop's GST details
+  // that has fallen behind is brought up to date.
   const shop = await shopDetailsOf(employee.businessId);
   for (const field of SHOP_DETAIL_FIELDS) {
     if (String(account[field] ?? '') !== shop[field]) accountUpdate[field] = shop[field];
   }
-  await Promise.all([
+  const writes = [
     BusinessUser.updateOne({ _id: account._id, role: EMP }, { $set: accountUpdate }),
     Employee.updateOne({ _id: employee._id }, { $set: { lastLoginAt: now } }),
-  ]);
+  ];
+  // And as for the owner: an MPIN hashed before the sealed copy existed gets
+  // one the first time it is proved right, only while it is still the MPIN
+  // in force (a change landing meanwhile sealed its own) and the copy still
+  // missing.
+  if (!account.mpinVault) {
+    writes.push(BusinessUser.updateOne(
+      { _id: account._id, role: EMP, mpinHash: account.mpinHash, mpinVault: null },
+      { $set: { mpinVault: sealMpin(String(mpin)) } },
+    ));
+  }
+  await Promise.all(writes);
 
   return employeeSession(employee, account, shop);
 }

@@ -54,6 +54,12 @@ const scanHistorySchema = new mongoose.Schema(
       required: true,
       default: 0,
     },
+    // When the request that priced it arrived. A price only replaces one
+    // asked for before it, so two in flight for one scan leave the later
+    // request's, whichever finishes last.
+    pricedAt: {
+      type: Date,
+    },
   },
   {
     timestamps: true,
@@ -62,8 +68,10 @@ const scanHistorySchema = new mongoose.Schema(
 );
 
 scanHistorySchema.index({ businessId: 1, scanId: 1 }, { unique: true });
-scanHistorySchema.index({ businessId: 1, userId: 1, createdAt: -1 });
-scanHistorySchema.index({ businessId: 1, createdAt: -1 });
+// The list's order, tie-break included (scanHistory.service listScans), so a
+// History open reads the lines it shows rather than sorting the whole shop's.
+scanHistorySchema.index({ businessId: 1, userId: 1, createdAt: -1, _id: -1 });
+scanHistorySchema.index({ businessId: 1, createdAt: -1, _id: -1 });
 scanHistorySchema.index({ createdAt: 1 }, { expireAfterSeconds: SCAN_HISTORY_TTL_SECONDS });
 
 const ScanHistory = mongoose.model('ScanHistory', scanHistorySchema);

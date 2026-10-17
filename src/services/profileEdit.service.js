@@ -52,10 +52,13 @@ const startProfileEdit = async ({ businessId, userId }, mpin) => {
     throw new Error('INVALID_MPIN');
   }
   // The other moment the MPIN is in plain text and just proved right: an
-  // account from before the readable copy existed gets one here too.
+  // account from before the readable copy existed gets one here too, as at
+  // login only while this MPIN is still the one in force.
   if (!user.mpinVault) {
-    user.mpinVault = sealMpin(String(mpin));
-    await user.save();
+    await BusinessUser.updateOne(
+      { _id: user._id, mpinHash: user.mpinHash, mpinVault: null },
+      { $set: { mpinVault: sealMpin(String(mpin)) } },
+    );
   }
 
   const editToken = jwt.sign(
