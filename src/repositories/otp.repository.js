@@ -13,8 +13,10 @@ const updateOtpRecord = async (id, update) => {
 // to a number it is adding as an employee is skipped: it is read only by that
 // shop's own check (findLatestByMobileFlowAndBusiness), never as proof of the
 // number to anyone else, and it does not hide the number's own code either.
+// The code that confirms deleting one's account (ACCOUNT_DELETE) is skipped
+// the same way: it proves that deletion and never signs anyone in.
 const findLatestByMobile = async (mobile) => {
-  return OtpVerification.findOne({ mobile, flow: { $ne: 'EMPLOYEE_PHONE' } }).sort({ createdAt: -1 });
+  return OtpVerification.findOne({ mobile, flow: { $nin: ['EMPLOYEE_PHONE', 'ACCOUNT_DELETE'] } }).sort({ createdAt: -1 });
 };
 
 const findLatestByMobileAndFlow = async (mobile, flow) => {

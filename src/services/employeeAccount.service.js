@@ -133,13 +133,16 @@ async function classifyPhone(phone, {
   };
 }
 
+/** The log line a release writes under: a transfer, or an account its holder deleted. */
+const logTagOf = (entry) => (entry?.reason === 'ACCOUNT_DELETED' ? '[ACCOUNT_DELETED]' : '[EMPLOYEE_TRANSFER]');
+
 /** Takes back an entry that turned out to release nothing. */
 async function withdrawRelease(entry, released) {
   released.splice(released.indexOf(entry), 1);
   try {
     await ReleasedLogin.deleteOne({ _id: entry._id });
   } catch (error) {
-    console.error('[EMPLOYEE_TRANSFER] could not withdraw', { releasedId: String(entry._id), error: error.message });
+    console.error(`${logTagOf(entry)} could not withdraw`, { releasedId: String(entry._id), error: error.message });
   }
 }
 
@@ -155,6 +158,8 @@ async function withdrawRelease(entry, released) {
  * first (two shops claiming one number at once) answers PHONE_ALREADY_REGISTERED
  * with its entry withdrawn. An employee without a record is released by being
  * switched off here; one already off holds nothing and leaves no entry.
+ * Deleting one's own account (accountRelease.service) releases the same way,
+ * with reason ACCOUNT_DELETED.
  */
 async function archiveRelease(fields, original, released) {
   const switchOff = Boolean(fields.employeeId) && fields.previousIsActive === true;
@@ -185,15 +190,20 @@ async function archiveRelease(fields, original, released) {
     }
   }
 
-  // Ids and shops only: never the number's codes, hashes or tokens.
-  console.info('[EMPLOYEE_TRANSFER]', {
+  // Ids and shops only: never the number's codes, hashes or tokens. An
+  // account deleted by its holder went to no other shop.
+  const ids = {
     kind: entry.kind,
-    toBusinessId: String(entry.releasedByBusinessId),
     fromBusinessId: entry.fromBusinessId ? String(entry.fromBusinessId) : null,
     releasedLoginId: original ? String(original._id) : null,
     employeeId: entry.employeeId ? String(entry.employeeId) : null,
     releasedId: String(entry._id),
-  });
+  };
+  if (entry.reason === 'ACCOUNT_DELETED') {
+    console.info(logTagOf(entry), ids);
+  } else {
+    console.info(logTagOf(entry), { ...ids, toBusinessId: String(entry.releasedByBusinessId) });
+  }
   return entry;
 }
 
@@ -316,17 +326,18 @@ async function restoreRelease(entry, { check = false } = {}) {
 }
 
 /**
- * Undoes a release whose employee was then not written, last step first.
- * Never throws: an entry that cannot go back stays in released_logins for
- * scripts/restore_released_login.js, and says so in the log.
+ * Undoes a release whose employee (or account deletion) was then not
+ * written, last step first. Never throws: an entry that cannot go back stays
+ * in released_logins for scripts/restore_released_login.js, and says so in
+ * the log.
  */
 async function restoreReleased(released) {
   for (const entry of [...(released || [])].reverse()) {
     try {
       await restoreRelease(entry);
-      console.info('[EMPLOYEE_TRANSFER] restored', { releasedId: String(entry._id), kind: entry.kind });
+      console.info(`${logTagOf(entry)} restored`, { releasedId: String(entry._id), kind: entry.kind });
     } catch (error) {
-      console.error('[EMPLOYEE_TRANSFER] could not restore', {
+      console.error(`${logTagOf(entry)} could not restore`, {
         releasedId: String(entry._id),
         kind: entry.kind,
         error: error.message,
@@ -625,6 +636,7 @@ module.exports = {
   isPhoneRegistered,
   classifyPhone,
   releasePhoneHolders,
+  archiveRelease,
   restoreRelease,
   restoreReleased,
   businessDetailsOf,

@@ -1,18 +1,22 @@
 const mongoose = require('mongoose');
 
 /**
- * A sign-in record taken out of business_users so its number could become
- * another shop's employee (or this shop's, when it was a second owner here),
- * kept whole so it can be put back (scripts/restore_released_login.js).
+ * A sign-in record taken out of business_users, kept whole so it can be put
+ * back (scripts/restore_released_login.js). `reason` says why:
+ *   - MADE_EMPLOYEE    its number became another shop's employee (or this
+ *                      shop's, when it was a second owner here);
+ *   - ACCOUNT_DELETED  its holder deleted their own account (DELETE
+ *                      /auth/account, accountRelease.service).
  *
  * Only the sign-in record moves. The shop it belonged to — its business,
  * invoices, scans, wallet and licence — is never touched; until it is given
- * an owner again, nobody signs in to it. For another shop's employee the
- * Employee document stays where it is, switched off, and `previousIsActive`
- * says what it was before.
+ * an owner again, nobody signs in to it. For an employee the Employee
+ * document stays where it is, switched off, and `previousIsActive` says what
+ * it was before.
  */
 const releasedLoginSchema = new mongoose.Schema({
-  // The ten digits the record held, and that the new employee took.
+  // The ten digits the record held (for MADE_EMPLOYEE, the ones the new
+  // employee took).
   phone: {
     type: String,
     required: true,
@@ -20,11 +24,11 @@ const releasedLoginSchema = new mongoose.Schema({
   },
   reason: {
     type: String,
-    enum: ['MADE_EMPLOYEE'],
+    enum: ['MADE_EMPLOYEE', 'ACCOUNT_DELETED'],
     default: 'MADE_EMPLOYEE',
     required: true
   },
-  // 'owner' for an OWNER record, 'employee' for another shop's employee.
+  // 'owner' for an OWNER (or SUPER) record, 'employee' for an employee.
   kind: {
     type: String,
     enum: ['owner', 'employee'],
@@ -43,7 +47,7 @@ const releasedLoginSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: null
   },
-  // Another shop's employee switched off by the move, and what isActive was.
+  // The employee switched off by the release, and what isActive was.
   employeeId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Employee',
@@ -57,7 +61,9 @@ const releasedLoginSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-  // The shop and the owner whose new employee took the number.
+  // The shop and the owner whose new employee took the number; for
+  // ACCOUNT_DELETED, the holder's own shop and id (an employee's is their
+  // Employee document's, as their token carries it).
   releasedByBusinessId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Business',

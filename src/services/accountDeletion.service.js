@@ -27,6 +27,9 @@ const Wishlist = require('../models/wishlist.model');
 /**
  * Permanently deletes an account and wipes off all database resources linked to it.
  *
+ * No route reaches this any more: DELETE /auth/account removes only the
+ * caller's own sign-in and keeps the shop's data (accountRelease.service).
+ *
  * @param {Object} params
  * @param {string} params.businessId - The ID of the business/organization
  * @param {string} params.userId - The ID of the requesting user

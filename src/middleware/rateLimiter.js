@@ -180,6 +180,22 @@ const employeeOtpVerifyLimiter = bodyKeyLimiter({
   pick: employeePhoneOf,
 });
 
+// Deleting one's own account, counted per signed-in account: the code only
+// ever goes to that account's own phone, so five sends an hour is plenty, and
+// fifteen tries at it is the same bound as every other OTP check.
+const accountDeleteOtpLimiter = perUserLimiter({
+  name: 'account_delete_otp',
+  limit: 5,
+  windowSeconds: 3600,
+  message: 'Too many codes were sent. Please try again in an hour.',
+});
+const accountDeleteLimiter = perUserLimiter({
+  name: 'account_delete',
+  limit: 15,
+  windowSeconds: 3600,
+  message: 'Too many attempts. Please try again in an hour.',
+});
+
 // One gallery pick is one detection; 120 an hour is far beyond a person
 // and a firm cap on a script. A refused call just means framing by hand.
 const detectTagRateLimiter = perUserLimiter({
@@ -223,4 +239,6 @@ module.exports = {
   employeePhoneCheckLimiter,
   employeeOtpSendLimiter,
   employeeOtpVerifyLimiter,
+  accountDeleteOtpLimiter,
+  accountDeleteLimiter,
 };

@@ -97,7 +97,9 @@ const refreshTokens = async (token) => {
     return generateTokens(payload.businessId, payload.userId, payload.role, {
       permissions: toPlainPermissions(employee.permissions),
     });
-  } else if (role === 'OWNER') {
+  } else if (role === 'OWNER' || role === 'SUPER') {
+    // A SUPER account can delete itself too (DELETE /auth/account), so its
+    // record is read the same way.
     const BusinessUser = require('../models/businessUser.model');
     const user = await BusinessUser.findById(payload.userId).select('isActive businessId role').lean();
     if (

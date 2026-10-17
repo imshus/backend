@@ -4,15 +4,19 @@
  * an employee: an owner of another shop (or a second owner of the same one),
  * or another shop's employee. Adding such a number (POST /employees, PUT
  * /employees/:id) archives the record whole in released_logins and prints
- * its id in an [EMPLOYEE_TRANSFER] log line.
+ * its id in an [EMPLOYEE_TRANSFER] log line. An account its holder deleted
+ * (DELETE /auth/account, an owner's or an employee's) is archived the same
+ * way, with reason ACCOUNT_DELETED and an [ACCOUNT_DELETED] log line, and
+ * comes back the same way.
  *
  *   node scripts/restore_released_login.js <releasedLoginId>
  *
  * The record goes back into business_users exactly as it was — same id, same
  * shop, same MPIN — so its owner signs in as before, and an employee the move
- * switched off is switched back on. Refused, writing nothing, while the
- * number is someone else's (usually the employee it was given to: delete
- * them or change their number first), while the owner's Login ID is someone
+ * (or the deletion) switched off is switched back on. Refused, writing
+ * nothing, while the number is someone else's (usually the employee it was
+ * given to, or whoever registered it after a deletion: delete them or change
+ * their number first), while the owner's Login ID is someone
  * else's, for an employee their shop has deleted, moved to another number or
  * given a new sign-in record since, or once it has been put back already.
  * Prints ids only.

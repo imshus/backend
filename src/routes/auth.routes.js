@@ -28,6 +28,8 @@ const {
   otpVerifyLimiter,
   accountLookupLimiter,
   loginAttemptLimiter,
+  accountDeleteOtpLimiter,
+  accountDeleteLimiter,
 } = require('../middleware/rateLimiter');
 const { authenticateJWT, requireCurrentOwner } = require('../middleware/auth.middleware');
 
@@ -70,8 +72,12 @@ router.post('/employee/login', loginAttemptLimiter, validate(employeeLoginSchema
 router.get('/employee/permissions', authenticateJWT, authController.getEmployeePermissions);
 router.post('/change-password', authenticateJWT, validate(changePasswordSchema), authController.changePassword);
 router.post('/refresh', authController.refreshToken);
-// Wipes the shop: an owner's token counts only while their sign-in record
-// is still the shop's owner's (not one just made someone's employee).
-router.delete('/account', authenticateJWT, requireCurrentOwner, authController.deleteAccount);
+// Deleting one's own account, any role: a code to the account's own phone,
+// then that code and the word DELETE. Only the caller's sign-in goes
+// (archived in released_logins); the shop and everything in it stay
+// (accountRelease.service). An owner's token counts only while their sign-in
+// record is still the shop's owner's (not one just made someone's employee).
+router.post('/account/delete-otp', authenticateJWT, requireCurrentOwner, accountDeleteOtpLimiter, authController.sendAccountDeleteOtp);
+router.delete('/account', authenticateJWT, requireCurrentOwner, accountDeleteLimiter, authController.deleteAccount);
 
 module.exports = router;

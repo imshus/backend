@@ -319,14 +319,54 @@ const refreshToken = async (req, res, next) => {
   }
 };
 
+// What deleting one's own account answers when it is refused, in words the
+// app shows as they are. Nothing has been written when any of these is sent.
+const ACCOUNT_DELETE_REFUSALS = {
+  CONFIRMATION_REQUIRED: { status: 400, message: 'Type DELETE in capital letters to confirm.' },
+  OTP_INVALID: { status: 400, message: 'That OTP is not correct.' },
+  OTP_EXPIRED: { status: 400, message: 'This OTP has expired. Send a new one.' },
+  OTP_NOT_FOUND: { status: 400, message: 'Send an OTP to your phone first.' },
+  OTP_ALREADY_USED: { status: 400, message: 'This OTP was already used. Send a new one.' },
+  ACCOUNT_PHONE_MISSING: {
+    status: 409,
+    message: 'This account has no phone number to send an OTP to. Ask your shop owner to remove you.',
+  },
+  UNAUTHORIZED: { status: 401, message: 'Your session has ended. Please sign in again.' },
+};
+
+/** Answers a refused account deletion; false for anything else. */
+const refuseAccountDelete = (res, error) => {
+  const message = String(error?.message || '');
+  if (message.startsWith('MSG91_')) {
+    res.status(502).json({ success: false, error: 'OTP_SEND_FAILED', message: "Couldn't send the OTP right now. Please try again." });
+    return true;
+  }
+  const refusal = ACCOUNT_DELETE_REFUSALS[message];
+  if (!refusal) return false;
+  res.status(refusal.status).json({ success: false, error: message, message: refusal.message });
+  return true;
+};
+
+// POST /auth/account/delete-otp: a code to the caller's own phone.
+const sendAccountDeleteOtp = async (req, res, next) => {
+  try {
+    const accountRelease = require('../services/accountRelease.service');
+    const data = await accountRelease.sendDeleteOtp(req.user);
+    sendSuccess(res, data);
+  } catch (err) {
+    if (!refuseAccountDelete(res, err)) next(err);
+  }
+};
+
+// DELETE /auth/account: the caller's own sign-in only; their shop stays.
 const deleteAccount = async (req, res, next) => {
   try {
-    const { businessId, userId, role } = req.user || {};
-    const accountDeletionService = require('../services/accountDeletion.service');
-    const result = await accountDeletionService.deleteAccount({ businessId, userId, role });
-    sendSuccess(res, result);
+    const accountRelease = require('../services/accountRelease.service');
+    const { otp, confirm } = req.body || {};
+    const result = await accountRelease.deleteOwnAccount(req.user, { otp, confirm });
+    res.status(200).json(result);
   } catch (err) {
-    next(err);
+    if (!refuseAccountDelete(res, err)) next(err);
   }
 };
 
@@ -353,5 +393,6 @@ module.exports = {
   getEmployeePermissions,
   changePassword,
   refreshToken,
+  sendAccountDeleteOtp,
   deleteAccount,
 };

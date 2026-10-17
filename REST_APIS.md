@@ -83,6 +83,16 @@ This file lists all REST API routes provided by the backend (grouped and numbere
 - Middleware: `validate(resetPasswordSchema)`
 - Description: Set and confirm a new password without requesting the forgotten current password.
 
+1.16 POST /api/v1/auth/account/delete-otp
+- Auth: JWT required, any role (`authenticateJWT`, `requireCurrentOwner`); 5 an hour per account (`accountDeleteOtpLimiter`)
+- Body: `{}` → `200 { success:true, data:{ phoneMasked:'+91 •••••43210', expiresInSeconds:600, resendAfterSeconds:30 } }`
+- Description: Texts a 6-digit code (flow `ACCOUNT_DELETE`, under the caller's shop) to the caller's own phone: an owner's (or SUPER's) `business_users` phone, an employee's EMP record phone (else their Employee phone). Never answers with the code. MSG91 failing → `502 OTP_SEND_FAILED`; a login gone or switched off since → `401 UNAUTHORIZED`.
+
+1.17 DELETE /api/v1/auth/account
+- Auth: JWT required, any role (`authenticateJWT`, `requireCurrentOwner`); 15 an hour per account (`accountDeleteLimiter`)
+- Body: `{ otp:'123456', confirm:'DELETE' }` → `200 { success:true, message:'Your account has been deleted.' }`
+- Description: Deletes the caller's own account and nothing else (`services/accountRelease.service.js`). `confirm` must be exactly `DELETE` (`400 CONFIRMATION_REQUIRED`), and `otp` the latest unexpired, unused code 1.16 sent for this caller's phone and shop (`400 OTP_INVALID` / `OTP_EXPIRED` / `OTP_NOT_FOUND` / `OTP_ALREADY_USED`); nothing is written on a refusal. The caller's `business_users` record is archived whole in `released_logins` (reason `ACCOUNT_DELETED`, one `[ACCOUNT_DELETED]` log line, ids only) and taken out of `business_users`; an employee's Employee record is also switched off (`isActive:false`, recorded in the entry). Their sessions end: an owner's token at once on routes behind `requireCurrentOwner`, every refresh at once. The business, invoices, scans, wallet and credits, payments, licence, subscription, and the shop's other owners and employees are never touched. `node scripts/restore_released_login.js <releasedLoginId>` puts the login back (and the employee back on).
+
 
 2. Scanning (Image upload, AI analysis, clarification, review)
 
@@ -331,7 +341,7 @@ Refused numbers write nothing. The older draft/password path (7.1) never
 moves anyone: any number held by anyone is `409 PHONE_ALREADY_REGISTERED`
 there.
 
-An OWNER token on 7.x and `DELETE /auth/account` counts only while its
+An OWNER token on 7.x and on 1.16/1.17 (deleting one's own account) counts only while its
 `business_users` record is still that shop's (not EMP, not switched off);
 otherwise `401 UNAUTHORIZED`, as the next refresh would answer.
 
