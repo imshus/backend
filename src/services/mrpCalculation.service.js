@@ -417,7 +417,9 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     calculationMode: resolvedMode,
   };
 
-  return { resultData, resolvedScanId, scan, snapshot, resolvedMode };
+  // `request` and `itemRow` (the Masters item the tag matched, or null) are
+  // what the scan's history line names it by.
+  return { resultData, resolvedScanId, scan, snapshot, resolvedMode, request, itemRow };
 }
 
 // ── Deriving inputs from a fresh reading ──────────────────────────────

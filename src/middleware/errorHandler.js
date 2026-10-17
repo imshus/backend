@@ -26,6 +26,12 @@ const errorHandler = (err, req, res, next) => {
     // Changing the phone number or the GSTIN on the Profile screen.
     'INVALID_MPIN': { status: 401, msg: 'That MPIN is not correct.' },
     'MPIN_NOT_SET': { status: 409, msg: 'This account has no MPIN yet. Set one to continue.' },
+    // Settings -> MPIN Manager (POST /auth/change-mpin).
+    'MPIN_INVALID': { status: 400, msg: 'Enter a 4-digit MPIN' },
+    'MPIN_MISMATCH': { status: 400, msg: "MPINs don't match" },
+    'MPIN_INCORRECT': { status: 400, msg: 'Incorrect MPIN.' },
+    'MPIN_SAME': { status: 400, msg: 'Choose an MPIN different from the current one' },
+    'MPIN_ATTEMPTS_EXCEEDED': { status: 429, msg: 'Too many wrong MPIN attempts. Please try again in 15 minutes.' },
     'EDIT_SESSION_INVALID': { status: 401, msg: 'Confirm your MPIN again to make this change.' },
     'EDIT_SESSION_EXPIRED': { status: 401, msg: 'This edit took too long. Confirm your MPIN again.' },
     'PHONE_ALREADY_REGISTERED': { status: 409, msg: 'Another account already uses this phone number.' },

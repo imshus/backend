@@ -3,6 +3,7 @@ const redisService = require('../services/redis.service');
 const { computeMrp } = require('../services/mrpCalculation.service');
 const { pricingRulesOf } = require('../services/pricingInputs');
 const { toSessionContext } = require('../utils/scanAccess');
+const scanHistory = require('../services/scanHistory.service');
 
 /**
  * POST /scans/:scanId/calculate — the price for the inputs the review card
@@ -13,6 +14,9 @@ const { toSessionContext } = require('../utils/scanAccess');
  * the build that prices wastage at the current gold rate, 2 from 1.0.367;
  * none from the builds before it), so the MRP a card quotes is the one its
  * invoice bills.
+ *
+ * Every price it returns is also the scan's line in Tag scan history
+ * (scanHistory.service), written after the answer has gone.
  */
 const calculateMRP = async (req, res, next) => {
   try {
@@ -39,7 +43,7 @@ const calculateMRP = async (req, res, next) => {
       }
       throw error;
     }
-    const { resultData, resolvedScanId, scan, snapshot, resolvedMode } = computed;
+    const { resultData, resolvedScanId, scan, snapshot, resolvedMode, request, itemRow } = computed;
 
     // Send the amount as soon as it is calculated. Persisting the calculation
     // is still awaited for reliability, but no longer delays the client UI.
@@ -58,6 +62,25 @@ const calculateMRP = async (req, res, next) => {
           message: cacheError.message,
         });
       }
+    }
+
+    // The scan's line in Settings -> History, the latest price replacing
+    // any earlier one. Filed under the scan that was priced: the requested
+    // one, or the newer scan it resolved to. The price is already sent, and
+    // a failure here only costs the history line.
+    const historyScanId = resolvedScanId || scanId;
+    try {
+      await scanHistory.recordPricedScan({
+        user: req.user,
+        scanId: historyScanId,
+        ...scanHistory.historyEntryOf({ request, itemRow, scan }),
+        finalMRP: resultData.finalMRPRounded,
+      });
+    } catch (historyError) {
+      console.warn('[SCAN_HISTORY_WRITE_FAILED]', {
+        scanId: historyScanId,
+        message: historyError.message,
+      });
     }
   } catch (error) {
     next(error);

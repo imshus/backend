@@ -722,6 +722,90 @@ const changePassword = async (userId, role, currentPassword, newPassword) => {
   return { success: true, message: 'Password updated successfully' };
 };
 
+// Wrong current MPINs on Settings -> MPIN Manager, per sign-in record: five
+// in fifteen minutes. The session is already signed in, but a phone left on
+// the counter is too, and four digits are ten thousand guesses.
+const CHANGE_MPIN_ATTEMPT_LIMIT = 5;
+const CHANGE_MPIN_WINDOW_SECONDS = 15 * 60;
+
+const isFourDigitMpin = (value) => typeof value === 'string' && /^[0-9]{4}$/.test(value);
+
+/**
+ * The sign-in record whose MPIN a session changes. An owner's (or SUPER's)
+ * token names their own business_users record; an employee's names their
+ * Employee document, and the MPIN they sign in with lives on the EMP record
+ * linked back to it. Either way only within the token's own shop.
+ */
+async function mpinAccountOf({ userId, businessId, role }) {
+  if (!mongoose.isValidObjectId(String(userId || '')) || !mongoose.isValidObjectId(String(businessId || ''))) {
+    throw new Error('USER_NOT_FOUND');
+  }
+
+  if (String(role || '').toUpperCase() === 'EMP') {
+    const Employee = require('../models/employee.model');
+    const employee = await Employee.findOne({ _id: userId, businessId }).select('isActive').lean();
+    if (!employee) throw new Error('USER_NOT_FOUND');
+    if (employee.isActive === false) throw new Error('EMPLOYEE_INACTIVE');
+    const account = await BusinessUser.findOne({ employeeId: employee._id, businessId, role: 'EMP' }).lean();
+    // An employee still on the old phone + password login has no MPIN of
+    // their own yet; the owner gives them one.
+    if (!account?.mpinHash) throw new Error('EMPLOYEE_MPIN_NOT_SET');
+    if (account.isActive === false) throw new Error('EMPLOYEE_INACTIVE');
+    return account;
+  }
+
+  const account = await BusinessUser.findOne({ _id: userId, businessId, role: { $ne: 'EMP' } }).lean();
+  if (!account || !account.isActive) throw new Error('USER_NOT_FOUND');
+  if (!account.mpinHash) throw new Error('MPIN_NOT_SET');
+  return account;
+}
+
+/**
+ * Changes the signed-in account's MPIN: the current one, then the new one
+ * typed twice. Refusals, in the order they are checked:
+ *   MPIN_INVALID    a field is not exactly four digits;
+ *   MPIN_MISMATCH   the new MPIN and its confirmation differ;
+ *   MPIN_ATTEMPTS_EXCEEDED (429) five wrong current MPINs in fifteen minutes;
+ *   MPIN_INCORRECT  the current MPIN is wrong (counted towards the five);
+ *   MPIN_SAME       the new MPIN is the current one.
+ *
+ * The attempt is counted before the comparison and the count cleared once
+ * the current MPIN is proved, so requests sent all at once cannot run more
+ * comparisons between them than the five.
+ *
+ * The new MPIN is hashed for login and sealed for Forgot MPIN (and for the
+ * owner's "show MPIN" of an employee), as every other MPIN write is. An
+ * owner whose password column holds the MPIN (every account that set one at
+ * sign-up or over Forgot MPIN) has it moved along too, or the old MPIN would
+ * still open the account through the password a legacy build sends.
+ */
+const changeMpin = async (sessionUser, { currentMpin, newMpin, confirmMpin } = {}) => {
+  const typed = [currentMpin, newMpin, confirmMpin].map((value) => (typeof value === 'string' ? value.trim() : value));
+  if (!typed.every(isFourDigitMpin)) throw new Error('MPIN_INVALID');
+  const [current, next, confirmation] = typed;
+  if (next !== confirmation) throw new Error('MPIN_MISMATCH');
+
+  const account = await mpinAccountOf(sessionUser || {});
+
+  const attemptsKey = `change_mpin_attempts:${account._id}`;
+  const attempts = Number(await redisClient.incr(attemptsKey));
+  if (attempts === 1) await redisClient.expire(attemptsKey, CHANGE_MPIN_WINDOW_SECONDS);
+  if (attempts > CHANGE_MPIN_ATTEMPT_LIMIT) throw new Error('MPIN_ATTEMPTS_EXCEEDED');
+  if (!(await bcrypt.compare(current, account.mpinHash))) throw new Error('MPIN_INCORRECT');
+  await redisClient.del(attemptsKey);
+
+  if (next === current) throw new Error('MPIN_SAME');
+
+  const mpinHash = await bcrypt.hash(next, 10);
+  const set = { mpinHash, mpinVault: sealMpin(next) };
+  if (account.passwordHash && await bcrypt.compare(current, account.passwordHash)) {
+    set.passwordHash = mpinHash;
+  }
+  await BusinessUser.updateOne({ _id: account._id }, { $set: set });
+
+  return { success: true, message: 'MPIN updated.' };
+};
+
 module.exports = {
   confirmGst,
   submitContactDetails,
@@ -737,4 +821,5 @@ module.exports = {
   revealStoredMpin,
   loginEmployee,
   changePassword,
+  changeMpin,
 };

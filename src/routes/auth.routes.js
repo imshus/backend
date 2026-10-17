@@ -71,6 +71,10 @@ router.post('/login', loginAttemptLimiter, validate(loginSchema), authController
 router.post('/employee/login', loginAttemptLimiter, validate(employeeLoginSchema), authController.loginEmployee);
 router.get('/employee/permissions', authenticateJWT, authController.getEmployeePermissions);
 router.post('/change-password', authenticateJWT, validate(changePasswordSchema), authController.changePassword);
+// Settings -> MPIN Manager, for the owner and for an employee alike. Checked
+// in the service rather than by a schema, so each refusal carries its own
+// code; wrong current MPINs are counted per account there too.
+router.post('/change-mpin', authenticateJWT, authController.changeMpin);
 router.post('/refresh', authController.refreshToken);
 // Deleting one's own account, any role: a code to the account's own phone,
 // then that code and the word DELETE. Only the caller's sign-in goes

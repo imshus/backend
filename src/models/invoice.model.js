@@ -71,6 +71,10 @@ const invoiceSchema = new mongoose.Schema({
   igstAmount: { type: Number, default: 0 },
   roundedOff: { type: Number, default: 0 },
   grandTotal: { type: Number, required: true },
+  // How many pieces the invoice bills, for Settings -> History -> Checkout
+  // history ("Cart · 2 items"), which lists invoices without their lines.
+  // Absent on invoices issued before it was kept: unknown, not zero.
+  pieceCount: { type: Number },
   amountInWords: { type: String, default: '' },
   termsAndConditions: { type: String, default: '' },
 

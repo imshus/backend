@@ -22,6 +22,7 @@ const OtpVerification = require('../models/otpVerification.model');
 const PaymentTransaction = require('../models/paymentTransaction.model');
 const ReferralCode = require('../models/referralCode.model');
 const ScanBilling = require('../models/scanBilling.model');
+const ScanHistory = require('../models/scanHistory.model');
 const Wishlist = require('../models/wishlist.model');
 
 /**
@@ -68,6 +69,7 @@ async function deleteAccount({ businessId, userId, role }) {
       PaymentTransaction.deleteMany({ businessId: bId }),
       ReferralCode.deleteMany({ businessId: bId }),
       ScanBilling.deleteMany({ businessId: bId }),
+      ScanHistory.deleteMany({ businessId: bId }),
       Wishlist.deleteMany({ businessId: bId }),
     ]);
 
@@ -87,6 +89,7 @@ async function deleteAccount({ businessId, userId, role }) {
       Employee.deleteOne({ _id: userId }),
       Wishlist.deleteMany({ userId }),
       ScanBilling.deleteMany({ userId }),
+      ScanHistory.deleteMany({ userId: String(userId) }),
     ]);
 
     return {

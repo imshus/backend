@@ -63,6 +63,22 @@ This file lists all REST API routes provided by the backend (grouped and numbere
 - Middleware: `validate(changePasswordSchema)`
 - Controller: `authController.changePassword`
 
+1.11a POST /api/v1/auth/change-mpin (Settings -> MPIN Manager)
+- Auth: JWT required; owner and employee alike. An owner's token changes their
+  own record; an employee's changes the EMP sign-in record linked to their
+  Employee id.
+- Body: `{ currentMpin, newMpin, confirmMpin }`, four-digit strings →
+  `200 { success:true, message:'MPIN updated.' }`. The new MPIN is hashed for
+  login and sealed for Forgot MPIN / the owner's Show MPIN; an owner's
+  password column that held the MPIN moves with it.
+- Refusals (`{ success:false, error, message }`, in this order): `400
+  MPIN_INVALID` "Enter a 4-digit MPIN"; `400 MPIN_MISMATCH` "MPINs don't
+  match"; `429 MPIN_ATTEMPTS_EXCEEDED` after five wrong current MPINs in 15
+  minutes for that account (a right one clears the count); `400
+  MPIN_INCORRECT` "Incorrect MPIN."; `400 MPIN_SAME` "Choose an MPIN
+  different from the current one". No MPIN yet: `409 MPIN_NOT_SET` (owner),
+  `409 EMPLOYEE_MPIN_NOT_SET` (employee).
+
 1.12 POST /api/v1/refresh
 - Auth: none
 - Controller: `authController.refreshToken`
@@ -148,6 +164,8 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
 - Auth: JWT required (`authenticateJWT`)
 - Controller: `calculationController.calculateMRP`
 - Description: Calculate final MRP using scan + rates (protected route for pricing/calculation).
+- Every price returned is also the scan's line in Tag scan history (8.1),
+  written after the answer; a failed write is logged, never the price's failure.
 - Header `X-Pricing-Rules`: `3` from the app build whose Wastage tile chooses
   the weight: everything in rules 2, and wastage priced at the current gold
   rate on the net or the gross weight (`wastageWeightBasis`, below). `2` from
@@ -250,6 +268,9 @@ All invoice routes require JWT.
 4.1 POST /api/v1/invoices/generate
 - Controller: `invoiceController.generateInvoice`
 - Description: Generate invoice PDF via `pdfmonkey.service.generateInvoicePdf`.
+- `piece_count` (optional): how many pieces the invoice bills, a whole number
+  from 1 to the number of line items; 1 when absent (the one scanned piece).
+  Kept as `pieceCount`. Anything else → 400 before a number is spent.
 
 4.2 GET /api/v1/invoices/preview/next-number
 - Controller: `invoiceController.getNextInvoiceNumber`
@@ -257,7 +278,9 @@ All invoice routes require JWT.
 
 4.3 GET /api/v1/invoices
 - Controller: `invoiceController.getInvoices`
-- Description: List invoices for a business.
+- Description: List invoices for a business (an employee's own), newest first,
+  without `lineItems`. Each carries `pieceCount` (null on invoices issued
+  before it was kept), `grandTotal` and `createdAt` for Checkout history.
 
 4.4 GET /api/v1/invoices/:id
 - Controller: `invoiceController.getInvoice`
@@ -379,7 +402,20 @@ The shop's GST details in either login's payload are the business record's
 current ones; a user record whose copy fell behind is healed on that login.
 
 
-Notes & file references
+8. History (Settings -> History)
+
+8.1 GET /api/v1/history/scans?limit=30
+- Auth: JWT required; owner and employee alike.
+- Controller: `historyController.getScanHistory`
+- `{ items: [{ scanId, itemName, tagCode, finalMRP, createdAt }] }`, newest
+  scan first; `limit` 1-100, default 30. The owner sees the shop's scans, an
+  employee their own (as GET /invoices).
+- One line per scan in `scan_history`, written by 2.9, the latest price
+  winning: `itemName` is the Masters item's name when the tag matched one,
+  else the karat and type priced ("22K Gold", "18K Diamond Jewellery");
+  `tagCode` the item number the card shows, or ''; `finalMRP` the rupee price.
+  Lines expire 180 days after the scan.
+- Wishlist history reads 5.2 and Checkout history 4.3.
 - Routes live in `backend/src/routes/*.js` (see each file for mounting path). Controllers in `backend/src/controllers/*` and services in `backend/src/services/*`.
 - Authentication: `backend/src/middleware/auth.middleware.js` provides `authenticateJWT`, `authenticateJWTOptional`, `requireRole`.
 - Validation: `backend/src/middleware/validation.middleware.js` and route-level schemas in `backend/src/routes/*`.

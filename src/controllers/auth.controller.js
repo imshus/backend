@@ -305,6 +305,21 @@ const changePassword = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /auth/change-mpin — Settings -> MPIN Manager. The refusals are the
+ * error handler's (MPIN_INVALID, MPIN_MISMATCH, MPIN_INCORRECT, MPIN_SAME,
+ * and 429 after five wrong current MPINs).
+ */
+const changeMpin = async (req, res, next) => {
+  try {
+    const { currentMpin, newMpin, confirmMpin } = req.body || {};
+    const data = await registrationService.changeMpin(req.user, { currentMpin, newMpin, confirmMpin });
+    res.status(200).json(data);
+  } catch (err) {
+    next(err);
+  }
+};
+
 const refreshToken = async (req, res, next) => {
   try {
     const { refreshToken: token } = req.body;
@@ -396,6 +411,7 @@ module.exports = {
   loginEmployee,
   getEmployeePermissions,
   changePassword,
+  changeMpin,
   refreshToken,
   sendAccountDeleteOtp,
   deleteAccount,

@@ -172,6 +172,22 @@ const withInvoiceUrl = (invoice) => {
   };
 };
 
+/**
+ * How many pieces an invoice bills. Every invoice the app issues today bills
+ * the one scanned piece on the card, so that is the default; a request that
+ * bills several says so in `piece_count`, a whole number from 1 to the
+ * number of its lines (each piece has a line of its own at least).
+ */
+const pieceCountOf = (body, lineCount) => {
+  const raw = body?.piece_count;
+  if (raw === undefined || raw === null || raw === '') return 1;
+  const count = Number(raw);
+  if (!Number.isInteger(count) || count < 1 || count > lineCount) {
+    throw new InvoiceInputError('piece_count must be a whole number from 1 to the number of line items');
+  }
+  return count;
+};
+
 const resolveBusinessIdFromUser = async (user) => {
   if (!user) return null;
   if (user.businessId) return String(user.businessId);
@@ -576,6 +592,7 @@ const generateInvoice = async (req, res, next) => {
     // totals checked against them — all before a number is spent, so a
     // refused request costs the shop no gap in its series.
     let figures;
+    let pieceCount;
     try {
       figures = computeInvoiceFigures({
         lineItems: line_items,
@@ -583,6 +600,7 @@ const generateInvoice = async (req, res, next) => {
         intraState: isIntraStateSupply(business),
       });
       checkClientTotals(req.body, figures);
+      pieceCount = pieceCountOf(req.body, line_items.length);
     } catch (inputErr) {
       if (inputErr instanceof InvoiceInputError) {
         return sendError(res, inputErr.message, 400);
@@ -682,6 +700,7 @@ const generateInvoice = async (req, res, next) => {
       igstAmount: pdfPayload.igst_amount,
       roundedOff: pdfPayload.rounded_off,
       grandTotal: pdfPayload.grand_total,
+      pieceCount,
       amountInWords: pdfPayload.amount_in_words,
       termsAndConditions: terms_and_conditions,
       pdfStatus: 'pending',
@@ -934,7 +953,12 @@ const getInvoices = async (req, res, next) => {
     ]);
 
     return sendSuccess(res, {
-      invoices: invoices.map(withInvoiceUrl),
+      // pieceCount is null on an invoice issued before it was kept; the
+      // Checkout history then names the invoice by its number instead.
+      invoices: invoices.map((invoice) => ({
+        ...withInvoiceUrl(invoice),
+        pieceCount: invoice.pieceCount ?? null,
+      })),
       total,
       page,
       limit,

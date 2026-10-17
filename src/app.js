@@ -33,6 +33,7 @@ app.use('/api/v1/subscription', require('./routes/subscription.routes'));
 app.use('/api/v1/payments', require('./routes/payment.routes'));
 app.use('/api/v1/wishlist', require('./routes/wishlist.routes'));
 app.use('/api/v1/invoices', require('./routes/invoice.routes'));
+app.use('/api/v1/history', require('./routes/history.routes'));
 app.use('/api/v1/item-codes', require('./routes/itemCode.routes'));
 app.use('/api/v1/wastage-codes', require('./routes/wastageCode.routes'));
 app.use('/api/v1/notifications', require('./routes/notification.routes'));
