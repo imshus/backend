@@ -18,6 +18,11 @@ const MSG91_RETRY_BASE_DELAY_MS = 700;
 // The code a shop's sign-up texts to its phone (contact-details).
 const SIGNUP_FLOW = 'SIGNUP';
 
+// Codes only the phone may show: never printed to the log, never kept for the
+// development endpoint (GET /auth/dev/otps). The one that confirms deleting
+// an account is what stands between a leaked token and that deletion.
+const PHONE_ONLY_FLOWS = new Set(['ACCOUNT_DELETE']);
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -263,7 +268,8 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
   try {
     normalizedMobile = ensureMobile(mobile);
     const otp = generateOtp();
-    console.log(`Generated OTP: ${otp}`);
+    const phoneOnly = PHONE_ONLY_FLOWS.has(flow);
+    console.log(`Generated OTP: ${phoneOnly ? `(${flow}, not printed)` : otp}`);
 
     divider('VALIDATION');
     console.log('Validation Passed: YES');
@@ -281,7 +287,7 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
       expiresAt: new Date(Date.now() + (10 * 60 * 1000)),
     });
 
-    rememberDevOtp(String(businessId || normalizedMobile), otpType, otp, normalizedMobile);
+    if (!phoneOnly) rememberDevOtp(String(businessId || normalizedMobile), otpType, otp, normalizedMobile);
 
     const msg91Result = await sendMsg91Otp({ mobile: normalizedMobile, otp, requestId, route });
     await otpRepository.updateOtpRecord(record._id, {

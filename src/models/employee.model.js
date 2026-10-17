@@ -54,6 +54,12 @@ const employeeSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  // Moves on when the employee deletes their own account: every session
+  // issued before carries the old number and is refused at its next refresh,
+  // even once their owner switches them back on. Missing means 0.
+  sessionVersion: {
+    type: Number
+  },
   lastLoginAt: {
     type: Date
   }

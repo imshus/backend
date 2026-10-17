@@ -10,8 +10,9 @@ const { toPlainPermissions } = require('../utils/permissions');
  *
  * `claims` adds to the payload and can never replace the three that decide
  * who the token is: an employee's token carries a copy of their permissions,
- * re-read from the Employee document at every refresh. Access checks still
- * read that document, so a permission the owner takes away is gone at once.
+ * re-read from the Employee document at every refresh, and of its
+ * sessionVersion. Access checks still read that document, so a permission
+ * the owner takes away is gone at once.
  */
 const generateTokens = (businessId, userId, role, claims = {}) => {
   const payload = { ...claims, businessId, userId, role };
@@ -78,6 +79,9 @@ const verifyRefreshToken = (token) => {
   }
 };
 
+/** The Employee document's sessionVersion, or a token's copy of it; missing is 0. */
+const sessionVersionOf = (holder) => Number(holder?.sessionVersion) || 0;
+
 /**
  * A refresh is where a deactivated or deleted account is caught: the access
  * token lives fifteen minutes, so refusing here ends the session within that
@@ -88,14 +92,24 @@ const refreshTokens = async (token) => {
   const role = String(payload.role || '').trim().toUpperCase();
   if (role === 'EMP') {
     const Employee = require('../models/employee.model');
-    const employee = await Employee.findById(payload.userId).select('isActive businessId permissions').lean();
-    if (!employee || employee.isActive === false || String(employee.businessId) !== String(payload.businessId)) {
+    const employee = await Employee.findById(payload.userId)
+      .select('isActive businessId permissions sessionVersion')
+      .lean();
+    if (
+      !employee
+      || employee.isActive === false
+      || String(employee.businessId) !== String(payload.businessId)
+      // Issued before the employee deleted their account: over for good,
+      // even once their owner switches them back on.
+      || sessionVersionOf(payload) !== sessionVersionOf(employee)
+    ) {
       throw new Error('UNAUTHORIZED');
     }
     // The permissions copy follows the Employee document, so an edit by the
     // owner reaches the token at its next refresh.
     return generateTokens(payload.businessId, payload.userId, payload.role, {
       permissions: toPlainPermissions(employee.permissions),
+      sessionVersion: sessionVersionOf(employee),
     });
   } else if (role === 'OWNER' || role === 'SUPER') {
     // A SUPER account can delete itself too (DELETE /auth/account), so its
@@ -116,6 +130,7 @@ const refreshTokens = async (token) => {
 };
 
 module.exports = {
+  sessionVersionOf,
   generateTokens,
   generatePasswordResetToken,
   verifyPasswordResetToken,

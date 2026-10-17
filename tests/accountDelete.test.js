@@ -46,7 +46,9 @@ const OtpVerification = require('../src/models/otpVerification.model');
 const ReleasedLogin = require('../src/models/releasedLogin.model');
 const authService = require('../src/services/auth.service');
 const employeeAccounts = require('../src/services/employeeAccount.service');
+const otpService = require('../src/services/otp.service');
 const errorHandler = require('../src/middleware/errorHandler');
+const { authenticateJWT, requireRole } = require('../src/middleware/auth.middleware');
 const { sealMpin } = require('../src/utils/mpinVault');
 const { normalizeIndianMobile } = require('../src/utils/phone');
 const { signEmployeePhoneToken } = require('../src/utils/employeePhoneToken');
@@ -251,6 +253,10 @@ test.before(async () => {
   app.use(express.json());
   app.use('/api/v1/auth', require('../src/routes/auth.routes'));
   app.use('/api/v1/employees', require('../src/routes/employee.routes'));
+  app.use('/api/v1/settings', require('../src/routes/settings.routes'));
+  // What every SUPER-only route checks first (/subscription/credits/*,
+  // /settings/supreme-rates), with nothing behind it.
+  app.post('/api/v1/probe/super-only', authenticateJWT, requireRole('SUPER'), (req, res) => res.json({ success: true }));
   app.use(errorHandler);
   server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
@@ -298,6 +304,25 @@ test('the code goes to the caller\'s own phone, masked in the answer and never i
   assert.equal(msg91.sent.at(-1).mobile, '919500000021');
 });
 
+test('the deletion code is never printed, nor kept for the development OTP endpoint', async () => {
+  const printed = [];
+  const realLog = console.log;
+  console.log = (...args) => printed.push(args.map(String).join(' '));
+  let sent;
+  try {
+    sent = await sendCode(tokensOf(shopA.id, created.staff2._id, 'EMP').accessToken);
+  } finally {
+    console.log = realLog;
+  }
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  const code = lastCodeTo('9500000022');
+  assert.match(code, /^[0-9]{6}$/);
+  assert.ok(printed.some((line) => line.startsWith('Generated OTP:')), 'the send is still logged');
+  assert.equal(printed.some((line) => line.includes(code)), false, 'without its code');
+  assert.equal(Object.values(otpService.getDevOtps(String(shopA.id))).includes(code), false);
+  assert.equal(Object.values(otpService.getDevOtps('9500000022')).includes(code), false);
+});
+
 test('MSG91 refusing the send is a 502 OTP_SEND_FAILED', async () => {
   msg91.mode = 'reject';
   try {
@@ -343,6 +368,12 @@ test('nothing is deleted without DELETE typed exactly and this caller\'s latest 
       message: 'Type DELETE in capital letters to confirm.',
     });
   }
+  // Refused before the code is looked at: it is still unused.
+  const stored = await OtpVerification.findOne({ mobile: '9500000011', flow: 'ACCOUNT_DELETE', businessId: shopA.id })
+    .sort({ createdAt: -1 })
+    .lean();
+  assert.equal(stored.otp, code);
+  assert.equal(stored.verified, false, 'a mistyped word does not use up the code');
 
   // A wrong code, a malformed one, or none.
   const wrong = code === '000000' ? '000001' : '000000';
@@ -411,6 +442,9 @@ test('an owner deleting their account loses their login only: the shop and every
   const shopBBefore = await shopData(shopB.id);
 
   const code = await codeFor(session.accessToken, '9500000001');
+  // The word mistyped first: refused, and the same code still works after.
+  const mistyped = await deleteAccount(session.accessToken, { otp: code, confirm: 'delete' });
+  assert.equal(mistyped.body.error, 'CONFIRMATION_REQUIRED');
   releaseLog.length = 0;
   const { status, body } = await deleteAccount(session.accessToken, { otp: code, confirm: 'DELETE' });
   assert.equal(status, 200, JSON.stringify(body));
@@ -497,8 +531,10 @@ test('an employee deleting their account: their sign-in archived, switched off, 
   assert.equal(String(entry.fromBusinessId), String(shopA.id));
   assert.equal(entry.releasedByUserId, staffId);
   assert.deepEqual(plain(entry.original), plain(original));
-  const employeeAfter = plain(await Employee.findById(staffId).lean());
+  // (sessionVersion moves on: the sessions from before stay over, see below.)
+  const { sessionVersion, ...employeeAfter } = plain(await Employee.findById(staffId).lean());
   assert.equal(employeeAfter.isActive, false);
+  assert.equal(sessionVersion, 1);
   assert.deepEqual({ ...employeeAfter, isActive: true, updatedAt: null }, { ...employeeBefore, updatedAt: null });
 
   // The owner, the other employee and their sign-ins: as they were.
@@ -538,9 +574,87 @@ test('an employee from before sign-in records: switching them off is the whole r
   assert.equal((await refresh(token.refreshToken)).status, 401);
 });
 
-test('a SUPER account deleting itself: its login archived, its refresh refused', async () => {
+test('a roster number typed with spaces or dashes still gets the code; the release goes by id', async () => {
+  for (const [phone, tenDigits] of [['95000 00031', '9500000031'], ['+91-95000-00032', '9500000032']]) {
+    const employee = await Employee.create({ businessId: shopA.id, name: `Karigar ${phone}`, phone });
+    const token = tokensOf(shopA.id, employee._id, 'EMP');
+    const sent = await sendCode(token.accessToken);
+    assert.equal(sent.status, 200, `${phone}: ${JSON.stringify(sent.body)}`);
+    assert.equal(sent.body.data.phoneMasked, `+91 •••••${tenDigits.slice(-5)}`);
+    assert.equal(msg91.sent.at(-1).mobile, `91${tenDigits}`);
+
+    const { status, body } = await deleteAccount(token.accessToken, { otp: lastCodeTo(tenDigits), confirm: 'DELETE' });
+    assert.equal(status, 200, `${phone}: ${JSON.stringify(body)}`);
+    const after = await Employee.findById(employee._id).lean();
+    assert.equal(after.isActive, false);
+    assert.equal(after.phone, phone, 'the roster entry otherwise as it was');
+    const entry = await ReleasedLogin.findOne({ employeeId: employee._id }).lean();
+    assert.equal(entry.reason, 'ACCOUNT_DELETED');
+    assert.equal(entry.phone, tenDigits);
+    assert.equal(entry.original, null);
+    assert.equal(entry.previousIsActive, true);
+    assert.equal((await refresh(token.refreshToken)).status, 401);
+
+    // And the restore script switches them back on.
+    assert.equal((await restoreReleasedLogin(String(entry._id))).restored, true);
+    assert.equal((await Employee.findById(employee._id).lean()).isActive, true);
+  }
+});
+
+test('an account with no usable phone number is told so in words for its role', async () => {
+  const employee = await Employee.create({ businessId: shopA.id, name: 'No Number', phone: '12345' });
+  const forEmployee = await sendCode(tokensOf(shopA.id, employee._id, 'EMP').accessToken);
+  assert.equal(forEmployee.status, 409);
+  assert.deepEqual(forEmployee.body, {
+    success: false,
+    error: 'ACCOUNT_PHONE_MISSING',
+    message: 'There is no usable phone number on this account to send an OTP to. Ask your shop owner to update your number or remove you.',
+  });
+
+  const owner = await BusinessUser.create({ businessId: shopB.id, phone: '12345', passwordHash: 'x', role: 'OWNER' });
+  const forOwner = await sendCode(ownerToken(shopB, owner._id));
+  assert.equal(forOwner.status, 409);
+  assert.deepEqual(forOwner.body, {
+    success: false,
+    error: 'ACCOUNT_PHONE_MISSING',
+    message: 'There is no usable phone number on this account to send an OTP to. Please reach us through Contact Us.',
+  });
+  assert.equal(
+    (await deleteAccount(ownerToken(shopB, owner._id), { otp: '123456', confirm: 'DELETE' })).body.error,
+    'ACCOUNT_PHONE_MISSING',
+  );
+  assert.ok(await BusinessUser.exists({ _id: owner._id }), 'nothing written');
+  await BusinessUser.deleteOne({ _id: owner._id });
+});
+
+test('an owner whose number was stored with a leading 0 gets the code on its ten digits', async () => {
+  const { insertedId } = await BusinessUser.collection.insertOne({
+    businessId: shopB.id,
+    phone: '09500000033',
+    passwordHash: 'x',
+    role: 'OWNER',
+    isActive: true,
+  });
+  const token = ownerToken(shopB, insertedId);
+  const sent = await sendCode(token);
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  assert.equal(sent.body.data.phoneMasked, '+91 •••••00033');
+  assert.equal(msg91.sent.at(-1).mobile, '919500000033');
+
+  const { status, body } = await deleteAccount(token, { otp: lastCodeTo('9500000033'), confirm: 'DELETE' });
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.equal(await BusinessUser.exists({ _id: insertedId }), null);
+  const entry = await ReleasedLogin.findOne({ 'original._id': insertedId }).lean();
+  assert.equal(entry.phone, '9500000033');
+  assert.equal(entry.original.phone, '09500000033', 'archived as stored');
+});
+
+test('a SUPER account deleting itself: its login archived, its refresh and its SUPER routes refused', async () => {
   const session = tokensOf(created.super.businessId, created.super._id, 'SUPER');
   assert.equal((await refresh(session.refreshToken)).status, 200);
+  const superOnly = () => api('POST', '/probe/super-only', { token: session.accessToken });
+  assert.equal((await superOnly()).status, 200);
+  assert.equal((await api('GET', '/employees', { token: session.accessToken })).status, 200);
   const code = await codeFor(session.accessToken, '9500000099');
   assert.deepEqual((await deleteAccount(session.accessToken, { otp: code, confirm: 'DELETE' })).body, DELETED);
   assert.equal(await BusinessUser.exists({ _id: created.super._id }), null);
@@ -549,6 +663,12 @@ test('a SUPER account deleting itself: its login archived, its refresh refused',
   assert.equal(entry.original.role, 'SUPER');
   assert.equal((await refresh(session.refreshToken)).status, 401);
   assert.equal((await sendCode(session.accessToken)).status, 401);
+
+  // Its access token, still unexpired, no longer passes as SUPER anywhere.
+  const ended = { success: false, error: 'UNAUTHORIZED', message: 'Your session has ended. Please sign in again.' };
+  assert.deepEqual(await superOnly(), { status: 401, body: ended });
+  assert.deepEqual(await api('GET', '/settings/supreme-rates', { token: session.accessToken }), { status: 401, body: ended });
+  assert.deepEqual(await api('GET', '/employees', { token: session.accessToken }), { status: 401, body: ended });
 });
 
 test('the restore script puts deleted accounts back as they were', async () => {
@@ -578,6 +698,42 @@ test('the restore script puts deleted accounts back as they were', async () => {
   assert.equal((await Employee.findById(created.legacy._id).lean()).isActive, true);
 });
 
+test('an owner switching a deleted employee back on does not bring back their old sessions', async () => {
+  const staff = await addEmployee(shopA, '9500000023', '2323', 'Staff Three');
+  const signedIn = await login('9500000023', '2323');
+  assert.equal(signedIn.status, 200, JSON.stringify(signedIn.body));
+  const { accessToken, refreshToken } = signedIn.body.data;
+  const code = await codeFor(accessToken, '9500000023');
+  assert.deepEqual((await deleteAccount(accessToken, { otp: code, confirm: 'DELETE' })).body, DELETED);
+  assert.equal((await refresh(refreshToken)).status, 401);
+  const entry = await ReleasedLogin.findOne({ employeeId: staff._id, reason: 'ACCOUNT_DELETED' }).lean();
+
+  // The owner switches them back on: a new sign-in record, no MPIN yet.
+  const owner = ownerToken(shopA);
+  const on = await api('PUT', `/employees/${staff._id}`, { token: owner, body: { isActive: true } });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(on.body.data.isActive, true);
+  assert.equal('sessionVersion' in on.body.data, false, 'not part of what the app is sent');
+  assert.equal((await refresh(refreshToken)).status, 401, 'the session from before the deletion stays over');
+
+  // With an MPIN from the owner, a new sign-in is a new session, refreshed as usual.
+  const mpin = await api('PUT', `/employees/${staff._id}/mpin`, { token: owner, body: { mpin: '3434', confirmMpin: '3434' } });
+  assert.equal(mpin.status, 200, JSON.stringify(mpin.body));
+  const again = await login('9500000023', '3434');
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  const renewed = await refresh(again.body.data.refreshToken);
+  assert.equal(renewed.status, 200, JSON.stringify(renewed.body));
+  assert.equal((await refresh(renewed.body.data.refreshToken)).status, 200);
+  assert.equal((await refresh(refreshToken)).status, 401);
+
+  // Their shop gave them a new sign-in record, so the archived one is not
+  // put back over it: the restore script refuses, writing nothing.
+  const restore = await restoreReleasedLogin(String(entry._id));
+  assert.equal(restore.restored, false);
+  assert.equal(restore.reason, 'EMPLOYEE_HAS_LOGIN');
+  assert.equal((await ReleasedLogin.findById(entry._id).lean()).restoredAt, null);
+});
+
 test('codes and attempts are counted per account', async () => {
   const token = ownerToken(shopB);
   // One send was refused by MSG91 above; it still counted.
@@ -595,4 +751,7 @@ test('codes and attempts are counted per account', async () => {
   const refused = await deleteAccount(token, { otp: code, confirm: 'DELETE' });
   assert.equal(refused.status, 429);
   assert.ok(await BusinessUser.exists({ _id: shopB.ownerId }), 'still there');
+  const other = await deleteAccount(tokensOf(shopA.id, created.staff2._id, 'EMP').accessToken, { otp: wrong, confirm: 'DELETE' });
+  assert.equal(other.status, 400, 'another account has its own count');
+  assert.ok(await BusinessUser.exists({ employeeId: new mongoose.Types.ObjectId(created.staff2._id) }));
 });

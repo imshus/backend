@@ -530,7 +530,8 @@ function removeAccountOf(employeeId) {
 
 /**
  * Employees as GET /employees returns them: the document without its password
- * hash, plus whether the owner has set an MPIN yet. Never the MPIN itself.
+ * hash or session counter, plus whether the owner has set an MPIN yet. Never
+ * the MPIN itself.
  */
 async function presentEmployees(employees) {
   const list = Array.isArray(employees) ? employees : [employees];
@@ -543,6 +544,7 @@ async function presentEmployees(employees) {
   return list.map((employee) => {
     const json = typeof employee.toJSON === 'function' ? employee.toJSON() : { ...employee };
     delete json.passwordHash;
+    delete json.sessionVersion;
     json.hasMpin = hasMpin.get(String(employee._id)) || false;
     return json;
   });
@@ -569,7 +571,7 @@ async function employeeSession(employee, account = null, shop = null) {
     String(employee.businessId),
     String(employee._id),
     EMP,
-    { permissions },
+    { permissions, sessionVersion: authService.sessionVersionOf(employee) },
   );
 
   return {

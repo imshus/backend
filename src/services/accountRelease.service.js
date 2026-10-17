@@ -1,9 +1,10 @@
 const mongoose = require('mongoose');
 const BusinessUser = require('../models/businessUser.model');
 const Employee = require('../models/employee.model');
+const ReleasedLogin = require('../models/releasedLogin.model');
 const employeeAccounts = require('./employeeAccount.service');
 const otpService = require('./otp.service');
-const { normalizeIndianMobile, storedSpellingsOf, loginLookupOf } = require('../utils/phone');
+const { normalizeIndianMobile, isStoredPhone, loginLookupOf } = require('../utils/phone');
 
 /**
  * Deleting one's own account (Settings → Delete Account, DELETE /auth/account).
@@ -13,9 +14,11 @@ const { normalizeIndianMobile, storedSpellingsOf, loginLookupOf } = require('../
  * (reason ACCOUNT_DELETED) and taken out of business_users, the same way a
  * login moved to another shop is (employeeAccount.service archiveRelease), so
  * scripts/restore_released_login.js can put it back. An employee is also
- * switched off on their shop's roster, which is what ends their refresh. The
- * shop itself — business, invoices, scans, wallet and credits, payments,
- * licence, subscription, its other owners and employees — is never touched.
+ * switched off on their shop's roster, which is what ends their refresh, and
+ * their sessionVersion moves on, so the sessions they had stay over even if
+ * their owner switches them back on. The shop itself — business, invoices,
+ * scans, wallet and credits, payments, licence, subscription, its other
+ * owners and employees — is never touched.
  *
  * Proved twice: a code texted to the account's own phone (flow ACCOUNT_DELETE,
  * under the caller's shop, checked here on the server), and the word DELETE
@@ -35,13 +38,13 @@ const objectIdOf = (value) => new mongoose.Types.ObjectId(String(value));
 const maskPhone = (phone) => `+91 •••••${String(phone).slice(-5)}`;
 
 /**
- * The ten digits an Employee document's phone is, when it is stored as one of
- * the spellings the roster is matched by (storedSpellingsOf, '09876543210'
- * included, as archiveRelease matches it); '' otherwise.
+ * The ten digits a stored phone is: any spelling the number checks read
+ * ('95000 00031', '+91-95000-00031') or an old stored one ('09500000031',
+ * isStoredPhone); '' when it is none of these.
  */
 function tenDigitsOf(stored) {
   const tenDigits = normalizeIndianMobile(stored) || loginLookupOf(stored).phone || '';
-  return tenDigits && storedSpellingsOf(tenDigits).includes(String(stored ?? '')) ? tenDigits : '';
+  return tenDigits && isStoredPhone(tenDigits, stored) ? tenDigits : '';
 }
 
 /**
@@ -50,7 +53,8 @@ function tenDigitsOf(stored) {
  * and switched on, and their EMP record(s) as stored. Anyone else's carries
  * their business_users id: that record, in this shop, switched on. Gone or
  * switched off since → UNAUTHORIZED, as their next refresh would answer.
- * `phone` is the number the code goes to: the one they sign in with.
+ * `phone` is the number the code goes to, as ten digits: the one they sign
+ * in with. No usable number on file → ACCOUNT_PHONE_MISSING.
  */
 async function ownLoginOf(user) {
   const { userId, businessId } = user || {};
@@ -63,7 +67,7 @@ async function ownLoginOf(user) {
     const employee = await Employee.findOne({ _id: userId, businessId }).select('businessId phone isActive').lean();
     if (!employee || employee.isActive === false) throw sessionEnded();
     const logins = await raw.find({ employeeId: employee._id, role: EMP }).sort({ _id: 1 }).toArray();
-    const phone = logins[0]?.phone || tenDigitsOf(employee.phone);
+    const phone = tenDigitsOf(logins[0]?.phone) || tenDigitsOf(employee.phone);
     if (!phone) throw new Error('ACCOUNT_PHONE_MISSING');
     return { kind: 'employee', phone, employee, logins };
   }
@@ -75,7 +79,9 @@ async function ownLoginOf(user) {
     isActive: { $ne: false },
   });
   if (!login) throw sessionEnded();
-  return { kind: 'owner', phone: login.phone, employee: null, logins: [login] };
+  const phone = tenDigitsOf(login.phone);
+  if (!phone) throw new Error('ACCOUNT_PHONE_MISSING');
+  return { kind: 'owner', phone, employee: null, logins: [login] };
 }
 
 /**
@@ -132,7 +138,7 @@ async function deleteOwnAccount(user, { otp, confirm } = {}) {
   try {
     if (own.kind === 'owner') {
       const [login] = own.logins;
-      await employeeAccounts.archiveRelease({ ...by, phone: login.phone, kind: 'owner' }, login, released);
+      await employeeAccounts.archiveRelease({ ...by, phone: own.phone, kind: 'owner' }, login, released);
     } else {
       const fields = {
         ...by,
@@ -141,14 +147,30 @@ async function deleteOwnAccount(user, { otp, confirm } = {}) {
         employeeId: own.employee._id,
         previousIsActive: true,
       };
-      // An employee from before sign-in records has none: switching them off
-      // is the whole release.
-      if (!own.logins.length) await employeeAccounts.archiveRelease({ ...fields, phone: own.phone }, null, released);
       for (const login of own.logins) {
         await employeeAccounts.archiveRelease({ ...fields, phone: login.phone }, login, released);
       }
-      // Off on the roster whatever number it holds: the refresh reads this.
-      await Employee.updateOne({ _id: own.employee._id }, { $set: { isActive: false } });
+      // An employee from before sign-in records has none: switching them off
+      // (next) is the whole release, and its entry is written here, because
+      // their roster number may be in any spelling the number checks read
+      // ('95000 00031'), which archiveRelease's switch-off does not match.
+      if (!own.logins.length) {
+        const entry = await ReleasedLogin.create({ ...fields, phone: own.phone });
+        released.push(entry);
+        console.info('[ACCOUNT_DELETED]', {
+          kind: entry.kind,
+          fromBusinessId: String(entry.fromBusinessId),
+          releasedLoginId: null,
+          employeeId: String(entry.employeeId),
+          releasedId: String(entry._id),
+        });
+      }
+      // Off on the roster whatever number it holds: the refresh reads this,
+      // and every session issued before is over for good (sessionVersion).
+      await Employee.updateOne(
+        { _id: own.employee._id },
+        { $set: { isActive: false }, $inc: { sessionVersion: 1 } },
+      );
     }
   } catch (error) {
     await employeeAccounts.restoreReleased(released);

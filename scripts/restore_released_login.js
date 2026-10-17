@@ -13,7 +13,10 @@
  *
  * The record goes back into business_users exactly as it was — same id, same
  * shop, same MPIN — so its owner signs in as before, and an employee the move
- * (or the deletion) switched off is switched back on. Refused, writing
+ * (or the deletion) switched off is switched back on. (An employee who
+ * deleted their account signs in again: the sessions they had stay over.
+ * One their owner has switched back on since has a new sign-in record, and
+ * is refused as below.) Refused, writing
  * nothing, while the number is someone else's (usually the employee it was
  * given to, or whoever registered it after a deletion: delete them or change
  * their number first), while the owner's Login ID is someone

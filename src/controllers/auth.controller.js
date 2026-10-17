@@ -327,15 +327,17 @@ const ACCOUNT_DELETE_REFUSALS = {
   OTP_EXPIRED: { status: 400, message: 'This OTP has expired. Send a new one.' },
   OTP_NOT_FOUND: { status: 400, message: 'Send an OTP to your phone first.' },
   OTP_ALREADY_USED: { status: 400, message: 'This OTP was already used. Send a new one.' },
+  // What the holder can do about it depends on who they are.
   ACCOUNT_PHONE_MISSING: {
     status: 409,
-    message: 'This account has no phone number to send an OTP to. Ask your shop owner to remove you.',
+    message: 'There is no usable phone number on this account to send an OTP to. Please reach us through Contact Us.',
+    employeeMessage: 'There is no usable phone number on this account to send an OTP to. Ask your shop owner to update your number or remove you.',
   },
   UNAUTHORIZED: { status: 401, message: 'Your session has ended. Please sign in again.' },
 };
 
 /** Answers a refused account deletion; false for anything else. */
-const refuseAccountDelete = (res, error) => {
+const refuseAccountDelete = (req, res, error) => {
   const message = String(error?.message || '');
   if (message.startsWith('MSG91_')) {
     res.status(502).json({ success: false, error: 'OTP_SEND_FAILED', message: "Couldn't send the OTP right now. Please try again." });
@@ -343,7 +345,9 @@ const refuseAccountDelete = (res, error) => {
   }
   const refusal = ACCOUNT_DELETE_REFUSALS[message];
   if (!refusal) return false;
-  res.status(refusal.status).json({ success: false, error: message, message: refusal.message });
+  const isEmployee = String(req.user?.role || '').trim().toUpperCase() === 'EMP';
+  const words = (isEmployee && refusal.employeeMessage) || refusal.message;
+  res.status(refusal.status).json({ success: false, error: message, message: words });
   return true;
 };
 
@@ -354,7 +358,7 @@ const sendAccountDeleteOtp = async (req, res, next) => {
     const data = await accountRelease.sendDeleteOtp(req.user);
     sendSuccess(res, data);
   } catch (err) {
-    if (!refuseAccountDelete(res, err)) next(err);
+    if (!refuseAccountDelete(req, res, err)) next(err);
   }
 };
 
@@ -366,7 +370,7 @@ const deleteAccount = async (req, res, next) => {
     const result = await accountRelease.deleteOwnAccount(req.user, { otp, confirm });
     res.status(200).json(result);
   } catch (err) {
-    if (!refuseAccountDelete(res, err)) next(err);
+    if (!refuseAccountDelete(req, res, err)) next(err);
   }
 };
 
