@@ -133,6 +133,20 @@ const dropIndexIfPresent = async (Model, indexName) => {
 };
 
 /**
+ * Checkout history lists invoices with fromCart. A server before that field
+ * stored a cart's pieces without it (6a05ec6..303c32b, or the same after a
+ * rollback); those are carts too. Only a cart request stores pieces, so
+ * pieces without the flag means a cart. A no-op once every one is marked.
+ */
+const markCartInvoices = async () => {
+  const { modifiedCount } = await Invoice.collection.updateMany(
+    { pieces: { $exists: true }, fromCart: { $exists: false } },
+    { $set: { fromCart: true } },
+  );
+  if (modifiedCount) console.log(`[DB] Marked ${modifiedCount} cart invoice(s) for Checkout history`);
+};
+
+/**
  * The indexes that used to say "one record per business" and "one invoice
  * number in the world" give way to "one record per business per user" and
  * "one invoice number per business". Run once at startup; each step is a
@@ -145,6 +159,7 @@ const ensureUserScopedIndexes = async () => {
   }
   await dropIndexIfPresent(Invoice, 'invoiceNumber_1');
   await Invoice.syncIndexes();
+  await markCartInvoices();
   await dropIndexIfPresent(InvoiceCounter, 'dateKey_1');
   await InvoiceCounter.syncIndexes();
 
@@ -184,4 +199,5 @@ module.exports = {
   resolveScopedRowById,
   scopeCacheId,
   ensureUserScopedIndexes,
+  markCartInvoices,
 };

@@ -694,7 +694,7 @@ const generateInvoice = async (req, res, next) => {
       roundedOff: pdfPayload.rounded_off,
       grandTotal: pdfPayload.grand_total,
       pieceCount,
-      ...(pieces ? { pieces } : {}),
+      ...(pieces ? { pieces, fromCart: true } : {}),
       amountInWords: pdfPayload.amount_in_words,
       termsAndConditions: terms_and_conditions,
       pdfStatus: 'pending',

@@ -507,10 +507,10 @@ plus `{ createdAt: -1, _id: -1 }`.
 8.5 GET /api/v1/history/checkouts?limit=30&before=
 - Controller: `historyController.getCheckoutHistory`
 - `items: [{ id (the invoice id), invoiceNumber, pieceCount, pieces: [{
-  itemName, tagCode, mrp }], grandTotal, createdAt }]`, every invoice. A
-  cart invoice (4.1 `pieces`) lists its pieces; one billed from the card has
-  `pieces: []` and `pieceCount: 1`; one issued before pieces were counted
-  has `pieces: []` and `pieceCount: null`.
+  itemName, tagCode, mrp }], grandTotal, createdAt }]`: only the invoices
+  generated from the Wishlist cart (4.1 `pieces`; stored with
+  `fromCart: true`). An invoice billed straight from a scan's card, or
+  issued before carts, is not listed.
 
 8.6 GET /api/v1/history/checkouts/:id
 - Controller: `historyController.getCheckoutHistoryItem`

@@ -90,6 +90,9 @@ const invoiceSchema = new mongoose.Schema({
   // Invoice), one per piece; pieceCount is then their number. Absent on an
   // invoice billed without a cart, and on every one issued before it.
   pieces: { type: [pieceSchema], default: undefined },
+  // True on an invoice generated from the Wishlist cart: Checkout history
+  // lists only these (the owner's call). Absent on every other invoice.
+  fromCart: { type: Boolean },
   amountInWords: { type: String, default: '' },
   termsAndConditions: { type: String, default: '' },
 
@@ -142,5 +145,8 @@ invoiceSchema.index({ businessId: 1, invoiceNumber: 1 }, { unique: true });
 // Invoice.syncIndexes (userScope.service) swaps them.
 invoiceSchema.index({ businessId: 1, userId: 1, createdAt: -1, _id: -1 });
 invoiceSchema.index({ businessId: 1, createdAt: -1, _id: -1 });
+// Checkout history's: the same order over the Wishlist carts alone.
+invoiceSchema.index({ businessId: 1, userId: 1, fromCart: 1, createdAt: -1, _id: -1 });
+invoiceSchema.index({ businessId: 1, fromCart: 1, createdAt: -1, _id: -1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

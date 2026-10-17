@@ -649,6 +649,8 @@ test('a cart invoice bills every piece once and keeps them; its count is theirs'
   const plain = await Invoice.findById(single.body.data.invoiceId).lean();
   assert.equal(plain.pieceCount, 1);
   assert.equal(plain.pieces, undefined);
+  assert.equal(plain.fromCart, undefined, 'not a Wishlist cart');
+  assert.equal((await Invoice.findById(made.body.data.invoiceId).lean()).fromCart, true);
 });
 
 test('a cart that cannot be right is refused before an invoice number is spent, and so is its preview', async () => {
@@ -681,7 +683,7 @@ test('a cart that cannot be right is refused before an invoice number is spent, 
   assert.match(preview.body.data.html, /Meera Shah/);
 });
 
-test('GET /history/checkouts lists invoices as carts, newest first; one issued before carts has none', async () => {
+test('GET /history/checkouts lists only the Wishlist carts, newest first', async () => {
   // Issued before pieces (and before the count) were kept.
   const legacy = await Invoice.create({
     businessId: shop.id,
@@ -699,35 +701,62 @@ test('GET /history/checkouts lists invoices as carts, newest first; one issued b
   assert.equal(list.status, 200, JSON.stringify(list.body));
   const { items, nextCursor } = list.body.data;
   assert.equal(nextCursor, null);
-  assert.equal(items.length, 4);
+  // The single-scan invoice and the one from before carts are not checkouts.
+  assert.equal(items.length, 2);
   assert.deepEqual(
     Object.keys(items[0]).sort(),
     ['createdAt', 'grandTotal', 'id', 'invoiceNumber', 'pieceCount', 'pieces'],
   );
-  const [single, counted, cart, old] = items;
-  assert.deepEqual([single.pieceCount, single.pieces], [1, []]);
+  const [counted, cart] = items;
   assert.equal(counted.pieceCount, 2);
   assert.equal(cart.pieceCount, 2);
   assert.deepEqual(cart.pieces, [
     { itemName: '22K Gold Necklace', tagCode: 'TAG-10432', mrp: 82694 },
     { itemName: '18K Diamond Ring', tagCode: 'TAG-20117', mrp: 31437 },
   ]);
-  assert.equal(old.id, String(legacy._id));
-  assert.deepEqual([old.pieceCount, old.pieces, old.grandTotal], [null, [], 1030]);
+  assert.ok(!items.some((item) => item.id === String(legacy._id)));
 
   // An employee sees their own; paging by cursor.
   const ravis = (await api('GET', '/history/checkouts', { as: people.ravi })).body.data.items;
   assert.deepEqual(ravis.map((item) => item.id), [cart.id]);
   assert.deepEqual((await api('GET', '/history/checkouts', { as: people.sita })).body.data.items, []);
-  const page = await api('GET', '/history/checkouts?limit=3', { as: people.owner });
-  assert.deepEqual(page.body.data.items.map((item) => item.id), [single.id, counted.id, cart.id]);
-  const last = await api('GET', `/history/checkouts?limit=3&before=${encodeURIComponent(page.body.data.nextCursor)}`, { as: people.owner });
-  assert.deepEqual(last.body.data.items.map((item) => item.id), [old.id]);
+  const page = await api('GET', '/history/checkouts?limit=1', { as: people.owner });
+  assert.deepEqual(page.body.data.items.map((item) => item.id), [counted.id]);
+  const last = await api('GET', `/history/checkouts?limit=1&before=${encodeURIComponent(page.body.data.nextCursor)}`, { as: people.owner });
+  assert.deepEqual(last.body.data.items.map((item) => item.id), [cart.id]);
   assert.equal(last.body.data.nextCursor, null);
 });
 
+test('a cart billed before fromCart was kept is marked at startup and listed', async () => {
+  const { markCartInvoices } = require('../src/services/userScope.service');
+  const old = await Invoice.create({
+    businessId: shop.id,
+    invoiceNumber: '26-27/1016/00009',
+    userId: String(people.owner.userId),
+    invoiceDate: '16-10-2026',
+    subtotal: 1000,
+    gstRate: 3,
+    gstAmount: 30,
+    grandTotal: 1030,
+    pieceCount: 1,
+    pieces: [{ itemName: 'Old Cart Ring', tagCode: 'OC-1', mrp: 1000 }],
+    // Unique, as every invoice's is (a sparse unique index; null counts).
+    publicToken: 'oldcart0000000000000000000000001',
+    createdAt: new Date('2026-10-02T05:00:00Z'),
+  });
+  const listed = async () => (await api('GET', '/history/checkouts', { as: people.owner })).body.data.items.map((item) => item.id);
+  assert.ok(!(await listed()).includes(String(old._id)), 'unmarked, it is not listed');
+  await markCartInvoices();
+  assert.equal((await Invoice.findById(old._id).lean()).fromCart, true);
+  assert.equal((await listed()).at(-1), String(old._id), 'listed, oldest last');
+  // Nothing else changes, and a second run finds nothing to do.
+  assert.equal(await Invoice.countDocuments({ pieces: { $exists: false }, fromCart: true }), 0);
+  await markCartInvoices();
+  await Invoice.deleteOne({ _id: old._id });
+});
+
 test('GET /history/checkouts/:id opens a cart with its customer, for whoever may see it', async () => {
-  const [, , cart] = (await api('GET', '/history/checkouts', { as: people.owner })).body.data.items;
+  const [, cart] = (await api('GET', '/history/checkouts', { as: people.owner })).body.data.items;
   const open = await api('GET', `/history/checkouts/${cart.id}`, { as: people.ravi });
   assert.equal(open.status, 200, JSON.stringify(open.body));
   const { item } = open.body.data;
@@ -772,6 +801,7 @@ test("every history list reads the lines it shows, not the whole shop's, page af
     grandTotal: 103,
     // Unique, as every invoice's is (a sparse unique index; null counts).
     publicToken: `busy${String(i).padStart(28, '0')}`,
+    fromCart: true,
     createdAt: at(i),
   })));
 
@@ -800,6 +830,8 @@ test("every history list reads the lines it shows, not the whole shop's, page af
   const keys = (await Invoice.collection.indexes()).map((index) => JSON.stringify(index.key));
   assert.ok(keys.includes(JSON.stringify({ businessId: 1, userId: 1, createdAt: -1, _id: -1 })));
   assert.ok(keys.includes(JSON.stringify({ businessId: 1, createdAt: -1, _id: -1 })));
+  assert.ok(keys.includes(JSON.stringify({ businessId: 1, userId: 1, fromCart: 1, createdAt: -1, _id: -1 })));
+  assert.ok(keys.includes(JSON.stringify({ businessId: 1, fromCart: 1, createdAt: -1, _id: -1 })));
 });
 
 test('wishlist history lasts 180 days, and leaves with the account that made it', async () => {

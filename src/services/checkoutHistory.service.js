@@ -5,10 +5,11 @@ const { ownWorkFilter } = require('./userScope.service');
 const { pageQuery, readPage } = require('./historyPage');
 
 /**
- * Settings -> History -> Checkout history: every invoice, newest first, as
- * the cart it billed ("Cart · 2 items", the pieces and the grand total). A
- * cart invoice keeps its pieces (POST /invoices/generate `pieces`); one
- * billed straight from the card, or issued before carts, has none.
+ * Settings -> History -> Checkout history: the invoices generated from the
+ * Wishlist cart, newest first, each as the cart it billed ("Cart · 2 items",
+ * the pieces and the grand total). Only those, at the owner's asking: an
+ * invoice billed straight from a scan's card is not a checkout. A cart
+ * invoice keeps its pieces (POST /invoices/generate `pieces`) and fromCart.
  */
 
 /** Whose invoices a session sees: the shop's for an owner, its own for an employee (as GET /invoices). */
@@ -16,17 +17,16 @@ const visibleFilter = (user) => ({ businessId: user.businessId, ...ownWorkFilter
 
 const pieceCountOf = (invoice) => invoice.pieceCount ?? null;
 
-/** The query behind listCheckouts; its filter and order are the invoice model's list indexes'. */
+/** The query behind listCheckouts; its filter and order are the invoice model's checkout indexes'. */
 function checkoutsQuery(user, { limit, before } = {}) {
-  return pageQuery(Invoice, visibleFilter(user), { limit, before })
+  return pageQuery(Invoice, { ...visibleFilter(user), fromCart: true }, { limit, before })
     .select('invoiceNumber pieceCount pieces grandTotal createdAt');
 }
 
 /**
  * A page of a session's checkouts, newest first:
  * { items: [{ id, invoiceNumber, pieceCount, pieces: [{ itemName, tagCode,
- * mrp }], grandTotal, createdAt }], nextCursor }. pieceCount is null on an
- * invoice issued before it was kept, and pieces [] on one without a cart.
+ * mrp }], grandTotal, createdAt }], nextCursor }.
  */
 async function listCheckouts(user, { limit, before } = {}) {
   const { lines, nextCursor } = await readPage(checkoutsQuery(user, { limit, before }), { limit });
