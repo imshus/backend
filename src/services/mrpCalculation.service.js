@@ -259,7 +259,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   const itemRowsPromise = identifiers.length
     ? prefetched?.itemRows || findScopedRows(ItemCode, scope)
     : Promise.resolve([]);
-  const wastageRowsPromise = identifiers.length
+  const wastageRowsPromise = identifiers.length || request.wastageCode
     ? prefetched?.wastageRows || findScopedRows(WastageCode, scope)
     : Promise.resolve([]);
   // Once the warm-up has settled, this is a cache hit that still checks the
@@ -339,7 +339,12 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   const wastageCandidates = itemMatch
     ? [itemMatch.identifier, ...identifiers.filter((value) => value !== itemMatch.identifier)]
     : identifiers;
-  const wastageRow = findWastageRow(wastageRows, wastageCandidates);
+  // The code picked on the card comes first; the tag's own when none was
+  // picked, or when the picked one has since left Masters.
+  const wastageRow = findWastageRow(
+    wastageRows,
+    request.wastageCode ? [request.wastageCode, ...wastageCandidates] : wastageCandidates,
+  );
   const wastage = resolveWastage({ manualPercent: request.wastagePercent, wastageRow, itemRow });
 
   const labour = resolveLabour({

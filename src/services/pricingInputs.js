@@ -630,6 +630,7 @@ function validateCalculationInput(input) {
     manualLabour: null,
     labourWeightBasis: null,
     wastagePercent: undefined,
+    wastageCode: '',
     wastageWeightBasis: null,
     otherCharges: bodyNumber(body.otherCharges, 'otherCharges', MAX_AMOUNT),
     calculationMode: undefined,
@@ -658,6 +659,14 @@ function validateCalculationInput(input) {
 
   if (!isBlank(body.wastagePercent)) {
     out.wastagePercent = bodyNumber(body.wastagePercent, 'wastagePercent', 100);
+  }
+  // A Masters -> Wastage code picked on the card: looked up ahead of the
+  // tag's own, so a blank Wastage % prices it and the scan records it.
+  if (!isBlank(body.wastageCode)) {
+    if (typeof body.wastageCode !== 'string' && typeof body.wastageCode !== 'number') {
+      throw invalidPricingInput('wastageCode must be text');
+    }
+    out.wastageCode = String(body.wastageCode).trim().slice(0, 40);
   }
   // The weight the Wastage tile takes the percent of. Only rules 3 prices
   // by it, but a figure no build sends is refused for every build alike.

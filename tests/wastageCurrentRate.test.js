@@ -331,6 +331,34 @@ test('rules 3: a Masters item\'s wastage on the tag number is priced the same wa
   expectWastage(coded, { basis: 'gross', grams: 0.96, rate: 13740, amount: 13190.4 }, 'wastage code gross');
 });
 
+test("a wastage code picked on the card is priced and recorded ahead of the tag's own", async () => {
+  resetState();
+  state.wastageRows = [{ code: 'W8', percent: 8 }, { code: 'W10', percent: 10 }];
+
+  // The tag names W8; the card picked W10, so W10's percent is charged.
+  const picked = await priced({ ...PIECE, tagIdentifiers: ['W8'], wastageCode: 'W10' }, 3);
+  assert.equal(picked.breakdown.wastageCode, 'W10');
+  expectWastage(picked, { basis: 'net', grams: 1, rate: 13740, amount: 13740 }, 'picked W10');
+
+  // Picked on a tag with no identifiers at all.
+  const alone = await priced({ ...PIECE, wastageCode: 'w 10' }, 3);
+  assert.equal(alone.breakdown.wastageCode, 'W10');
+  expectWastage(alone, { basis: 'net', grams: 1, rate: 13740, amount: 13740 }, 'picked alone');
+
+  // A typed percent still beats the code's; the code is still recorded.
+  const typed = await priced({ ...PIECE, tagIdentifiers: ['W8'], wastageCode: 'W10', wastagePercent: 8 }, 3);
+  assert.equal(typed.breakdown.wastageCode, 'W10');
+  expectWastage(typed, { basis: 'net', grams: 0.8, rate: 13740, amount: 10992 }, 'typed beats picked');
+
+  // A picked code no longer in Masters gives way to the tag's own.
+  const gone = await priced({ ...PIECE, tagIdentifiers: ['W8'], wastageCode: 'W99' }, 3);
+  assert.equal(gone.breakdown.wastageCode, 'W8');
+
+  assert.equal(validateCalculationInput({ ...PIECE, wastageCode: '  W10 ' }).wastageCode, 'W10');
+  assert.equal(validateCalculationInput({ ...PIECE }).wastageCode, '');
+  assert.throws(() => validateCalculationInput({ ...PIECE, wastageCode: { code: 'W10' } }), /wastageCode must be text/);
+});
+
 test('rules 2 and 1 price exactly as before: the net weight at the 24K rate', async () => {
   resetState();
   for (const basis of ['net', 'gross']) {
