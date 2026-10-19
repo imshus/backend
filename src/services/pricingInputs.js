@@ -629,6 +629,7 @@ function validateCalculationInput(input) {
     colorstones: bodyStones(body.colorstones, 'colorstones', false),
     manualLabour: null,
     labourWeightBasis: null,
+    labourCode: '',
     wastagePercent: undefined,
     wastageCode: '',
     wastageWeightBasis: null,
@@ -667,6 +668,15 @@ function validateCalculationInput(input) {
       throw invalidPricingInput('wastageCode must be text');
     }
     out.wastageCode = String(body.wastageCode).trim().slice(0, 40);
+  }
+  // A Masters -> Labour Code picked on the card: looked up ahead of the
+  // tag's own, so with no labour figure sent it prices the labour, and the
+  // scan records it either way.
+  if (!isBlank(body.labourCode)) {
+    if (typeof body.labourCode !== 'string' && typeof body.labourCode !== 'number') {
+      throw invalidPricingInput('labourCode must be text');
+    }
+    out.labourCode = String(body.labourCode).trim().slice(0, 20);
   }
   // The weight the Wastage tile takes the percent of. Only rules 3 prices
   // by it, but a figure no build sends is refused for every build alike.

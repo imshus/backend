@@ -329,6 +329,7 @@ test('pricing it makes the line priced, with the inputs and workings, and keeps 
     labourChargeAmount: 850,
     labourChargeUnit: 'Per Gram',
     labourWeightBasis: null,
+    labourCode: '',
     wastagePercent: 8,
     wastageWeightBasis: 'gross',
     otherCharges: 500,

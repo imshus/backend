@@ -5,6 +5,7 @@ const openaiService = require('../services/openai.service');
 const {
   computeMrp,
   deriveInputFromReading,
+  matchedLabourCodeOf,
   prefetchPricingReads,
 } = require('../services/mrpCalculation.service');
 const { pricingRulesOf } = require('../services/pricingInputs');
@@ -133,6 +134,16 @@ const analyzeScan = async (req, res, next) => {
     }
     const pricingMs = Date.now() - pricingStartedAt;
 
+    // The Masters -> Labour Code the tag names, for the card's Labour Code
+    // box: the one the price matched, else (no price) the one an identifier
+    // names among the codes already read. '' when none.
+    const labourCode = await matchedLabourCodeOf({
+      computed,
+      prefetched: pricingReads,
+      analysisResult: updated.analysisResult,
+      rules,
+    });
+
     // One timing line per analyzed scan (not for a finished scan asked
     // again, which carries none), and the window /api/v1/health reports.
     if (updated.timing) {
@@ -160,6 +171,7 @@ const analyzeScan = async (req, res, next) => {
         pricing,
         pricingInput,
         pricingError,
+        labourCode,
     });
 
     // The scan's line in Settings -> History starts here, the moment the tag

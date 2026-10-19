@@ -21,6 +21,7 @@ const GoldTaxSetting = require('../src/models/goldTaxSetting.model');
 const DiamondRate = require('../src/models/diamondRate.model');
 const ColorstoneRate = require('../src/models/colorstoneRate.model');
 const WastageCode = require('../src/models/wastageCode.model');
+const LabourCode = require('../src/models/labourCode.model');
 const ItemCode = require('../src/models/itemCode.model');
 const Employee = require('../src/models/employee.model');
 const rateCalculationService = require('../src/services/rateCalculation.service');
@@ -47,6 +48,7 @@ const original = {
   diamondFind: DiamondRate.find,
   colorstoneFind: ColorstoneRate.find,
   wastageFind: WastageCode.find,
+  labourCodeFind: LabourCode.find,
   itemFind: ItemCode.find,
   employeeFindById: Employee.findById,
   analyzeScan: scanService.analyzeScan,
@@ -58,6 +60,7 @@ test.after(() => {
   DiamondRate.find = original.diamondFind;
   ColorstoneRate.find = original.colorstoneFind;
   WastageCode.find = original.wastageFind;
+  LabourCode.find = original.labourCodeFind;
   ItemCode.find = original.itemFind;
   Employee.findById = original.employeeFindById;
   scanService.analyzeScan = original.analyzeScan;
@@ -83,6 +86,7 @@ DiamondRate.find = shopRows('diamondRates', [
 ]);
 ColorstoneRate.find = shopRows('colorstoneRates', [{ color: 'RED', clarity: 'SI', rate: 1200 }]);
 WastageCode.find = shopRows('wastageCodes', [{ code: 'GR10286', percent: 8 }]);
+LabourCode.find = shopRows('labourCodes', []);
 ItemCode.find = shopRows('itemCodes', []);
 // A query: awaited directly by computeMrp, through .exec() by the prefetch.
 Employee.findById = (id) => ({
@@ -212,8 +216,9 @@ for (const [label, user, reading] of [
     }
     // Nothing was looked up twice but the live rates, re-read once after the
     // reading (a cache hit on the current board in production); only the
-    // wastage and item codes are fetched ahead for a tag that turns out to
-    // carry no identifier. The labour row both the derivation (the labour
+    // wastage, labour and item codes are fetched ahead for a tag that turns
+    // out to carry no identifier (or a build on rules 1, which matches no
+    // labour code). The labour row both the derivation (the labour
     // the card starts with) and the price read is read once, where the
     // sequential baseline reads it for each.
     const made = countsOf(overlapped);
@@ -223,7 +228,7 @@ for (const [label, user, reading] of [
     }
     const extra = [...made.keys()].filter((name) => !needed.has(name));
     assert.deepEqual(
-      extra.filter((name) => !name.startsWith('wastageCodes:') && !name.startsWith('itemCodes:')),
+      extra.filter((name) => !['wastageCodes:', 'labourCodes:', 'itemCodes:'].some((prefix) => name.startsWith(prefix))),
       [],
     );
     // The record is written before the response leaves.
@@ -261,6 +266,7 @@ test("an employee's analyze prefetches in the employee's own scope", async () =>
     `diamondRates:${EMPLOYEE.userId}`,
     `colorstoneRates:${EMPLOYEE.userId}`,
     `wastageCodes:${EMPLOYEE.userId}`,
+    `labourCodes:${EMPLOYEE.userId}`,
     `itemCodes:${EMPLOYEE.userId}`,
     `employee:${EMPLOYEE.userId}`,
   ]) {

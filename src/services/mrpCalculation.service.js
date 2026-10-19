@@ -3,7 +3,9 @@ const redisService = require('./redis.service');
 const LabourRate = require('../models/labourRate.model');
 const ItemCode = require('../models/itemCode.model');
 const WastageCode = require('../models/wastageCode.model');
+const LabourCode = require('../models/labourCode.model');
 const { resolveWastage, findWastageRow } = require('./wastageResolution.service');
+const { findLabourRow, codeLabourOf } = require('./labourResolution.service');
 const { tagIdentifiersOf } = require('../utils/tagIdentifiers');
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
@@ -124,6 +126,7 @@ function prefetchPricingReads(user) {
       ? Employee.findById(user.userId).select('permissions').exec()
       : Promise.resolve(null),
     wastageRows: findScopedRows(WastageCode, scope),
+    labourCodeRows: findScopedRows(LabourCode, scope),
     itemRows: findScopedRows(ItemCode, scope),
     liveRatesWarm: rateCalculationService.getLiveGoldRates(user?.businessId, scope),
   };
@@ -151,27 +154,45 @@ function distinctIdentifiers(values) {
  * The labour a price charges, first that applies:
  *   1. the figure the request carries: rupees per gram or per 10 g, or a
  *      percent of the gold value ("12%", or the unit 'Percent');
- *   2. the matched item's own labour in Masters -> Item Code, in the unit
+ *   2. the scan's Masters -> Labour Code row (the code picked on the card,
+ *      else one a tag identifier names): its rate in its unit; from rules 2,
+ *      as Masters labour is (rules 1 never matches a code);
+ *   3. the matched item's own labour in Masters -> Item Code, in the unit
  *      it was saved in (per gram, per 10 g, or a percent of the gold value);
  *      from rules 2, as the builds before it never charged it;
- *   3. the shop's labour charge: an AMOUNT per its own unit, or a PERCENTAGE
+ *   4. the shop's labour charge: an AMOUNT per its own unit, or a PERCENTAGE
  *      of the gold value.
  * The weight a per-gram charge runs on is the request's when it names one,
- * else the one the shop's labour charge was saved against.
+ * else the one the shop's labour charge was saved against. `code` is the
+ * labour code row's code whichever figure priced ('' with no row), as a
+ * typed Wastage % still records the wastage code.
  *
  * The app (1.0.367) fills the card's labour box with the tag's labour, else
  * the item's, else the shop's, and sends it as the request's figure, so the
  * box, the price and the invoice are one figure whatever the shop's labour
- * type; 2 and 3 price a request that sends none.
+ * type; 2 to 4 price a request that sends none. Picking a labour code on the
+ * card fills the box with the code's rate, so 1 is then the code's figure.
  */
-function resolveLabour({ manualLabour, labourWeightBasis, itemRow, globalLabour, rules }) {
+function resolveLabour({ manualLabour, labourWeightBasis, labourCodeRow = null, itemRow, globalLabour, rules }) {
   const basis = labourWeightBasis || (globalLabour?.weightBasis === 'gross' ? 'gross' : 'net');
+  const code = labourCodeRow ? String(labourCodeRow.code || '') : '';
   if (manualLabour) {
     return {
       ratePerUnit: manualLabour.amount,
       unit: manualLabour.unit,
       basis,
       chargeType: manualLabour.unit === LABOUR_UNIT_PERCENT ? 'PERCENTAGE_MANUAL' : 'AMOUNT_MANUAL',
+      code,
+    };
+  }
+  const codeLabour = rules >= ITEM_PREFIX_RULES ? codeLabourOf(labourCodeRow) : null;
+  if (codeLabour) {
+    return {
+      ratePerUnit: codeLabour.amount,
+      unit: codeLabour.unit,
+      basis,
+      chargeType: codeLabour.unit === LABOUR_UNIT_PERCENT ? 'PERCENTAGE_CODE' : 'AMOUNT_CODE',
+      code,
     };
   }
   const itemLabour = rules >= ITEM_PREFIX_RULES ? itemLabourOf(itemRow) : null;
@@ -181,21 +202,23 @@ function resolveLabour({ manualLabour, labourWeightBasis, itemRow, globalLabour,
       unit: itemLabour.unit,
       basis,
       chargeType: itemLabour.unit === LABOUR_UNIT_PERCENT ? 'PERCENTAGE_ITEM' : 'AMOUNT_ITEM',
+      code,
     };
   }
   if (globalLabour) {
     const value = Math.max(0, toNumber(globalLabour.value));
     if (globalLabour.chargeType === 'PERCENTAGE') {
-      return { ratePerUnit: value, unit: LABOUR_UNIT_PERCENT, basis, chargeType: 'PERCENTAGE_GLOBAL' };
+      return { ratePerUnit: value, unit: LABOUR_UNIT_PERCENT, basis, chargeType: 'PERCENTAGE_GLOBAL', code };
     }
     return {
       ratePerUnit: value,
       unit: globalLabour.rupeesUnit === 'Per 10 Gram' ? 'Per 10 Gram' : 'Per Gram',
       basis,
       chargeType: `${globalLabour.chargeType || 'AMOUNT'}_GLOBAL`,
+      code,
     };
   }
-  return { ratePerUnit: 0, unit: 'Per Gram', basis, chargeType: 'NONE' };
+  return { ratePerUnit: 0, unit: 'Per Gram', basis, chargeType: 'NONE', code };
 }
 
 /**
@@ -262,6 +285,11 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   const wastageRowsPromise = identifiers.length || request.wastageCode
     ? prefetched?.wastageRows || findScopedRows(WastageCode, scope)
     : Promise.resolve([]);
+  // Masters -> Labour Code, the same way; rules 1 charges no Masters labour
+  // and so never looks a code up.
+  const labourCodeRowsPromise = rules >= ITEM_PREFIX_RULES && (identifiers.length || request.labourCode)
+    ? prefetched?.labourCodeRows || findScopedRows(LabourCode, scope)
+    : Promise.resolve([]);
   // Once the warm-up has settled, this is a cache hit that still checks the
   // board has not moved since.
   const liveRatesPromise = prefetched?.liveRatesWarm
@@ -269,7 +297,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
       .catch(() => {})
       .then(() => rateCalculationService.getLiveGoldRates(businessId, scope))
     : rateCalculationService.getLiveGoldRates(businessId, scope);
-  const [liveRatesData, globalLabourDoc, scanResolution, employee, itemRows, wastageRows] = await Promise.all([
+  const [liveRatesData, globalLabourDoc, scanResolution, employee, itemRows, wastageRows, labourCodeRows] = await Promise.all([
     liveRatesPromise,
     // The calculating account's own labour charge when saved, else the
     // shop's; a stored NONE row means explicitly no labour charge.
@@ -280,6 +308,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     employeePromise,
     itemRowsPromise,
     wastageRowsPromise,
+    labourCodeRowsPromise,
   ]);
   const globalLabour = globalLabourDoc && globalLabourDoc.chargeType !== 'NONE' ? globalLabourDoc : null;
   const { resolvedScanId, scan } = scanResolution;
@@ -347,9 +376,17 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   );
   const wastage = resolveWastage({ manualPercent: request.wastagePercent, wastageRow, itemRow });
 
+  // The labour code picked on the card first, then the tag's identifiers in
+  // the wastage code's order; a picked code no longer in Masters gives way
+  // to the tag's own.
+  const labourCodeRow = findLabourRow(
+    labourCodeRows,
+    request.labourCode ? [request.labourCode, ...wastageCandidates] : wastageCandidates,
+  );
   const labour = resolveLabour({
     manualLabour: request.manualLabour,
     labourWeightBasis: request.labourWeightBasis,
+    labourCodeRow,
     itemRow,
     globalLabour,
     rules,
@@ -377,6 +414,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     otherCharges: request.otherCharges,
     labourChargeType: labour.chargeType,
     wastageCode: wastage.code,
+    labourCode: labour.code,
   });
   const { breakdown, finalMRP, finalMRPRounded, effectivePurityPercent } = priced;
 
@@ -394,6 +432,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     colorstoneLineItems: priced.colorstoneLineItems,
     itemCode: itemRow ? String(itemRow.code || '') : '',
     labourChargeType: breakdown.labourChargeType,
+    labourCode: breakdown.labourCode,
     labourAmount: breakdown.labourAmount,
     wastagePercent: breakdown.wastagePercent,
     wastageWeightBasis: breakdown.wastageWeightBasis,
@@ -438,6 +477,20 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   // `request` and `itemRow` (the Masters item the tag matched, or null) are
   // what the scan's history line names it by.
   return { resultData, resolvedScanId, scan, snapshot, resolvedMode, request, itemRow, applied };
+}
+
+/**
+ * The Masters -> Labour Code an analysed scan carries, for the card's Labour
+ * Code box: the one its price matched (`computed`, computeMrp's answer);
+ * without a price (no live rate, say), the one any of the tag's identifiers
+ * names among the codes prefetchPricingReads read. '' when none, and always
+ * for rules 1, which matches no labour code.
+ */
+async function matchedLabourCodeOf({ computed = null, prefetched = null, analysisResult = null, rules = 1 } = {}) {
+  if (computed) return String(computed.applied?.labour?.code || '');
+  if (rules < ITEM_PREFIX_RULES) return '';
+  const rows = await Promise.resolve(prefetched?.labourCodeRows || []).catch(() => []);
+  return String(findLabourRow(rows, tagIdentifiersOf(analysisResult || {}))?.code || '');
 }
 
 // ── Deriving inputs from a fresh reading ──────────────────────────────
@@ -492,7 +545,10 @@ const stoneWeightOf = (stone) => {
  *     they send; a colour stone's rate from the first row with its colour
  *     and clarity, a miss clearing the printed rate, as those cards do;
  *   - the labour the card starts with (pricingInputs appLabourFields): the
- *     tag's, else (rules 2 and 3) the item's, else the shop's charge;
+ *     tag's, else (rules 2 and 3) the item's, else the shop's charge; no
+ *     labour code, as the card opens with none picked (a Masters -> Labour
+ *     Code the tag names is still found from its identifiers and recorded,
+ *     and prices the labour when the card's box is empty);
  *   - rules 3: wastage on the net weight, the Wastage tile's Weight Used as
  *     the card opens;
  *   - the item code and every identifier on the tag, for the Masters item
@@ -595,6 +651,7 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
 module.exports = {
   computeMrp,
   deriveInputFromReading,
+  matchedLabourCodeOf,
   prefetchPricingReads,
   resolveKaratFromReading,
   resolveScanForCalculation,

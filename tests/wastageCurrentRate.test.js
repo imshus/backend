@@ -27,6 +27,7 @@ const GoldTaxSetting = require('../src/models/goldTaxSetting.model');
 const DiamondRate = require('../src/models/diamondRate.model');
 const ColorstoneRate = require('../src/models/colorstoneRate.model');
 const WastageCode = require('../src/models/wastageCode.model');
+const LabourCode = require('../src/models/labourCode.model');
 const ItemCode = require('../src/models/itemCode.model');
 const rateCalculationService = require('../src/services/rateCalculation.service');
 const redisService = require('../src/services/redis.service');
@@ -67,6 +68,7 @@ const original = {
   diamondFind: DiamondRate.find,
   colorstoneFind: ColorstoneRate.find,
   wastageFind: WastageCode.find,
+  labourCodeFind: LabourCode.find,
   itemFind: ItemCode.find,
   getScan: redisService.getScan,
   updateScanStatus: redisService.updateScanStatus,
@@ -78,6 +80,7 @@ test.after(() => {
   DiamondRate.find = original.diamondFind;
   ColorstoneRate.find = original.colorstoneFind;
   WastageCode.find = original.wastageFind;
+  LabourCode.find = original.labourCodeFind;
   ItemCode.find = original.itemFind;
   redisService.getScan = original.getScan;
   redisService.updateScanStatus = original.updateScanStatus;
@@ -94,6 +97,8 @@ GoldTaxSetting.findOne = shopSetting('tax');
 DiamondRate.find = shopRows('diamondRows');
 ColorstoneRate.find = shopRows('colorstoneRows');
 WastageCode.find = shopRows('wastageRows');
+// No labour codes saved: the labour is priced exactly as before them.
+LabourCode.find = async () => [];
 ItemCode.find = shopRows('itemRows');
 redisService.getScan = async () => ({
   scanId: 'scan-1', ownerUserId: OWNER.userId, businessId: BIZ, status: 'READY_FOR_REVIEW', calculationMode: 'rtgs',

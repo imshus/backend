@@ -177,6 +177,9 @@ function pricingRecordOf({ request, resultData, resolvedMode, applied } = {}) {
       labourChargeAmount: request?.manualLabour ? request.manualLabour.amount : null,
       labourChargeUnit: request?.manualLabour ? request.manualLabour.unit : null,
       labourWeightBasis: request?.labourWeightBasis ?? null,
+      // The Masters -> Labour Code picked on the card ('' when none); the
+      // one the price used, picked or matched, is the breakdown's labourCode.
+      labourCode: request?.labourCode || '',
       wastagePercent: request?.wastagePercent ?? null,
       wastageWeightBasis: request?.wastageWeightBasis ?? null,
       otherCharges: request?.otherCharges ?? 0,

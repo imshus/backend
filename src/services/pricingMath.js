@@ -33,6 +33,8 @@ const { roundHalfUp } = require('../utils/money');
  *                              weight at the 24K rate, as those builds bill it
  *   otherCharges
  *   labourChargeType, wastageCode   carried into the breakdown as they are
+ *   labourCode                 the Masters -> Labour Code the scan carries ('' for
+ *                              none), carried into the breakdown as it is
  *
  * Returns { breakdown, finalMRP, finalMRPRounded } as the app reads them,
  * plus the figures the audit line logs (effectivePurityPercent,
@@ -62,6 +64,7 @@ function computePricing(inputs) {
     otherCharges: otherChargesAmount,
     labourChargeType,
     wastageCode,
+    labourCode = '',
   } = inputs;
 
   // If DB lookup failed, derive a fallback purity percent from the karat value
@@ -174,6 +177,10 @@ function computePricing(inputs) {
       goldAmount: aggregation.goldAmount,
       labourAmount: aggregation.labourAmount,
       labourChargeType,
+      // The Masters -> Labour Code picked on the card, else the one a tag's
+      // identifier matched; '' when none. Recorded even when a labour figure
+      // sent with the request beat its rate.
+      labourCode: labourCode || '',
       // A Masters -> Wastage code the tag's number matched, and nothing else:
       // the item code is never shown as a wastage code.
       wastageCode,

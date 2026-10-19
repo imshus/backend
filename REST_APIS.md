@@ -139,6 +139,14 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
   Under rules 3 the card opens with its Wastage tile on the net weight, so
   `pricingInput` carries `wastageWeightBasis: "net"` and the wastage is priced
   on the net weight at the current gold rate.
+- `labourCode`: the Masters -> Labour Code (3.5) the tag carries, for the
+  card's Labour Code box: the one the price matched (`pricing.breakdown
+  .labourCode`); without a price (`pricingError`), the one any of
+  `tagIdentifiers` names in the caller's list. '' when none, and always ''
+  for rules 1. `pricingInput` never carries a `labourCode` (the card opens
+  with none picked); its labour is the card's opening labour as before (the
+  tag's, else the item's, else the shop's), which beats the code's rate, so
+  the code prices the reading only when that box opens empty.
 - Every reading returned also starts the scan's line in Tag scan history
   (8.1): status `read`, `finalMRP` the `pricing.finalMRPRounded` above (null
   when it could not be priced), and `details`, everything read (8.2). Written
@@ -197,11 +205,22 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
   - `labourChargeAmount` with `labourChargeUnit` "Per Gram" | "Per 10 Gram" |
     "Percent" (a percent of the gold value; "12%" in the amount means the
     same). Text around a figure ("MC 850") is read as its first number;
-    text with no number ("NIL") is no amount. Without an amount: the matched
-    Masters item's labour in its `labourUnit` (from rules 2), else the
-    shop's labour charge (AMOUNT per its unit, or PERCENTAGE of the gold
-    value). `labourWeightBasis` "net" | "gross", default the basis the
-    shop's labour charge was saved with.
+    text with no number ("NIL") is no amount. Without an amount: the scan's
+    Masters -> Labour Code row's `rate` in its `unit` (from rules 2; see
+    `labourCode`), else the matched Masters item's labour in its
+    `labourUnit` (from rules 2), else the shop's labour charge (AMOUNT per
+    its unit, or PERCENTAGE of the gold value). `labourWeightBasis` "net" |
+    "gross", default the basis the shop's labour charge was saved with.
+  - `labourCode` (text, trimmed, first 20 characters; a number is read as
+    text; anything else is a 400 "labourCode must be text"): the Masters ->
+    Labour Code (3.5) picked on the card. The row is found in the caller's
+    list (their own, else the shop's) by letters and digits only ("lb 01" is
+    LB-01): the picked code first, then the item number and every
+    `tagIdentifiers` entry (the one that named the Masters item first), as
+    the wastage codes are; a picked code no longer saved gives way to the
+    tag's. A labour amount sent beats the row's rate (as `wastagePercent`
+    beats a wastage code's percent); a row without a rate prices nothing.
+    Rules 1 looks no code up. No row: the labour is exactly as before.
   - `wastagePercent` (0-100), `otherCharges` (>= 0), `calculationMode`,
     `itemCode`, `tagIdentifiers[]`. The Masters item is found from them as
     the app does: exact, then ignoring case/punctuation, then the longest
@@ -220,6 +239,12 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
   10 g is 0.8 g x 13,740 = 10,992. The amount is part of the MRP.
 - Response `data`: `{ breakdown, finalMRP, finalMRPRounded }`; `finalMRPRounded`
   is the MRP to the rupee, commercial half-up (2,59,020.50 is 2,59,021).
+  The breakdown's labour fields: `labourAmount`; `labourChargeType`
+  (`AMOUNT_MANUAL` / `PERCENTAGE_MANUAL` the request's figure,
+  `AMOUNT_CODE` / `PERCENTAGE_CODE` the labour code's rate, `*_ITEM`,
+  `*_GLOBAL`, `NONE`); `labourCode`, the Masters -> Labour Code row found
+  (picked, else matched from the tag), recorded even when a sent amount
+  beat its rate; '' when none.
   The breakdown's wastage fields:
   - `wastagePercent`;
   - `wastageWeightBasis`: "net" | "gross", the weight actually used ("gross"
@@ -269,6 +294,40 @@ All rate endpoints are under `/api/v1/rates` (router mounted at `/api/v1/rates`)
 3.4 Labour
 - GET /api/v1/rates/labour — get labour settings
 - POST /api/v1/rates/labour — upsert labour rate (permission `editRateLabour`)
+
+3.5 Labour codes (Masters -> Labour Code), mounted at `/api/v1/labour-codes`
+- Auth: JWT required (`authenticateJWT`), owner and employee alike; no
+  further permission (as `/api/v1/wastage-codes`). Controller:
+  `labourCodeController` ([backend/src/controllers/labourCode.controller.js]).
+- Kept as the wastage codes are: each user reads their own list, else the
+  shop's (the owner's rows, `userId: null`); an employee's first save or
+  delete copies the whole shop list to them first, and changes only their
+  copy. Collection `labour_codes`.
+- A row: `{ _id, businessId, userId (null for the shop's), code, rate,
+  unit, createdAt, updatedAt, __v }`. `code` uppercase, trimmed, inner
+  spaces collapsed, 1-20 characters with at least one letter or digit,
+  unique in its list by letters and digits alone (LB-01 = "lb 01" = LB01).
+  `rate` a number >= 0, or null when left blank (no figure: the code prices
+  nothing). `unit` "Per Gram" (default) | "Per 10 Gram" | "Percent" (of the
+  gold value; `rate` then 0-100).
+- GET /api/v1/labour-codes → `200 { success: true, data: [row, …] }`, A to Z
+  by code.
+- POST /api/v1/labour-codes `{ id?, code, rate?, unit? }` → `200 { success:
+  true, data: row }`. Without `id` it adds a code; with `id` (a row of the
+  caller's list, or the shop row an employee is still reading) it edits that
+  row, code included. `rate` as a number or text ("415", "₹ 1,250"); `unit`
+  any case, "percentage" / "%" read as Percent. Errors `{ success: false,
+  message }`: 400 "Labour code is required", "Labour code must stay within
+  20 characters", 'Unit must be "Per Gram", "Per 10 Gram" or "Percent"',
+  "Labour rate must be a number of rupees, 0 or more", "Labour must be a
+  percentage between 0 and 100"; 404 "Labour code not found" (an id not of
+  this shop); 409 "This labour code already exists" (another row of the list
+  with the same letters and digits); 500 "Failed to save labour code".
+- DELETE /api/v1/labour-codes/:id → `200 { success: true, message: 'Deleted
+  successfully' }`, also for an id that is no row of the caller's list
+  (nothing is deleted then).
+- Priced by 2.9 (`labourCode`, and the tag's identifiers) and named by 2.4
+  (`labourCode`).
 
 
 4. Invoice generation
@@ -479,11 +538,12 @@ plus `{ createdAt: -1, _id: -1 }`.
   jewelleryType, grossWt, netWt, purityKarat, customPurityPercent,
   calculationMode (the mode priced in: cash | rtgs), diamonds[{ weight, rate,
   discountPercent, unit }], colorstones[{ weight, rate, unit }],
-  labourChargeAmount, labourChargeUnit, labourWeightBasis, wastagePercent,
+  labourChargeAmount, labourChargeUnit, labourWeightBasis, labourCode (the
+  code picked on the card, '' when none), wastagePercent,
   wastageWeightBasis, otherCharges, itemCode, tagIdentifiers }` (null where
   not sent). `breakdown` is 2.9's breakdown (goldRateApplied, pureWeight,
   goldAmount, diamondAmount, colorstoneAmount, labourAmount,
-  labourChargeType, wastagePercent, wastageCode, wastageWeightBasis,
+  labourChargeType, labourCode, wastagePercent, wastageCode, wastageWeightBasis,
   wastageWeightGrams, wastageRatePerGram, wastageAmount, otherCharges,
   subtotal, netWeightUsed, netWeightEstimated) plus `goldRatePer10g`,
   `effectivePurityPercent`, `purityAdjustedGoldRatePerGram`,

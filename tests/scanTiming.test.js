@@ -104,7 +104,7 @@ const analyzeThroughController = async (scanId) => {
 
 test('one [SCAN_TIMING] line per analyzed scan, with exactly the agreed fields and no PII', async () => {
   // Stand-ins for the price's database reads (prefetchPricingReads).
-  const models = ['diamondRate', 'colorstoneRate', 'wastageCode', 'itemCode'].map((name) => require(`../src/models/${name}.model`));
+  const models = ['diamondRate', 'colorstoneRate', 'wastageCode', 'labourCode', 'itemCode'].map((name) => require(`../src/models/${name}.model`));
   const singles = ['goldTaxSetting', 'labourRate'].map((name) => require(`../src/models/${name}.model`));
   const saved = [...models.map((m) => m.find), ...singles.map((m) => m.findOne)];
   for (const model of models) model.find = async () => [];
