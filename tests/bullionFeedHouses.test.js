@@ -61,15 +61,24 @@ const DashboardMetrics = fakeSettings();
 
 const state = {
   feed: null,
+  // The live stream the phone shows (a bare array, as it sends one); null
+  // answers with no board.
+  liveFeed: null,
   feedDown: false,
+  liveHangs: false,
+  liveReads: 0,
   invalidated: [],
 };
 
-// The 3-minute feed: a non-stream body is taken as the snapshot itself.
+// Both feeds: a non-stream body is taken as the snapshot itself. The
+// 3-minute stream is the URL with /3min in it, the live stream the other.
 stub(RATES, 'axios', {
-  get: async () => {
+  get: async (url) => {
     if (state.feedDown) throw new Error('connect ECONNREFUSED');
-    return { data: state.feed };
+    if (String(url).includes('/3min')) return { data: state.feed };
+    state.liveReads += 1;
+    if (state.liveHangs) return new Promise(() => {});
+    return { data: state.liveFeed };
   },
 });
 stub(CONTROLLER, '../models/bullionSource.model', BullionSource);
@@ -146,11 +155,18 @@ const OWNER = { businessId: BIZ, userId: 'owner-1', role: 'OWNER' };
 const EMPLOYEE = { businessId: BIZ, userId: 'emp-7', role: 'EMP' };
 
 /** A fresh shop on a fresh board: nothing saved, the feed as given. */
-const reset = ({ feed = { fetched_at: '2026-10-19T11:14:43+0530', sources: ELEVEN }, feedDown = false } = {}) => {
+const reset = ({
+  feed = { fetched_at: '2026-10-19T11:14:43+0530', sources: ELEVEN },
+  liveFeed = ELEVEN,
+  feedDown = false,
+} = {}) => {
   BullionSource.rows.length = 0;
   DashboardMetrics.rows.length = 0;
   state.feed = feed;
+  state.liveFeed = liveFeed;
   state.feedDown = feedDown;
+  state.liveHangs = false;
+  state.liveReads = 0;
   state.invalidated = [];
   bhawService.__internal.resetCache();
 };
@@ -390,4 +406,106 @@ test('no bhaw at all (KJ Bullion): priced exactly as Mega Bullion is — its own
   assert.deepEqual(kj.taxSettings, mega.taxSettings, 'the same figures, to the rupee');
   assert.deepEqual(kj.karatRates, mega.karatRates);
   assert.equal(kj.bhawSource.name, 'KJ Bullion');
+});
+
+// ---- a house off the board, a house just added, names kept ---------------------
+
+/** A twelfth house, as the tracker would add one. */
+const NEW_HOUSE = house('new_house', 'New House Bullion', { mcxSell: LINE, rtgsSell: 150500 });
+const TWELVE = [...ELEVEN, NEW_HOUSE];
+
+test('a twelfth house that drops off the board stays the shop\'s house: not swapped for Mega Bullion, priced as a house with no bhaw', async () => {
+  reset({ feed: { sources: TWELVE }, liveFeed: TWELVE });
+  assert.equal((await post({ selected: 'new_house', requestedNames: ['Gupta Jewellers'] })).statusCode, 200);
+  assert.equal(ownerMetrics().metricsData.bhaw_source_jmd, false, 'the boolean reads Mega Bullion');
+
+  // The next snapshot (and the live stream) no longer carry it.
+  state.feed = { sources: ELEVEN };
+  state.liveFeed = ELEVEN;
+  bhawService.__internal.resetCache();
+
+  const res = await get();
+  assert.equal(res.payload.data.selected, 'new_house', 'GET still names the shop\'s house');
+  assert.ok(res.payload.data.builtIn.some((entry) => entry.key === 'new_house'), 'listed, so the app can name it');
+
+  const rates = await getLiveGoldRates(BIZ);
+  assert.equal(rates.bhawSource.key, 'new_house', 'priced on the shop\'s house, not Mega Bullion');
+  assert.equal(rates.bhawSource.live, false);
+  // No line and no bhaw of its own this round: the market MCX and the stored changes.
+  assert.equal(rates.taxSettings.mcxFinalRate, MARKET_MCX);
+  assert.equal(rates.taxSettings.rtgsRate1FinalRate, MARKET_MCX + STORED.rtgsChange);
+  assert.equal(rates.taxSettings.cashFinalRate, MARKET_MCX + STORED.cashChange);
+
+  // 'Add bullion' re-sends the house followed: kept, never overwritten with Mega.
+  const saved = await post({ selected: 'new_house', requestedNames: ['Gupta Jewellers', 'Patel Gold'] });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(ownerRecord().selected, 'new_house');
+  assert.deepEqual(ownerRecord().customNames, ['Gupta Jewellers', 'Patel Gold']);
+});
+
+test('a name an older build stored as the choice still falls back to the older boolean, key-shaped or not', async () => {
+  for (const typed of ['gupta', 'Gupta Jewellers']) {
+    reset();
+    BullionSource.rows.push({ businessId: BIZ, userId: null, selected: typed, customNames: [typed] });
+    DashboardMetrics.rows.push({ businessId: BIZ, userId: null, metricsData: { bhaw_source_jmd: false } });
+    assert.equal((await get()).payload.data.selected, 'mega_bullion', typed);
+    assert.equal((await getLiveGoldRates(BIZ)).bhawSource.key, 'mega_bullion', typed);
+  }
+});
+
+test('a house on the live stream but not yet on the 3-minute board is accepted (the phone lists it already)', async () => {
+  reset({ liveFeed: TWELVE });
+  await get(); // the board in hand: eleven houses
+  const res = await post({ selected: 'new_house', requestedNames: [] });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.data.selected, 'new_house');
+  assert.deepEqual(res.payload.data.builtIn.at(-1), { key: 'new_house', label: 'New House Bullion' });
+  assert.equal(ownerRecord().selected, 'new_house');
+  assert.equal((await get()).payload.data.selected, 'new_house', 'read back while the board still lacks it');
+  // By its feed name too.
+  assert.equal((await post({ selected: 'new house bullion', requestedNames: [] })).payload.data.selected, 'new_house');
+});
+
+test('a house added on the 3-minute feed since the board in hand is found by a fresh read', async () => {
+  reset({ liveFeed: null });
+  await get(); // a fresh board of eleven, held for minutes
+  state.feed = { fetched_at: '2026-10-19T11:17:43+0530', sources: TWELVE };
+  const res = await post({ selected: 'new_house', requestedNames: [] });
+  assert.equal(res.statusCode, 200);
+  assert.equal(ownerRecord().selected, 'new_house');
+});
+
+test('a house on neither feed is still refused, and a live stream that hangs holds the save ~4 s at most', async () => {
+  reset();
+  await get();
+  state.liveHangs = true;
+  const started = Date.now();
+  const res = await post({ selected: 'gupta_bullion', requestedNames: [] });
+  const waited = Date.now() - started;
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.payload.message, 'Pick one of the bullion houses on the feed');
+  assert.ok(waited < 6_000, `waited ${waited} ms`);
+  assert.equal(BullionSource.rows.length, 0, 'nothing saved');
+});
+
+test('a house already on the board is saved without reading the live stream', async () => {
+  reset();
+  await get();
+  assert.equal((await post({ selected: 'kj_bullion', requestedNames: [] })).statusCode, 200);
+  assert.equal(state.liveReads, 0);
+});
+
+test('POST with no requestedNames keeps the names already asked for (a tap before the list had loaded)', async () => {
+  reset();
+  await post({ selected: 'jmd_patil', requestedNames: ['Gupta Jewellers'] });
+  for (const body of [{ selected: 'kp_bullion' }, { selected: 'smd_bullion', requestedNames: null }]) {
+    const res = await post(body);
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.payload.data.requestedNames, ['Gupta Jewellers']);
+    assert.deepEqual(ownerRecord().customNames, ['Gupta Jewellers']);
+  }
+  assert.equal(ownerRecord().selected, 'smd_bullion');
+  // An empty list sent on purpose still clears them.
+  await post({ selected: 'smd_bullion', requestedNames: [] });
+  assert.deepEqual(ownerRecord().customNames, []);
 });

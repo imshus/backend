@@ -63,24 +63,30 @@ const findHouse = (houses, value) => {
 /**
  * The house an account follows, as { key, label }.
  *
- *   board      followableHouses(): { houses, fromFeed }
- *   stored     BullionSource.selected
- *   legacyJmd  DashboardMetrics bhaw_source_jmd
+ *   board           followableHouses(): { houses, fromFeed }
+ *   stored          BullionSource.selected
+ *   legacyJmd       DashboardMetrics bhaw_source_jmd
+ *   requestedNames  BullionSource.customNames, the names the shop typed in
  *
  * The stored choice when it names a house on the board, or one the feed is
- * known to carry (a house off the board for a round is still the shop's
- * house). With no board in hand at all, a stored house key is kept as it
- * stands: a feed that is down never moves a shop off its house. Anything
- * else — nothing chosen yet, or a name the shop added that is on no board —
- * is the older boolean's house: JMD Patil unless it is saved false, then
- * Mega Bullion.
+ * known to carry. Any other stored house key is kept as it stands, on the
+ * board or not: a house off this round's board (or a feed that is down) is
+ * still the shop's house, and is priced as a house with no bhaw until it is
+ * back — never silently swapped for Mega Bullion, which a save would then
+ * have made permanent. Anything else — nothing chosen yet, or a name the
+ * shop typed in (an older build stored those as the choice; they are among
+ * its requested names, and a typed name is rarely key-shaped anyway) — is
+ * the older boolean's house: JMD Patil unless it is saved false, then Mega
+ * Bullion.
  */
-const followedHouse = (board, stored, legacyJmd) => {
+const followedHouse = (board, stored, legacyJmd, requestedNames = []) => {
   const houses = Array.isArray(board?.houses) ? board.houses : [];
   const match = findHouse(houses, stored) || findHouse(knownHouses(), stored);
   if (match) return { key: match.key, label: match.label };
   const raw = String(stored ?? '').trim();
-  if (!board?.fromFeed && HOUSE_KEY.test(raw)) return { key: raw, label: SOURCE_NAMES[raw] || raw };
+  const typedIn = (Array.isArray(requestedNames) ? requestedNames : [])
+    .some((name) => houseNameKey(name) === houseNameKey(raw));
+  if (HOUSE_KEY.test(raw) && !typedIn) return { key: raw, label: SOURCE_NAMES[raw] || raw };
   const key = legacyJmd === false ? SOURCES.MEGA_BULLION : SOURCES.JMD_PATIL;
   const onBoard = findHouse(houses, key);
   return { key, label: onBoard?.label || SOURCE_NAMES[key] };

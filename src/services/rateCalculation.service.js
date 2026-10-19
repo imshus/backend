@@ -173,6 +173,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
     await bhawService.followableHouses(),
     bullionSetting?.selected,
     metrics?.metricsData?.bhaw_source_jmd,
+    bullionSetting?.customNames,
   );
   const selectedBhawSource = followed.key;
   // The house's premium on each side over its own MCX sell (its Cash or

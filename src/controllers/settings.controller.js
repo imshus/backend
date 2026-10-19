@@ -411,7 +411,12 @@ const getBullionSources = async (req, res) => {
       bhawService.followableHouses(),
     ]);
 
-    const followed = followedHouse(board, setting?.selected, metrics?.metricsData?.bhaw_source_jmd);
+    const followed = followedHouse(
+      board,
+      setting?.selected,
+      metrics?.metricsData?.bhaw_source_jmd,
+      setting?.customNames,
+    );
     const builtIn = withHouse(board.houses, followed);
 
     return res.status(200).json({
@@ -434,7 +439,10 @@ const getBullionSources = async (req, res) => {
  * its feed name); the house the account already follows is never refused,
  * so a feed that is down for a moment does not stop a shop saving. A
  * requested name is recorded and answered later, so it cannot move a shop's
- * price today. Nothing sent as `selected` keeps the house followed.
+ * price today. Nothing sent as `selected` keeps the house followed, and
+ * nothing sent as `requestedNames` keeps the names already asked for. A house
+ * the board in hand does not list is looked for on both feeds once more
+ * (bhawService.findHouseOnFeed) before it is refused.
  */
 const updateBullionSources = async (req, res) => {
   try {
@@ -444,14 +452,24 @@ const updateBullionSources = async (req, res) => {
       findScopedSetting(BullionSource, scope),
       findScopedSetting(DashboardMetrics, scope),
     ]);
-    const following = followedHouse(board, current?.selected, currentMetrics?.metricsData?.bhaw_source_jmd);
+    const following = followedHouse(
+      board,
+      current?.selected,
+      currentMetrics?.metricsData?.bhaw_source_jmd,
+      current?.customNames,
+    );
     const sent = req.body?.selected;
     // A house is sent as its key: anything but a string names no house.
     const requested = typeof sent === 'string' ? cleanBullionName(sent) : sent == null ? '' : null;
+    // The phone lists the houses on the live stream, which carries a house the
+    // tracker has just added up to 3 minutes before the board in hand does:
+    // before refusing one, both feeds are looked at once more (bounded).
     const chosen = requested === null
       ? null
       : requested
-        ? findHouse(board.houses, requested) || findHouse([following], requested)
+        ? findHouse(board.houses, requested)
+          || findHouse([following], requested)
+          || await bhawService.findHouseOnFeed(requested)
         : following;
 
     if (!chosen) {
@@ -461,7 +479,10 @@ const updateBullionSources = async (req, res) => {
     }
 
     const builtIn = withHouse(board.houses, chosen);
-    const customNames = cleanCustomNames(req.body?.requestedNames ?? req.body?.customNames, builtIn);
+    // No names sent (a house picked before the list had loaded on the phone)
+    // keeps the names already asked for: [] would have wiped them.
+    const sentNames = req.body?.requestedNames ?? req.body?.customNames;
+    const customNames = cleanCustomNames(sentNames == null ? current?.customNames : sentNames, builtIn);
     const selected = chosen.key;
     const setting = await upsertScopedSetting(BullionSource, scope, { selected, customNames });
     if (customNames.length) {

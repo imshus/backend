@@ -23,6 +23,7 @@ const { createSseParser, snapshotPayload } = require('./sseFrames');
  * selected rather than trusting position or a single "active" record.
  */
 const DEFAULT_STREAM_URL = 'https://jmd.mrpscan.com/api/3min/stream';
+const DEFAULT_LIVE_STREAM_URL = 'https://jmd.mrpscan.com/api/stream';
 /** How long a snapshot without next_fetch_at (the old bare array) is fresh. */
 const CACHE_TTL_MS = 30_000;
 /** A snapshot with next_fetch_at stays fresh this long past it. */
@@ -33,7 +34,7 @@ const SSE_HEADERS = { Accept: 'text/event-stream', 'Cache-Control': 'no-cache' }
 
 // The houses and their names live in bullionHouses.js (pure, shared with the
 // settings screen); every house on the board can be followed, not only these.
-const { SOURCES, SOURCE_NAMES, knownHouses } = require('./bullionHouses');
+const { SOURCES, SOURCE_NAMES, knownHouses, findHouse } = require('./bullionHouses');
 
 const emptyCache = () => ({
   rows: null,
@@ -80,6 +81,22 @@ const threeMinuteStreamUrl = () => {
     streamUrl = process.env.MCX_3MINUTE_STREAMING || DEFAULT_STREAM_URL;
   }
   return streamUrl;
+};
+
+let liveUrl = null;
+
+/**
+ * MCX_LIVE_STEAMING, the stream the phone shows: read here only to confirm a
+ * house the 3-minute board does not list yet (findHouseOnFeed), never priced on.
+ */
+const liveStreamUrl = () => {
+  if (liveUrl) return liveUrl;
+  try {
+    liveUrl = require('../config/env').mcx.liveStreamUrl || DEFAULT_LIVE_STREAM_URL;
+  } catch (error) {
+    liveUrl = process.env.MCX_LIVE_STEAMING || DEFAULT_LIVE_STREAM_URL;
+  }
+  return liveUrl;
 };
 
 /**
@@ -215,10 +232,12 @@ const store = (snapshot) => {
 /**
  * One read of the 3-minute stream: connect, take the first snapshot event
  * (the server sends one on connect), close. Pings and heartbeats on the way
- * are skipped. Rejects when no snapshot comes within READ_DEADLINE_MS.
- * A response body that is not a stream is taken as the payload itself.
+ * are skipped. Rejects when no snapshot comes within `deadlineMs`
+ * (READ_DEADLINE_MS unless given). A response body that is not a stream is
+ * taken as the payload itself. The live stream reads the same way (its
+ * snapshot is the bare array), for findHouseOnFeed.
  */
-const readSnapshot = (url = threeMinuteStreamUrl()) => new Promise((resolve, reject) => {
+const readSnapshot = (url = threeMinuteStreamUrl(), deadlineMs = READ_DEADLINE_MS) => new Promise((resolve, reject) => {
   const controller = new AbortController();
   let body = null;
   let settled = false;
@@ -234,8 +253,8 @@ const readSnapshot = (url = threeMinuteStreamUrl()) => new Promise((resolve, rej
   };
 
   const deadline = setTimeout(
-    () => finish(new Error(`no snapshot from the 3-minute feed within ${READ_DEADLINE_MS / 1000} s`)),
-    READ_DEADLINE_MS,
+    () => finish(new Error(`no snapshot from ${url} within ${deadlineMs / 1000} s`)),
+    deadlineMs,
   );
   if (typeof deadline.unref === 'function') deadline.unref();
 
@@ -510,6 +529,56 @@ const followableHouses = async () => {
   return { fromFeed: false, houses: knownHouses() };
 };
 
+/** How long a save waits on either feed to confirm a house (findHouseOnFeed). */
+const CONFIRM_DEADLINE_MS = 4_000;
+
+/** Resolves with `promise`, or with undefined once `ms` have gone by. */
+const within = (promise, ms) => new Promise((resolve) => {
+  const timer = setTimeout(resolve, ms);
+  if (typeof timer.unref === 'function') timer.unref();
+  promise.then(resolve, () => resolve()).finally(() => clearTimeout(timer));
+});
+
+let pendingLiveRead = null;
+
+/**
+ * The houses on the live stream right now, as { key, name }, off one
+ * bounded read (shared by callers while it is in flight); [] when the
+ * stream cannot be read in time. Only to confirm a house: never the board.
+ */
+const liveHouses = () => {
+  if (!pendingLiveRead) {
+    pendingLiveRead = readSnapshot(liveStreamUrl(), CONFIRM_DEADLINE_MS)
+      .then((snapshot) => snapshot?.houses || [])
+      .catch((error) => {
+        console.warn('[Bhaw] Could not read the live stream to confirm a house:', error.message);
+        return [];
+      })
+      .finally(() => {
+        pendingLiveRead = null;
+      });
+  }
+  return pendingLiveRead;
+};
+
+/**
+ * The house `value` names (key, or feed name) on the feed as it stands now,
+ * as { key, label }, or null. For a house the board in hand does not list:
+ * the phone shows the live stream, so a house the tracker has just added is
+ * on the phone up to 3 minutes before it is on the 3-minute snapshot. A fresh
+ * 3-minute read is forced and the live stream read once beside it, each
+ * bounded by CONFIRM_DEADLINE_MS; the house is taken from either. Never
+ * throws.
+ */
+const findHouseOnFeed = async (value) => {
+  const asHouses = (list) => (Array.isArray(list) ? list : []).map(({ key, name }) => ({ key, label: name }));
+  const [, live] = await Promise.all([
+    within(fetchRows(true), CONFIRM_DEADLINE_MS),
+    liveHouses(),
+  ]);
+  return findHouse(asHouses(cache.houses), value) || findHouse(asHouses(live), value);
+};
+
 /** Fetch the feed now, or hand back the fresh cache. Never throws. */
 const prefetch = () => fetchRows().catch(() => null);
 
@@ -632,6 +701,7 @@ module.exports = {
   SOURCES,
   SOURCE_NAMES,
   feedStamp,
+  findHouseOnFeed,
   followableHouses,
   getBhawForSource,
   getJmdBhaw,
@@ -650,6 +720,7 @@ module.exports = {
     resetCache: () => {
       cache = emptyCache();
       pendingRead = null;
+      pendingLiveRead = null;
     },
     cacheState: () => ({ ...cache }),
   },
