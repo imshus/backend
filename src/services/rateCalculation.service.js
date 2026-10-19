@@ -6,6 +6,7 @@ const SupremeChange = require('../models/supremeChange.model');
 const DashboardMetrics = require('../models/dashboardMetrics.model');
 const BullionSource = require('../models/bullionSource.model');
 const bhawService = require('./bhaw.service');
+const { followedHouse } = require('./bullionHouses');
 const { findScopedSetting } = require('./userScope.service');
 const { RUNNING_COMMIT } = require('../utils/runningCommit');
 const { roundHalfUp, percentOfRupeesHalfUp, rupeesLessPercentHalfUp } = require('../utils/money');
@@ -163,17 +164,17 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // is fetched by name. Only if that vendor is unavailable do we keep the
   // stored supreme changes as a fallback.
   //
-  // Every house on the feed can be followed. Anything else in the record —
-  // a name the shop added — falls back to the boolean rather than being
-  // asked of a feed that has never heard of it.
-  const FEED_SOURCES = Object.values(bhawService.SOURCES);
-  const storedSource = String(bullionSetting?.selected || '').trim();
-  const selectedBhawSource = FEED_SOURCES.includes(storedSource)
-    ? storedSource
-    // Unset means JMD Patil, the default; only a saved "off" means the other house.
-    : metrics?.metricsData?.bhaw_source_jmd === false
-      ? bhawService.SOURCES.MEGA_BULLION
-      : bhawService.SOURCES.JMD_PATIL;
+  // Every house on the feed can be followed, read the way the settings
+  // screen reads it (followedHouse), so the house ticked there is the house
+  // priced here. Anything else in the record — a name the shop added that
+  // is on no board — falls back to the boolean rather than being asked of a
+  // feed that has never heard of it.
+  const followed = followedHouse(
+    await bhawService.followableHouses(),
+    bullionSetting?.selected,
+    metrics?.metricsData?.bhaw_source_jmd,
+  );
+  const selectedBhawSource = followed.key;
   // The house's premium on each side over its own MCX sell (its Cash or
   // RTGS sell less that line, off the same record), not the tracker's Badla
   // Bhaw, which is measured from the MCX buy and so ran high by the spread.
@@ -189,7 +190,9 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   }
   const bhawSource = {
     key: selectedBhawSource,
-    name: vendorBhaw?.name || bhawService.SOURCE_NAMES[selectedBhawSource] || selectedBhawSource,
+    // The feed's own name, live bhaw or not: a house that has published no
+    // bhaw is still named as the house followed, never by its key.
+    name: vendorBhaw?.name || followed.label,
     live: Boolean(vendorBhaw),
   };
 

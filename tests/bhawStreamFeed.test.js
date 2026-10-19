@@ -179,7 +179,14 @@ test('normalise: { sources } is unwrapped and its times kept', () => {
 
 test('normalise: the old bare array is taken as it is, with no times', () => {
   const rows = [{ source: 'jmd_patil', cash_bhaw: '-3000', rtgs_bhaw: '1900' }];
-  assert.deepEqual(bhawService.normalizePayload(rows), { rows, down: 0, fetchedAt: null, nextFetchAt: null });
+  assert.deepEqual(bhawService.normalizePayload(rows), {
+    rows,
+    down: 0,
+    fetchedAt: null,
+    nextFetchAt: null,
+    // Every house on it, by key and name (a house with no name: the known one).
+    houses: [{ key: 'jmd_patil', name: 'JMD Patil' }],
+  });
 });
 
 test('normalise: a house with ok: false is dropped; missing ok is kept', () => {

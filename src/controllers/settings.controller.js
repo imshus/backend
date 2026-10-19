@@ -7,6 +7,7 @@ const einvoiceService = require('../services/einvoice.service');
 const profileEditService = require('../services/profileEdit.service');
 const { settingsScope, findScopedSetting, upsertScopedSetting } = require('../services/userScope.service');
 const bhawService = require('../services/bhaw.service');
+const { findHouse, followedHouse, houseNameKey } = require('../services/bullionHouses');
 
 // A shop that has saved nothing shows the MCX card alone; the 24K
 // RTGS/Cash card and the lighter karats wait in settings until ticked.
@@ -358,28 +359,30 @@ const updateDashboardMatrices = async (req, res) => {
   }
 };
 
-// The two houses on the live bhaw feed — the only ones a shop can follow.
-// A name a shop adds is kept as a request for that house's rates; it is not
-// a choice, so it never changes what Home costs.
-// One list, the feed service's: the houses a shop may follow are exactly
-// the houses the rate calculation can price on. Two literals once drifted,
-// and a shop's choice was silently priced on another house.
-const BUILT_IN_BULLION = Object.values(bhawService.SOURCES).map((key) => ({
-  key,
-  label: bhawService.SOURCE_NAMES[key] || key,
-}));
+// The houses a shop can follow are the houses on the 3-minute feed — every
+// one of them, by the feed's own key and name (bhawService.followableHouses),
+// so a house the feed adds can be followed the day it appears. A name a shop
+// adds is kept as a request for that house's rates; it is not a choice, so
+// it never changes what Home costs, until that house is on the feed.
+// The choice is read through followedHouse, the same reading the rate
+// calculation prices on: two lists once drifted, and a shop's choice was
+// silently priced on another house.
 const MAX_CUSTOM_BULLION = 10;
 const BULLION_NAME_MAX = 40;
 
 const cleanBullionName = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').slice(0, BULLION_NAME_MAX);
 
-/** The names a shop added: trimmed, de-duplicated, and never a built-in. */
-const cleanCustomNames = (values) => {
+/**
+ * The names a shop added: trimmed, de-duplicated (case and spaces aside),
+ * and never a house on the list — a requested house that is now on the feed
+ * is that house, to be picked, not a request still waiting.
+ */
+const cleanCustomNames = (values, houses) => {
   const out = [];
-  const seen = new Set(BUILT_IN_BULLION.flatMap((house) => [house.key, house.label.toLowerCase()]));
+  const seen = new Set(houses.flatMap((house) => [house.key, houseNameKey(house.label)]));
   for (const value of Array.isArray(values) ? values : []) {
     const name = cleanBullionName(value);
-    const key = name.toLowerCase();
+    const key = houseNameKey(name);
     if (!name || seen.has(key)) continue;
     seen.add(key);
     out.push(name);
@@ -388,30 +391,36 @@ const cleanCustomNames = (values) => {
   return out;
 };
 
+/** The list the app is sent: the feed's houses, the followed one always among them. */
+const withHouse = (houses, house) => (
+  houses.some((entry) => entry.key === house.key) ? houses : [...houses, house]
+);
+
 /**
- * GET /settings/bullion — the houses this account can follow, the one it
- * follows, and the names it has asked us to add. An account that has never
- * chosen follows the record the older boolean left behind, so nothing changes
- * under anyone.
+ * GET /settings/bullion — the houses this account can follow (the feed's),
+ * the one it follows, and the names it has asked us to add. An account that
+ * has never chosen follows the record the older boolean left behind, so
+ * nothing changes under anyone.
  */
 const getBullionSources = async (req, res) => {
   try {
     const scope = settingsScope(req.user);
-    const [setting, metrics] = await Promise.all([
+    const [setting, metrics, board] = await Promise.all([
       findScopedSetting(BullionSource, scope),
       findScopedSetting(DashboardMetrics, scope),
+      bhawService.followableHouses(),
     ]);
 
-    const requestedNames = cleanCustomNames(setting?.customNames);
-    // Unset means JMD Patil, the default; only a saved "off" means the other house.
-    const fallback = metrics?.metricsData?.bhaw_source_jmd === false ? 'mega_bullion' : 'jmd_patil';
-    const stored = cleanBullionName(setting?.selected);
-    const followable = BUILT_IN_BULLION.map((house) => house.key);
-    const selected = followable.includes(stored) ? stored : fallback;
+    const followed = followedHouse(board, setting?.selected, metrics?.metricsData?.bhaw_source_jmd);
+    const builtIn = withHouse(board.houses, followed);
 
     return res.status(200).json({
       success: true,
-      data: { builtIn: BUILT_IN_BULLION, requestedNames, selected },
+      data: {
+        builtIn,
+        requestedNames: cleanCustomNames(setting?.customNames, builtIn),
+        selected: followed.key,
+      },
     });
   } catch (error) {
     console.error('Get Bullion Sources Error:', error);
@@ -421,23 +430,39 @@ const getBullionSources = async (req, res) => {
 
 /**
  * POST /settings/bullion — the house to follow, and any names the shop has
- * asked us to add. Only a house on the feed can be followed: a requested name
- * is recorded and answered later, so it cannot move a shop's price today.
+ * asked us to add. Any house on the feed can be followed, sent by its key (or
+ * its feed name); the house the account already follows is never refused,
+ * so a feed that is down for a moment does not stop a shop saving. A
+ * requested name is recorded and answered later, so it cannot move a shop's
+ * price today. Nothing sent as `selected` keeps the house followed.
  */
 const updateBullionSources = async (req, res) => {
   try {
     const scope = settingsScope(req.user);
-    const customNames = cleanCustomNames(req.body?.requestedNames ?? req.body?.customNames);
-    const requested = cleanBullionName(req.body?.selected);
-    const followable = BUILT_IN_BULLION.map((house) => house.key);
+    const [board, current, currentMetrics] = await Promise.all([
+      bhawService.followableHouses(),
+      findScopedSetting(BullionSource, scope),
+      findScopedSetting(DashboardMetrics, scope),
+    ]);
+    const following = followedHouse(board, current?.selected, currentMetrics?.metricsData?.bhaw_source_jmd);
+    const sent = req.body?.selected;
+    // A house is sent as its key: anything but a string names no house.
+    const requested = typeof sent === 'string' ? cleanBullionName(sent) : sent == null ? '' : null;
+    const chosen = requested === null
+      ? null
+      : requested
+        ? findHouse(board.houses, requested) || findHouse([following], requested)
+        : following;
 
-    if (requested && !followable.includes(requested)) {
+    if (!chosen) {
       return res
         .status(400)
         .json({ success: false, message: 'Pick one of the bullion houses on the feed' });
     }
 
-    const selected = requested || BUILT_IN_BULLION[1].key;
+    const builtIn = withHouse(board.houses, chosen);
+    const customNames = cleanCustomNames(req.body?.requestedNames ?? req.body?.customNames, builtIn);
+    const selected = chosen.key;
     const setting = await upsertScopedSetting(BullionSource, scope, { selected, customNames });
     if (customNames.length) {
       // What the shop is waiting for, in the log the team reads.
@@ -465,8 +490,8 @@ const updateBullionSources = async (req, res) => {
     return res.status(200).json({
       success: true,
       data: {
-        builtIn: BUILT_IN_BULLION,
-        requestedNames: cleanCustomNames(setting.customNames),
+        builtIn,
+        requestedNames: cleanCustomNames(setting.customNames, builtIn),
         selected: setting.selected,
       },
     });

@@ -31,23 +31,14 @@ const NEXT_FETCH_GRACE_MS = 90_000;
 const READ_DEADLINE_MS = 8_000;
 const SSE_HEADERS = { Accept: 'text/event-stream', 'Cache-Control': 'no-cache' };
 
-const SOURCES = {
-  JMD_PATIL: 'jmd_patil',
-  MEGA_BULLION: 'mega_bullion',
-  SHRI_SAI: 'shri_sai',
-  SHRI_GANESH: 'shri_ganesh',
-};
-
-/** What each house is called on screen, so the app and the server agree. */
-const SOURCE_NAMES = {
-  jmd_patil: 'JMD Patil',
-  mega_bullion: 'Mega Bullion',
-  shri_sai: 'Shri Sai Jewels',
-  shri_ganesh: 'Shri Ganesh Bullion',
-};
+// The houses and their names live in bullionHouses.js (pure, shared with the
+// settings screen); every house on the board can be followed, not only these.
+const { SOURCES, SOURCE_NAMES, knownHouses } = require('./bullionHouses');
 
 const emptyCache = () => ({
   rows: null,
+  // Every house on the board, live or marked down this round: [{ key, name }].
+  houses: null,
   receivedAt: 0,
   freshUntil: 0,
   fetchedAt: null,
@@ -96,7 +87,9 @@ const threeMinuteStreamUrl = () => {
  * Takes the stream's { fetched_at, next_fetch_at, sources: [...] } and the
  * old bare array alike. A house marked ok: false (its own board failed) is
  * left out, so it reads exactly like a house that is not live today; `down`
- * counts the houses left out that way.
+ * counts the houses left out that way. `houses` is every house the snapshot
+ * carries, down ones included, as { key, name }: the houses a shop can
+ * follow (followableHouses).
  */
 const normalizePayload = (payload) => {
   const wrapped = Boolean(payload)
@@ -112,8 +105,23 @@ const normalizePayload = (payload) => {
     down: list.length - rows.length,
     fetchedAt: wrapped ? payload.fetched_at ?? null : null,
     nextFetchAt: wrapped ? payload.next_fetch_at ?? null : null,
+    houses: housesOf(list),
   };
 };
+
+/** One entry per house key, in the feed's order, with the feed's own name. */
+function housesOf(list) {
+  const houses = [];
+  const seen = new Set();
+  for (const entry of list) {
+    const key = String(entry.source ?? '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+    houses.push({ key, name: name || SOURCE_NAMES[key] || key });
+  }
+  return houses;
+}
 
 /**
  * Whether a snapshot is a board to price on: at least one house live, or
@@ -193,6 +201,7 @@ const store = (snapshot) => {
   const now = Date.now();
   cache = {
     rows: snapshot.rows,
+    houses: snapshot.houses || null,
     receivedAt: now,
     freshUntil: freshUntilOf(snapshot, now),
     fetchedAt: snapshot.fetchedAt,
@@ -384,7 +393,7 @@ const lookUpHouse = async (source) => {
  * The followed house's premium on each side over its own MCX sell (see
  * premiumOf), the figure added to houseMcxSell for its Cash and RTGS.
  *
- * @param {string} source one of SOURCES
+ * @param {string} source a house's key on the feed (any house it carries)
  * @returns {Promise<{ cashBhaw: number|null, rtgsBhaw: number|null, name: string } | null>}
  */
 const getBhawForSource = async (source) => {
@@ -483,6 +492,22 @@ const houseMcxSell = async (source) => {
   const wanted = String(source || '').toLowerCase();
   const vendor = rows.find((entry) => String(entry?.source || '').toLowerCase() === wanted);
   return vendor ? futureMcxSellOf(vendor) : null;
+};
+
+/**
+ * The houses a shop can follow, as { fromFeed, houses: [{ key, label }] }:
+ * every house on the 3-minute board in hand, in the feed's order and by the
+ * feed's own name — a house marked down this round included, it is still on
+ * the feed. While no board has come in (the feed not reachable yet) it is the
+ * houses the feed is known to carry, and fromFeed is false. Never throws.
+ */
+const followableHouses = async () => {
+  await fetchRows().catch(() => null);
+  const onBoard = Array.isArray(cache.houses) ? cache.houses : [];
+  if (onBoard.length > 0) {
+    return { fromFeed: true, houses: onBoard.map(({ key, name }) => ({ key, label: name })) };
+  }
+  return { fromFeed: false, houses: knownHouses() };
 };
 
 /** Fetch the feed now, or hand back the fresh cache. Never throws. */
@@ -607,6 +632,7 @@ module.exports = {
   SOURCES,
   SOURCE_NAMES,
   feedStamp,
+  followableHouses,
   getBhawForSource,
   getJmdBhaw,
   boardMcxSell,

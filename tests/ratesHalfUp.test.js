@@ -65,6 +65,8 @@ stub('./bhaw.service', {
   getBhawForSource: async () => state.bhaw,
   houseMcxSell: async () => state.houseMcx,
   feedStamp: async () => 'off',
+  // No board in hand: the known houses, as the real service answers then.
+  followableHouses: async () => ({ fromFeed: false, houses: [] }),
 });
 stub('../models/goldTaxSetting.model', { findOne: async (query) => (query.userId ? null : state.tax) });
 function GoldRateStub(doc) { Object.assign(this, doc); }
