@@ -6,12 +6,15 @@
  *   - GET / POST / DELETE /api/v1/labour-codes: each user reads their own
  *     list, else the shop's; an employee's first change gives them a private
  *     copy of the whole list; a code is unique per list by its letters and
- *     digits (LB-01 and "lb 01" are one code).
+ *     digits (LB-01 and "lb 01" are one code); every code has a rate.
  *   - /calculate: the code picked on the card (labourCode) is found first,
  *     then the tag's identifiers; a labour figure the card sends beats the
  *     code's rate; with no code the labour is exactly what it was before.
  *     breakdown.labourCode records the code; the scan's history line keeps it.
- *   - /analyze: names the code the tag carries (labourCode), priced or not.
+ *   - /analyze: names the code the tag carries (labourCode), priced or not;
+ *     from rules 4 the card opens (and the analysis prices) the labour at
+ *     that code's rate, ahead of the item's and the shop's, a labour figure
+ *     printed on the tag still first; rules 3 opens as it always did.
  *
  * Runs against a real (in-memory) MongoDB with the real routes and
  * controllers. The model's reading, the live gold rate and the scan session
@@ -332,12 +335,20 @@ test('the owner adds, lists A to Z, edits and deletes the shop\'s codes', async 
   const renamed = await save(people.owner, { id: row._id, code: 'LB-03', rate: 3900, unit: 'Per 10 Gram' });
   assert.equal(renamed.body.data.code, 'LB-03');
 
-  // A blank rate stays blank: the shop has not given one.
+  // A code must have a rate: picking it on the card fills the Labour Rate
+  // box with it. Blank is refused, on a new code and on an edit alike.
   const blank = await save(people.owner, { code: 'LB-09', rate: '' });
-  assert.equal(blank.status, 200);
-  assert.equal(blank.body.data.rate, null);
+  assert.equal(blank.status, 400);
+  assert.deepEqual(blank.body, { success: false, message: 'Labour rate is required' });
+  const cleared = await save(people.owner, { id: row._id, code: 'LB-03', rate: '', unit: 'Per 10 Gram' });
+  assert.equal(cleared.status, 400);
+  assert.deepEqual(cleared.body, { success: false, message: 'Labour rate is required' });
+  // Zero is a rate.
+  const zero = await save(people.owner, { code: 'LB-09', rate: 0 });
+  assert.equal(zero.status, 200, JSON.stringify(zero.body));
+  assert.equal(zero.body.data.rate, 0);
 
-  const gone = await remove(people.owner, blank.body.data._id);
+  const gone = await remove(people.owner, zero.body.data._id);
   assert.deepEqual(gone.body, { success: true, message: 'Deleted successfully' });
   assert.deepEqual(codesOf(await list(people.owner)), ['LB-01=415/Per Gram', 'LB-03=3900/Per 10 Gram', 'LBP=12/Percent']);
   // Deleting what is not there is not an error.
@@ -366,6 +377,10 @@ test('a save that cannot be kept is a 400 saying why, and nothing is written', a
     [{ code: '   ', rate: 415 }, 'Labour code is required'],
     [{ code: '--', rate: 415 }, 'Labour code is required'],
     [{ code: 'L'.repeat(21), rate: 415 }, 'Labour code must stay within 20 characters'],
+    [{ code: 'LB-05' }, 'Labour rate is required'],
+    [{ code: 'LB-05', rate: '' }, 'Labour rate is required'],
+    [{ code: 'LB-05', rate: '   ' }, 'Labour rate is required'],
+    [{ code: 'LB-05', rate: null, unit: 'Percent' }, 'Labour rate is required'],
     [{ code: 'LB-05', rate: -1 }, 'Labour rate must be a number of rupees, 0 or more'],
     [{ code: 'LB-05', rate: 'abc' }, 'Labour rate must be a number of rupees, 0 or more'],
     [{ code: 'LB-05', rate: 120, unit: 'Percent' }, 'Labour must be a percentage between 0 and 100'],
@@ -492,8 +507,9 @@ test('a code the tag prints prices the labour at its rate, ahead of the item\'s 
   assert.equal(percent.breakdown.labourCode, 'LBP');
   near(percent.breakdown.labourAmount, GOLD * 0.12, '12% of the gold');
 
-  // A code without a rate names the scan but prices nothing: the item's.
-  await save(people.owner, { code: 'LB-00', rate: '' });
+  // A code kept from before a rate was required, without one, names the
+  // scan but prices nothing: the item's.
+  await LabourCode.create({ businessId: shop.id, userId: null, code: 'LB-00', rate: null });
   const unrated = await quiet(() => priced(people.owner, { itemCode: 'GR10286', tagIdentifiers: ['GR10286', 'LB-00'] }));
   assert.deepEqual(labourOf(unrated), { type: 'AMOUNT_ITEM', amount: 7000, code: 'LB-00' });
 });
@@ -631,4 +647,81 @@ test('without a live rate the analysis still names the code; rules 1 never does'
   const legacy = await quiet(() => analyze(people.owner, 'scan-read-6', readingOf(), { rules: 1 }));
   assert.equal(legacy.labourCode, '');
   assert.equal(legacy.pricing.breakdown.labourCode, '');
+});
+
+// ── Rules 4: the card opens with the tag's code at its rate ──────────────
+
+test("rules 4: the analysis opens the labour at the tag's code's rate, ahead of the item's and the shop's", async () => {
+  await shopCodes([{ code: 'LB-01', rate: 415 }, { code: 'LB-02', rate: 380 }]);
+
+  // Item GR (Rs 700) and the shop's Rs 650 are both there; LB-02 is on the tag.
+  const four = await quiet(() => analyze(people.owner, 'scan-r4-1', readingOf(), { rules: 4 }));
+  assert.equal(four.labourCode, 'LB-02');
+  assert.equal(four.pricingInput.labourChargeAmount, '380');
+  assert.equal(four.pricingInput.labourChargeUnit, 'Per Gram');
+  assert.equal(four.pricingInput.labourWeightBasis, 'net', "the shop's charge's basis, as any opening labour");
+  assert.equal(four.pricingInput.labourCode, undefined, 'the card opens with no code picked');
+  assert.deepEqual(labourOf(four.pricing), { type: 'AMOUNT_MANUAL', amount: 3800, code: 'LB-02' });
+  near(four.pricing.finalMRP, GOLD + 3800, "MRP at LB-02's rate");
+
+  // The card's first price, from the box the rules-4 app opens (LB-02's
+  // rate, no code picked), is the analysis' price.
+  const card = await quiet(() => priced(people.owner, {
+    labourChargeAmount: '380',
+    labourChargeUnit: 'Per Gram',
+    labourWeightBasis: 'net',
+    itemCode: 'GR10286',
+    tagIdentifiers: four.tagIdentifiers,
+  }, { rules: 4 }));
+  assert.deepEqual(labourOf(card), labourOf(four.pricing));
+  assert.equal(card.finalMRPRounded, four.pricing.finalMRPRounded);
+
+  // Rules 3, the builds already in shops: the item's labour, as before.
+  const three = await quiet(() => analyze(people.owner, 'scan-r4-2', readingOf(), { rules: 3 }));
+  assert.equal(three.labourCode, 'LB-02');
+  assert.equal(three.pricingInput.labourChargeAmount, '700');
+  assert.deepEqual(labourOf(three.pricing), { type: 'AMOUNT_MANUAL', amount: 7000, code: 'LB-02' });
+
+  // No Masters item: the code's rate over the shop's Rs 650 on rules 4, the
+  // shop's on rules 3.
+  const noItem = readingOf({ serial: '261440' });
+  const shopFour = await quiet(() => analyze(people.owner, 'scan-r4-3', noItem, { rules: 4 }));
+  assert.equal(shopFour.pricingInput.labourChargeAmount, '380');
+  assert.deepEqual(labourOf(shopFour.pricing), { type: 'AMOUNT_MANUAL', amount: 3800, code: 'LB-02' });
+  const shopThree = await quiet(() => analyze(people.owner, 'scan-r4-4', noItem, { rules: 3 }));
+  assert.equal(shopThree.pricingInput.labourChargeAmount, '650');
+  assert.deepEqual(labourOf(shopThree.pricing), { type: 'AMOUNT_MANUAL', amount: 6500, code: 'LB-02' });
+});
+
+test('rules 4: a labour figure printed on the tag still beats the code; a code without a rate opens nothing', async () => {
+  await shopCodes([{ code: 'LB-02', rate: 380 }, { code: 'LP-12', rate: 12, unit: 'Percent' }]);
+
+  const printed = await quiet(() => analyze(people.owner, 'scan-r4-5', readingOf({ labour: '850|Per Gram' }), { rules: 4 }));
+  assert.equal(printed.labourCode, 'LB-02');
+  assert.equal(printed.pricingInput.labourChargeAmount, '850');
+  assert.deepEqual(labourOf(printed.pricing), { type: 'AMOUNT_MANUAL', amount: 8500, code: 'LB-02' });
+
+  // A percent code opens as a percent of the gold value.
+  const percent = await quiet(() => analyze(people.owner, 'scan-r4-6', readingOf({ extraLine: 'TAG NO LP-12' }), { rules: 4 }));
+  assert.equal(percent.labourCode, 'LP-12');
+  assert.equal(percent.pricingInput.labourChargeAmount, '12');
+  assert.equal(percent.pricingInput.labourChargeUnit, 'Percent');
+  assert.equal(percent.pricing.breakdown.labourChargeType, 'PERCENTAGE_MANUAL');
+  near(percent.pricing.breakdown.labourAmount, GOLD * 0.12, '12% of the gold');
+
+  // A code kept from before a rate was required: the item's labour opens,
+  // and the code is still named and recorded.
+  await LabourCode.create({ businessId: shop.id, userId: null, code: 'LB-00', rate: null });
+  const unrated = await quiet(() => analyze(people.owner, 'scan-r4-7', readingOf({ extraLine: 'TAG NO LB-00' }), { rules: 4 }));
+  assert.equal(unrated.labourCode, 'LB-00');
+  assert.equal(unrated.pricingInput.labourChargeAmount, '700');
+  assert.deepEqual(labourOf(unrated.pricing), { type: 'AMOUNT_MANUAL', amount: 7000, code: 'LB-00' });
+
+  // No code on the tag: exactly the rules-3 opening.
+  const plain = readingOf({ extraLine: 'HM 916' });
+  const plainFour = await quiet(() => analyze(people.owner, 'scan-r4-8', plain, { rules: 4 }));
+  const plainThree = await quiet(() => analyze(people.owner, 'scan-r4-9', plain, { rules: 3 }));
+  assert.equal(plainFour.labourCode, '');
+  assert.deepEqual(plainFour.pricingInput, plainThree.pricingInput);
+  assert.deepEqual(plainFour.pricing, plainThree.pricing);
 });

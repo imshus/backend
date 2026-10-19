@@ -34,7 +34,11 @@ const redisService = require('../src/services/redis.service');
 const calculationController = require('../src/controllers/calculation.controller');
 const { computeMrp, deriveInputFromReading } = require('../src/services/mrpCalculation.service');
 const { computePricing } = require('../src/services/pricingMath');
-const { validateCalculationInput, CURRENT_PRICING_RULES } = require('../src/services/pricingInputs');
+const {
+  validateCalculationInput,
+  CURRENT_PRICING_RULES,
+  WASTAGE_AT_GOLD_RATE_RULES,
+} = require('../src/services/pricingInputs');
 const { computeInvoiceFigures } = require('../src/services/invoiceMath');
 const { roundHalfUp } = require('../src/utils/money');
 
@@ -54,6 +58,7 @@ const resetState = () => {
     labour: { chargeType: 'NONE', value: 0 },
     itemRows: [],
     wastageRows: [],
+    labourCodeRows: [],
     diamondRows: [],
     colorstoneRows: [],
     tax: { scannerCalculationUse: 'rtgs' },
@@ -97,8 +102,9 @@ GoldTaxSetting.findOne = shopSetting('tax');
 DiamondRate.find = shopRows('diamondRows');
 ColorstoneRate.find = shopRows('colorstoneRows');
 WastageCode.find = shopRows('wastageRows');
-// No labour codes saved: the labour is priced exactly as before them.
-LabourCode.find = async () => [];
+// No labour codes saved unless a test saves some: the labour is priced
+// exactly as before them.
+LabourCode.find = shopRows('labourCodeRows');
 ItemCode.find = shopRows('itemRows');
 redisService.getScan = async () => ({
   scanId: 'scan-1', ownerUserId: OWNER.userId, businessId: BIZ, status: 'READY_FOR_REVIEW', calculationMode: 'rtgs',
@@ -184,8 +190,9 @@ const expectWastage = (result, { basis, grams, rate, amount }, label) => {
 
 // ── The arithmetic (pricingMath) ─────────────────────────────────────────
 
-test('the current pricing rules are 3', () => {
-  assert.equal(CURRENT_PRICING_RULES, 3);
+test('the current pricing rules are 4; wastage at the current gold rate came in with 3', () => {
+  assert.equal(CURRENT_PRICING_RULES, 4);
+  assert.equal(WASTAGE_AT_GOLD_RATE_RULES, 3);
 });
 
 test('22K: 8% of the net or the gross weight at the current gold rate (24K x 91.6%)', () => {
@@ -287,7 +294,7 @@ test('wastageWeightBasis reads net or gross in any case, and nothing when blank'
 test('a wastageWeightBasis that is not net or gross is a 400 naming the field, on every build', async () => {
   resetState();
   for (const bad of ['both', 'netto', 'pure', 5, true, ['gross'], { basis: 'gross' }]) {
-    for (const rules of [1, 2, 3]) {
+    for (const rules of [1, 2, 3, 4]) {
       const res = await calculate({ netWt: 10, purityKarat: '22K', wastagePercent: 8, wastageWeightBasis: bad }, rules);
       assert.equal(res.statusCode, 400, `${JSON.stringify(bad)} on rules ${rules}`);
       assert.equal(res.body.error, 'INVALID_PRICING_INPUT');
@@ -435,6 +442,64 @@ test('the analysis prices rules 3 as the card opens (net) and rules 2 as before'
   const two = await analyzePrice(reading, 2);
   assert.equal('wastageWeightBasis' in two.pricingInput, false, 'rules 2 input as before');
   expectWastage(two.pricing, { basis: 'net', grams: 0.8, rate: 15000, amount: 12000 }, 'analysis rules 2');
+});
+
+test('rules 4 prices every card and opens every reading as rules 3 when the tag names no labour code', async () => {
+  resetState();
+  // A shop with everything rules 3 prices: an item with wastage and labour,
+  // wastage codes, a labour code (on no tag below), a gross-basis labour
+  // charge and stone rate rows.
+  state.labour = { chargeType: 'AMOUNT', value: 650, rupeesUnit: 'Per Gram', weightBasis: 'gross' };
+  state.itemRows = [{ code: 'GR', wastage: 8, labour: 700 }, { code: 'BR', wastage: 6, labour: null }];
+  state.wastageRows = [{ code: 'W8', percent: 8 }, { code: 'W10', percent: 10 }];
+  state.labourCodeRows = [{ code: 'LB-01', rate: 415, unit: 'Per Gram' }];
+  state.diamondRows = [{ packetCode: 'PK1', color: '', clarity: '', shape: '', rate: 60000 }];
+  state.colorstoneRows = [{ packetCode: '', color: 'RED', clarity: 'SI', rate: 1200 }];
+
+  const stones = {
+    diamonds: [{ weight: 0.5, rate: 50000, discountPercent: 10, unit: 'ct' }],
+    colorstones: [{ weight: 0.4, rate: 1000, unit: 'g' }],
+  };
+  const bodies = [
+    { ...PIECE, wastagePercent: 8, wastageWeightBasis: 'gross' },
+    { ...PIECE, wastagePercent: 8 },
+    { ...PIECE, itemCode: 'GR10286', tagIdentifiers: ['GR10286'], wastageWeightBasis: 'gross' },
+    { ...PIECE, itemCode: 'BR22', tagIdentifiers: ['BR22', 'W8'] },
+    { ...PIECE, tagIdentifiers: ['W8'], wastageCode: 'W10' },
+    { ...PIECE, labourChargeAmount: '12%' },
+    { ...PIECE, labourChargeAmount: '850', labourChargeUnit: 'Per 10 Gram', labourWeightBasis: 'gross' },
+    { ...PIECE, labourCode: 'LB-01' },
+    { ...PIECE, tagIdentifiers: ['LB-01'], labourChargeAmount: '500' },
+    { ...PIECE, ...stones, customPurityPercent: 90, otherCharges: 250, calculationMode: 'cash' },
+  ];
+  for (const body of bodies) {
+    assert.deepEqual(await priced(body, 4), await priced(body, 3), JSON.stringify(body));
+  }
+
+  const base = { netWeight: field('10'), grossWeight: field('10.5'), karat: field('22K') };
+  const readings = [
+    { ...base, serialNumber: field('GR10286') },
+    { ...base, serialNumber: field('GR10286'), labour: field('12%') },
+    { ...base, serialNumber: field('GR10286'), labour: field('850|Per 10 Gram') },
+    { ...base, serialNumber: field('BR22') },
+    { ...base, serialNumber: field('261440') },
+    {
+      ...base,
+      serialNumber: field('261440'),
+      packetCode: field('PK1'),
+      diamonds: [{ weight: field('0.50'), rate: field('50000') }],
+      colorstones: [{ weight: field('0.40 g'), color: field('RED'), clarity: field('SI'), rate: field('900') }],
+    },
+  ];
+  for (const shop of [state.labour, { chargeType: 'PERCENTAGE', value: 8, weightBasis: 'net' }, { chargeType: 'NONE', value: 0 }]) {
+    state.labour = shop;
+    for (const reading of readings) {
+      const four = await analyzePrice(reading, 4);
+      const three = await analyzePrice(reading, 3);
+      assert.deepEqual(four.pricingInput, three.pricingInput, `input ${JSON.stringify({ shop, reading })}`);
+      assert.deepEqual(four.pricing, three.pricing, `price ${JSON.stringify({ shop, reading })}`);
+    }
+  }
 });
 
 // ── The invoice ──────────────────────────────────────────────────────────

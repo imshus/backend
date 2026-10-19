@@ -144,9 +144,12 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
   .labourCode`); without a price (`pricingError`), the one any of
   `tagIdentifiers` names in the caller's list. '' when none, and always ''
   for rules 1. `pricingInput` never carries a `labourCode` (the card opens
-  with none picked); its labour is the card's opening labour as before (the
-  tag's, else the item's, else the shop's), which beats the code's rate, so
-  the code prices the reading only when that box opens empty.
+  with none picked); its labour is the card's opening labour: the tag's
+  printed labour, else (rules 4) the rate of the code the tag names (the one
+  `labourCode` names, when it has a rate), else the item's, else the shop's.
+  That figure beats the code's rate in the price, so under rules 2 and 3,
+  whose cards open with the item's or the shop's labour, the code prices the
+  reading only when that box opens empty.
 - Every reading returned also starts the scan's line in Tag scan history
   (8.1): status `read`, `finalMRP` the `pricing.finalMRPRounded` above (null
   when it could not be priced), and `details`, everything read (8.2). Written
@@ -184,11 +187,15 @@ All scan routes are under `/api/v1/scans` and the router uses `authenticateJWTOp
   failure. A line is started only for a scan on record (one the caller may
   see); a price without one updates the caller's existing line for that id,
   if any. Of two prices for one scan in flight, the later request's stays.
-- Header `X-Pricing-Rules`: `3` from the app build whose Wastage tile chooses
-  the weight: everything in rules 2, and wastage priced at the current gold
-  rate on the net or the gross weight (`wastageWeightBasis`, below). `2` from
-  the app from 1.0.367 (prefix item match, item wastage and labour, stone
-  units, percent labour). A number above 3 is priced by rules 3. No header,
+- Header `X-Pricing-Rules`: `4` from the app build whose card opens a tag's
+  Masters -> Labour Code at the code's rate: everything in rules 3; this
+  endpoint prices it exactly as rules 3, and only the analysis (2.4) opens
+  the card's labour differently. `3` from the app build whose Wastage tile
+  chooses the weight: everything in rules 2, and wastage priced at the
+  current gold rate on the net or the gross weight (`wastageWeightBasis`,
+  below). `2` from the app from 1.0.367 (prefix item match, item wastage and
+  labour, stone units, percent labour). A number above 4 is priced by rules
+  4. No header,
   or `1` (builds up to 1.0.366): the Masters item is the one whose code is
   exactly `itemCode` and its labour is not charged, as those builds invoice.
   Rules 1 and 2 price wastage as they always did: the net weight at the 24K
@@ -307,19 +314,21 @@ All rate endpoints are under `/api/v1/rates` (router mounted at `/api/v1/rates`)
   unit, createdAt, updatedAt, __v }`. `code` uppercase, trimmed, inner
   spaces collapsed, 1-20 characters with at least one letter or digit,
   unique in its list by letters and digits alone (LB-01 = "lb 01" = LB01).
-  `rate` a number >= 0, or null when left blank (no figure: the code prices
-  nothing). `unit` "Per Gram" (default) | "Per 10 Gram" | "Percent" (of the
+  `rate` a number >= 0, required on every save (a row kept from before that
+  may hold null: no figure, the code prices nothing and the card does not
+  offer it). `unit` "Per Gram" (default) | "Per 10 Gram" | "Percent" (of the
   gold value; `rate` then 0-100).
 - GET /api/v1/labour-codes → `200 { success: true, data: [row, …] }`, A to Z
   by code.
-- POST /api/v1/labour-codes `{ id?, code, rate?, unit? }` → `200 { success:
+- POST /api/v1/labour-codes `{ id?, code, rate, unit? }` → `200 { success:
   true, data: row }`. Without `id` it adds a code; with `id` (a row of the
   caller's list, or the shop row an employee is still reading) it edits that
   row, code included. `rate` as a number or text ("415", "₹ 1,250"); `unit`
   any case, "percentage" / "%" read as Percent. Errors `{ success: false,
   message }`: 400 "Labour code is required", "Labour code must stay within
   20 characters", 'Unit must be "Per Gram", "Per 10 Gram" or "Percent"',
-  "Labour rate must be a number of rupees, 0 or more", "Labour must be a
+  "Labour rate is required" (`rate` absent or blank), "Labour rate must be
+  a number of rupees, 0 or more", "Labour must be a
   percentage between 0 and 100"; 404 "Labour code not found" (an id not of
   this shop); 409 "This labour code already exists" (another row of the list
   with the same letters and digits); 500 "Failed to save labour code".

@@ -199,12 +199,13 @@ const GR10286 = { serialNumber: field('GR10286'), netWeight: field('10'), grossW
 
 // ── Which build is asking ────────────────────────────────────────────────
 
-test('the pricing rules come from X-Pricing-Rules: 3 and 2 as sent, 1 from builds that send none', () => {
+test('the pricing rules come from X-Pricing-Rules: 4, 3 and 2 as sent, 1 from builds that send none', () => {
   assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '2' } }), 2);
   assert.equal(pricingRulesOf({ get: (name) => (name === 'x-pricing-rules' ? '3' : undefined) }), 3);
+  assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '4' } }), 4);
   // A build newer than the server gets the newest rules it knows; 1.0.367
-  // keeps rules 2 now that the current rules are 3.
-  assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '9' } }), 3);
+  // keeps rules 2, and the build on rules 3 keeps 3, now the current are 4.
+  assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '9' } }), 4);
   assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '1' } }), 1);
   assert.equal(pricingRulesOf({ headers: { 'x-pricing-rules': '0' } }), 1);
   assert.equal(pricingRulesOf({ headers: {} }), 1);

@@ -12,6 +12,7 @@
 
 const { normalizeKey } = require('./diamondRateLookup.service');
 const { LABOUR_UNIT_PERCENT } = require('./pricingMath');
+const { codeLabourOf } = require('./labourResolution.service');
 
 // ── Errors a price can fail with ─────────────────────────────────────────
 
@@ -346,7 +347,15 @@ function itemLabourOf(itemRow) {
 /**
  * The header an app build sends to say which pricing rules it prices and
  * bills with. Builds up to 1.0.366 send none (rules 1); 1.0.367 sends 2;
- * the build whose Wastage tile chooses the weight sends 3.
+ * the build whose Wastage tile chooses the weight sends 3; the build whose
+ * card opens a tag's Masters -> Labour Code at the code's rate sends 4.
+ *
+ * Rules 4: everything in rules 3, and the labour the card opens with (and
+ * so the analysis' price, appLabourFields) is the rate of the Masters ->
+ * Labour Code the tag names, ahead of the item's and the shop's labour; a
+ * labour figure printed on the tag still comes first. The builds before it
+ * open with the item's or the shop's labour whatever code the tag names,
+ * and their first price stays that.
  *
  * Rules 3: wastage is the shop's percent of the net or the gross weight
  * (wastageWeightBasis, the Wastage tile's Weight Used; net when not sent)
@@ -356,7 +365,7 @@ function itemLabourOf(itemRow) {
  * invoices print the 24K rate on the wastage line, so pricing them by rules
  * 3 would bill a wastage line that is not the MRP's.
  *
- * Rules 2 (and 3): the Masters item is found from the tag number by prefix
+ * Rules 2 (and on): the Masters item is found from the tag number by prefix
  * (GR10286 is item GR) and its wastage and labour are charged; the app
  * sends each stone's unit, a tag's "12%" labour as a percent, and the
  * item's labour.
@@ -371,14 +380,17 @@ const PRICING_RULES_HEADER = 'x-pricing-rules';
 const ITEM_PREFIX_RULES = 2;
 /** The rules from which wastage is priced at the current gold rate, on the weight the card names. */
 const WASTAGE_AT_GOLD_RATE_RULES = 3;
-const CURRENT_PRICING_RULES = 3;
+/** The rules from which the card opens with the rate of the labour code the tag names. */
+const LABOUR_CODE_OPENS_RULES = 4;
+const CURRENT_PRICING_RULES = 4;
 
 /**
  * The rules the asking build prices by: 1 when it sends no header (or one
  * that is no number); a build newer than this server gets the newest rules
  * the server knows. Each comparison is against the rules a change came in
- * with (ITEM_PREFIX_RULES, WASTAGE_AT_GOLD_RATE_RULES), never against the
- * current rules, so a build on rules 2 keeps rules 2 when they move on.
+ * with (ITEM_PREFIX_RULES, WASTAGE_AT_GOLD_RATE_RULES,
+ * LABOUR_CODE_OPENS_RULES), never against the current rules, so a build on
+ * rules 2 keeps rules 2 when they move on.
  */
 function pricingRulesOf(req) {
   const raw = typeof req?.get === 'function'
@@ -445,18 +457,23 @@ function legacyAppTagLabour(raw) {
  * The labour fields the app's review card starts a reading with, and so
  * sends with its first price (processing.tsx), for the build that asks:
  *
- *   rules 2 and 3 (1.0.367 on): the tag's labour (parseTagLabour: "12%" a
- *     percent of the gold value) on the net weight; else the Masters item's
- *     labour in its unit; else the shop's charge, AMOUNT per its unit or
- *     PERCENTAGE as a percent; the shop's weight basis for both of those;
+ *   rules 2 to 4 (1.0.367 on): the tag's labour (parseTagLabour: "12%" a
+ *     percent of the gold value) on the net weight; else (rules 4) the rate
+ *     of the Masters -> Labour Code the tag names (`labourCodeRow`, as
+ *     computeMrp finds it) in its unit, when it has a usable one; else the
+ *     Masters item's labour in its unit; else the shop's charge, AMOUNT per
+ *     its unit or PERCENTAGE as a percent; the shop's weight basis for the
+ *     code's, the item's and the shop's;
  *   rules 1 (up to 1.0.366): the tag's labour as those builds read it (no
  *     percent); else the shop's AMOUNT charge with its unit and basis; a
  *     PERCENTAGE charge is left to the server (sent blank).
  *
  * Always the labourWeightBasis the card sends ('net' unless a shop charge
- * set it), so the price worked out from these is the card's.
+ * set it), so the price worked out from these is the card's. Rules 2 and 3
+ * never read `labourCodeRow`: those cards open with the item's or the
+ * shop's labour whatever code the tag names.
  */
-function appLabourFields({ tagLabour, itemRow, labourDoc, rules }) {
+function appLabourFields({ tagLabour, itemRow, labourDoc, labourCodeRow = null, rules }) {
   const shop = shopLabourAsApp(labourDoc);
   if (rules >= ITEM_PREFIX_RULES) {
     const fromTag = parseTagLabour(tagLabour);
@@ -468,6 +485,14 @@ function appLabourFields({ tagLabour, itemRow, labourDoc, rules }) {
       };
     }
     const basis = shop ? shop.weightBasis : 'net';
+    const fromCode = rules >= LABOUR_CODE_OPENS_RULES ? codeLabourOf(labourCodeRow) : null;
+    if (fromCode) {
+      return {
+        labourChargeAmount: String(fromCode.amount),
+        labourChargeUnit: fromCode.unit,
+        labourWeightBasis: basis,
+      };
+    }
     const fromItem = itemLabourOf(itemRow);
     if (fromItem) {
       return {
@@ -730,6 +755,7 @@ module.exports = {
   PRICING_RULES_HEADER,
   ITEM_PREFIX_RULES,
   WASTAGE_AT_GOLD_RATE_RULES,
+  LABOUR_CODE_OPENS_RULES,
   CURRENT_PRICING_RULES,
   pricingRulesOf,
   appLabourFields,

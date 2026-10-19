@@ -10,10 +10,12 @@ const scanHistory = require('../services/scanHistory.service');
  * holds right now. The arithmetic lives in mrpCalculation.service, shared
  * with the analysis, which prices a fresh reading the moment it lands.
  *
- * Priced by the rules the asking build bills with (X-Pricing-Rules: 3 from
- * the build that prices wastage at the current gold rate, 2 from 1.0.367;
- * none from the builds before it), so the MRP a card quotes is the one its
- * invoice bills.
+ * Priced by the rules the asking build bills with (X-Pricing-Rules: 4 from
+ * the build whose card opens a tag's labour code at its rate, 3 from the
+ * build that prices wastage at the current gold rate, 2 from 1.0.367; none
+ * from the builds before it), so the MRP a card quotes is the one its
+ * invoice bills. /calculate itself prices rules 4 exactly as rules 3: what
+ * rules 4 changes is the labour the analysis opens the card with.
  *
  * Every price it returns is also the scan's line in Tag scan history
  * (scanHistory.service), with the inputs and workings behind it, written

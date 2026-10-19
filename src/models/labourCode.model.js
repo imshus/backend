@@ -29,8 +29,11 @@ const labourCodeSchema = new mongoose.Schema(
       uppercase: true,
       maxlength: 20,
     },
-    // Null means the shop has not given a figure, which is not the same as
-    // no labour: a code without one prices as if no code were picked.
+    // Every save must give one (labourCode.controller refuses a blank rate).
+    // Null only on a row kept from before that, which is not the same as no
+    // labour: it prices as if no code were picked, and the card does not
+    // offer it. Not `required` here, so an employee's copy of a shop list
+    // holding such a row still saves.
     rate: {
       type: Number,
       default: null,

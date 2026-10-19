@@ -30,6 +30,7 @@ const {
   legacyAppColorstoneRate,
   ITEM_PREFIX_RULES,
   WASTAGE_AT_GOLD_RATE_RULES,
+  LABOUR_CODE_OPENS_RULES,
   validateCalculationInput,
 } = require('./pricingInputs');
 
@@ -151,6 +152,18 @@ function distinctIdentifiers(values) {
 }
 
 /**
+ * The tag's identifiers in the order a wastage or labour code is looked up
+ * by: the one that named the Masters item first, then the rest as read.
+ * computeMrp and deriveInputFromReading both use it, so the code the
+ * analysis opens the card's labour with is the one its price records.
+ */
+function codeCandidatesOf(itemMatch, identifiers) {
+  return itemMatch
+    ? [itemMatch.identifier, ...identifiers.filter((value) => value !== itemMatch.identifier)]
+    : identifiers;
+}
+
+/**
  * The labour a price charges, first that applies:
  *   1. the figure the request carries: rupees per gram or per 10 g, or a
  *      percent of the gold value ("12%", or the unit 'Percent');
@@ -171,7 +184,9 @@ function distinctIdentifiers(values) {
  * the item's, else the shop's, and sends it as the request's figure, so the
  * box, the price and the invoice are one figure whatever the shop's labour
  * type; 2 to 4 price a request that sends none. Picking a labour code on the
- * card fills the box with the code's rate, so 1 is then the code's figure.
+ * card fills the box with the code's rate, so 1 is then the code's figure;
+ * from rules 4 the card also opens with the rate of a code the tag names
+ * (pricingInputs appLabourFields), ahead of the item's and the shop's.
  */
 function resolveLabour({ manualLabour, labourWeightBasis, labourCodeRow = null, itemRow, globalLabour, rules }) {
   const basis = labourWeightBasis || (globalLabour?.weightBasis === 'gross' ? 'gross' : 'net');
@@ -365,9 +380,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
     ? findItemOnTag(identifiers, itemRows)
     : findItemExactly(request.itemCode, itemRows);
   const itemRow = itemMatch?.row || null;
-  const wastageCandidates = itemMatch
-    ? [itemMatch.identifier, ...identifiers.filter((value) => value !== itemMatch.identifier)]
-    : identifiers;
+  const wastageCandidates = codeCandidatesOf(itemMatch, identifiers);
   // The code picked on the card comes first; the tag's own when none was
   // picked, or when the picked one has since left Masters.
   const wastageRow = findWastageRow(
@@ -538,18 +551,20 @@ const stoneWeightOf = (stone) => {
  *   - the karat from the karat field, the purity (tunch) or a fineness;
  *   - diamond rates from the account's own table (or the shop's), a stone's
  *     packet code first, else its printed rate;
- *   - rules 2 and 3: stone weights in their printed unit; a colour stone's
+ *   - rules 2 on: stone weights in their printed unit; a colour stone's
  *     rate from its packet's row, else its colour and clarity's (non-packet)
  *     row, else its printed rate;
  *   - rules 1 (builds up to 1.0.366): stone weights in carats, which is all
  *     they send; a colour stone's rate from the first row with its colour
  *     and clarity, a miss clearing the printed rate, as those cards do;
  *   - the labour the card starts with (pricingInputs appLabourFields): the
- *     tag's, else (rules 2 and 3) the item's, else the shop's charge; no
- *     labour code, as the card opens with none picked (a Masters -> Labour
- *     Code the tag names is still found from its identifiers and recorded,
- *     and prices the labour when the card's box is empty);
- *   - rules 3: wastage on the net weight, the Wastage tile's Weight Used as
+ *     tag's, else (rules 4) the rate of the Masters -> Labour Code the tag
+ *     names, found as computeMrp finds it, else (rules 2 to 4) the item's,
+ *     else the shop's charge; never a labourCode field, as the card opens
+ *     with none picked (the code the tag names is found again from its
+ *     identifiers and recorded, and prices the labour when the card's box
+ *     is empty);
+ *   - rules 3 on: wastage on the net weight, the Wastage tile's Weight Used as
  *     the card opens;
  *   - the item code and every identifier on the tag, for the Masters item
  *     and wastage code; the mode from the scan session.
@@ -565,7 +580,10 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
     rawText: scan?.analysisResult?.rawText,
   });
   const identifiers = distinctIdentifiers([serialNumber, ...tagIdentifiers]);
-  const [diamondRows, colorstoneRows, taxSettings, labourDoc, itemRows] = await Promise.all([
+  // Only rules 4 opens the labour box with a labour code the tag names; the
+  // builds before it read no code here.
+  const codeOpensLabour = rules >= LABOUR_CODE_OPENS_RULES;
+  const [diamondRows, colorstoneRows, taxSettings, labourDoc, itemRows, labourCodeRows] = await Promise.all([
     prefetched?.diamondRows || findScopedRows(DiamondRate, scope),
     prefetched?.colorstoneRows || findScopedRows(ColorstoneRate, scope),
     prefetched?.taxSettings || findScopedSetting(GoldTaxSetting, scope),
@@ -573,6 +591,9 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
     // Only the current app fills the labour box from the Masters item.
     currentRules && identifiers.length
       ? prefetched?.itemRows || findScopedRows(ItemCode, scope)
+      : Promise.resolve([]),
+    codeOpensLabour && identifiers.length
+      ? prefetched?.labourCodeRows || findScopedRows(LabourCode, scope)
       : Promise.resolve([]),
   ]);
   const diamondRowsPlain = plainRows(diamondRows);
@@ -621,10 +642,17 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
     .filter(Boolean);
 
   const itemMatch = currentRules ? findItemOnTag(identifiers, plainRows(itemRows)) : null;
+  // The labour code the tag names, in the order computeMrp looks it up (no
+  // code is picked yet), so the code whose rate opens the box is the one the
+  // price records and the analysis names.
+  const labourCodeRow = codeOpensLabour
+    ? findLabourRow(plainRows(labourCodeRows), codeCandidatesOf(itemMatch, identifiers))
+    : null;
   const labourFields = appLabourFields({
     tagLabour: stoneField(data, 'labour'),
     itemRow: itemMatch?.row || null,
     labourDoc,
+    labourCodeRow,
     rules,
   });
 

@@ -25,11 +25,13 @@ const toUnit = (value) => {
 };
 
 /**
- * A rate the shop may simply not have given. Blank stays blank rather than
- * becoming zero; a negative figure, or a percent above 100, is refused
- * (undefined).
+ * A code's rate, which every code must have: picking a code on the card
+ * fills the Labour Rate box with it, and a code without one left the box
+ * holding another code's or the shop's rate, recorded against this code.
+ * Blank is null (refused as missing, never read as zero); a negative
+ * figure, or a percent above 100, is undefined (refused as out of range).
  */
-const toOptionalRate = (value, unit) => {
+const toRate = (value, unit) => {
   if (value === undefined || value === null || String(value).trim() === '') return null;
   const parsed = Number(String(value).replace(/[₹,\s]/g, ''));
   const max = unit === 'Percent' ? 100 : MAX_RUPEE_RATE;
@@ -65,7 +67,10 @@ const saveLabourCode = async (req, res) => {
     if (!parsedUnit) {
       return res.status(400).json({ success: false, message: 'Unit must be "Per Gram", "Per 10 Gram" or "Percent"' });
     }
-    const parsedRate = toOptionalRate(rate, parsedUnit);
+    const parsedRate = toRate(rate, parsedUnit);
+    if (parsedRate === null) {
+      return res.status(400).json({ success: false, message: 'Labour rate is required' });
+    }
     if (parsedRate === undefined) {
       return res.status(400).json({
         success: false,
