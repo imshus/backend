@@ -54,6 +54,20 @@ const findScopedSetting = async (Model, scope) => {
   return Model.findOne({ businessId: scope.businessId, userId: null });
 };
 
+/**
+ * Every record a user's setting can come from, nearest first: an employee's
+ * own (when they have one) and the business's. For a setting whose own
+ * record can exist with nothing in the field that matters — the shop's
+ * answer then still stands behind it.
+ */
+const findScopedSettings = async (Model, scope) => {
+  const [own, shop] = await Promise.all([
+    scope.userId ? Model.findOne({ businessId: scope.businessId, userId: scope.userId }) : null,
+    Model.findOne({ businessId: scope.businessId, userId: null }),
+  ]);
+  return [own, shop].filter(Boolean);
+};
+
 /** Writes the user's own record (the business record when the owner writes). */
 const upsertScopedSetting = (Model, scope, set) =>
   Model.findOneAndUpdate(
@@ -193,6 +207,7 @@ module.exports = {
   settingsScope,
   ownWorkFilter,
   findScopedSetting,
+  findScopedSettings,
   upsertScopedSetting,
   findScopedRows,
   materializeOwnRows,

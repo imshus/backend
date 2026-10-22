@@ -60,44 +60,69 @@ const findHouse = (houses, value) => {
     || null;
 };
 
+/** The house a shop follows until it chooses another, at the shop's asking. */
+const DEFAULT_HOUSE = SOURCES.JMD_PATIL;
+
 /**
- * The house an account follows, as { key, label }.
+ * The house a Choose a Bullion record (BullionSource) names, as
+ * { key, label }, or null when it names none.
  *
- *   board           followableHouses(): { houses, fromFeed }
- *   stored          BullionSource.selected
- *   legacyJmd       DashboardMetrics bhaw_source_jmd
- *   requestedNames  BullionSource.customNames, the names the shop typed in
+ *   board    followableHouses(): { houses, fromFeed }
+ *   setting  BullionSource: selected, and customNames — the names the shop
+ *            typed in
  *
- * The stored choice when it names a house on the board, or one the feed is
- * known to carry. Any other stored house key is kept as it stands, on the
- * board or not: a house off this round's board (or a feed that is down) is
- * still the shop's house, and is priced as a house with no bhaw until it is
- * back — never silently swapped for Mega Bullion, which a save would then
- * have made permanent. Anything else — nothing chosen yet, or a name the
- * shop typed in (an older build stored those as the choice; they are among
- * its requested names, and a typed name is rarely key-shaped anyway) — is
- * the older boolean's house: JMD Patil unless it is saved false, then Mega
- * Bullion.
+ * Its choice when that names a house on the board, or one the feed is known
+ * to carry. Any other stored house key is kept as it stands, on the board
+ * or not: a house off this round's board (or a feed that is down) is still
+ * the shop's house, and is priced as a house with no bhaw until it is back.
+ * Nothing — blank, or a name the shop typed in (an older build stored those
+ * as the choice; they are among its requested names, and a typed name is
+ * rarely key-shaped anyway) — is no choice.
  */
-const followedHouse = (board, stored, legacyJmd, requestedNames = []) => {
+const chosenHouse = (board, setting) => {
+  const stored = setting?.selected;
   const houses = Array.isArray(board?.houses) ? board.houses : [];
   const match = findHouse(houses, stored) || findHouse(knownHouses(), stored);
   if (match) return { key: match.key, label: match.label };
   const raw = String(stored ?? '').trim();
-  const typedIn = (Array.isArray(requestedNames) ? requestedNames : [])
-    .some((name) => houseNameKey(name) === houseNameKey(raw));
+  const requestedNames = Array.isArray(setting?.customNames) ? setting.customNames : [];
+  const typedIn = requestedNames.some((name) => houseNameKey(name) === houseNameKey(raw));
   if (HOUSE_KEY.test(raw) && !typedIn) return { key: raw, label: SOURCE_NAMES[raw] || raw };
-  const key = legacyJmd === false ? SOURCES.MEGA_BULLION : SOURCES.JMD_PATIL;
-  const onBoard = findHouse(houses, key);
-  return { key, label: onBoard?.label || SOURCE_NAMES[key] };
+  return null;
+};
+
+/**
+ * The house an account follows, as { key, label }: the first of `settings`
+ * (its BullionSource records, nearest first — an employee's own, then the
+ * shop's) that names a house, else JMD Patil.
+ *
+ * Only a house chosen on Choose a Bullion moves a shop off JMD Patil. The
+ * older boolean (DashboardMetrics bhaw_source_jmd) is not read: from 29 Aug
+ * to 21 Sep 2026 its default was false, Mega Bullion, on the server and the
+ * phone alike, and every save of the Home tiles wrote that default with
+ * them — so a false with no choice behind it is a leftover default, not a
+ * shop's word. (The radio of those builds could not even write Mega by a
+ * tap while Mega was its default.) Every pick since 16 Sep is a
+ * BullionSource record.
+ */
+const followedHouse = (board, settings = []) => {
+  for (const setting of Array.isArray(settings) ? settings : [settings]) {
+    const house = chosenHouse(board, setting);
+    if (house) return house;
+  }
+  const houses = Array.isArray(board?.houses) ? board.houses : [];
+  const onBoard = findHouse(houses, DEFAULT_HOUSE);
+  return { key: DEFAULT_HOUSE, label: onBoard?.label || SOURCE_NAMES[DEFAULT_HOUSE] };
 };
 
 module.exports = {
   SOURCES,
   SOURCE_NAMES,
   HOUSE_KEY,
+  DEFAULT_HOUSE,
   knownHouses,
   houseNameKey,
   findHouse,
+  chosenHouse,
   followedHouse,
 };

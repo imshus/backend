@@ -9,7 +9,7 @@
  * sell. The feed's cash_bhaw/rtgs_bhaw (the tracker's diff from the MCX buy)
  * runs above the premium by the MCX spread and is not what is added.
  *
- * The vendor comes from the Dashboard Settings toggle (bhaw_source_jmd), the
+ * The vendor comes from Choose a Bullion (BullionSource.selected), the
  * bhaw values from the live feed, and the response always carries bhawSource
  * so Home and Gold Rate Settings can label what they are showing.
  */
@@ -40,7 +40,7 @@ const house = (source, name, cashPremium, rtgsPremium) => ({
 });
 
 const state = {
-  useJmd: false,
+  selected: 'mega_bullion',
   cached: null,
   cacheWrites: [],
   feed: [
@@ -81,8 +81,10 @@ stub('../models/supremeChange.model', {
   // was not used.
   findOne: () => ({ sort: async () => ({ rtgsChange: 111, cashChange: -111 }) }),
 });
-stub('../models/dashboardMetrics.model', {
-  findOne: async () => ({ metricsData: { bhaw_source_jmd: state.useJmd } }),
+// The house as Choose a Bullion records it. (The older boolean is not read:
+// tests/defaultBullionHouse.test.js.)
+stub('../models/bullionSource.model', {
+  findOne: async () => ({ selected: state.selected, customNames: [] }),
 });
 
 // axios is what bhaw.service uses for the live feed.
@@ -106,7 +108,7 @@ const reset = () => {
 
 test('selecting JMD Patil applies its live cash and rtgs bhaw to the MCX rate', async () => {
   reset();
-  state.useJmd = true;
+  state.selected = 'jmd_patil';
   const result = await getLiveGoldRates(BUSINESS_ID);
 
   assert.equal(result.bhawSource.key, 'jmd_patil');
@@ -125,7 +127,7 @@ test('selecting JMD Patil applies its live cash and rtgs bhaw to the MCX rate', 
 
 test('selecting Mega Bullion applies its bhaw instead', async () => {
   reset();
-  state.useJmd = false;
+  state.selected = 'mega_bullion';
   const result = await getLiveGoldRates(BUSINESS_ID);
 
   assert.equal(result.bhawSource.key, 'mega_bullion');
@@ -137,7 +139,7 @@ test('selecting Mega Bullion applies its bhaw instead', async () => {
 
 test('the stored supreme-change fallback is not used while the feed is live', async () => {
   reset();
-  state.useJmd = false;
+  state.selected = 'mega_bullion';
   const result = await getLiveGoldRates(BUSINESS_ID);
   assert.notEqual(result.supremeChanges.rtgsChange, 111);
   assert.notEqual(result.supremeChanges.cashChange, -111);
@@ -145,7 +147,7 @@ test('the stored supreme-change fallback is not used while the feed is live', as
 
 test('a cached response from a pre-vendor build is recomputed, not served', async () => {
   reset();
-  state.useJmd = true;
+  state.selected = 'jmd_patil';
   // What an old deployment left in Redis: no bhawSource, stale numbers.
   state.cached = {
     mcxLiveRate: 140000,

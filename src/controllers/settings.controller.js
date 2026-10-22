@@ -5,9 +5,20 @@ const Business = require('../models/business.model');
 const BusinessUser = require('../models/businessUser.model');
 const einvoiceService = require('../services/einvoice.service');
 const profileEditService = require('../services/profileEdit.service');
-const { settingsScope, findScopedSetting, upsertScopedSetting } = require('../services/userScope.service');
+const {
+  settingsScope,
+  findScopedSetting,
+  findScopedSettings,
+  upsertScopedSetting,
+} = require('../services/userScope.service');
 const bhawService = require('../services/bhaw.service');
-const { findHouse, followedHouse, houseNameKey } = require('../services/bullionHouses');
+const {
+  SOURCES,
+  chosenHouse,
+  findHouse,
+  followedHouse,
+  houseNameKey,
+} = require('../services/bullionHouses');
 
 // A shop that has saved nothing shows the MCX card alone; the 24K
 // RTGS/Cash card and the lighter karats wait in settings until ticked.
@@ -27,6 +38,7 @@ const DEFAULT_DASHBOARD_MATRIX_VALUES = {
   '9k_cash': false,
   // Bhaw rate source: true = JMD Patil live feed, false = Mega Bullion (supreme changes).
   // JMD Patil unless the shop has picked otherwise, at the shop's asking.
+  // Always answered for the house followed (followsJmd), never taken from a save.
   'bhaw_source_jmd': true,
 };
 
@@ -321,16 +333,30 @@ const updateFormulaConfig = async (req, res) => {
 };
 
 
+/**
+ * The older boolean (bhaw_source_jmd), answered for the house this account
+ * follows: true while that is JMD Patil. Builds before 19 Oct 2026 pick
+ * their house from it when they remember none, so a stored false — the
+ * 29 Aug-21 Sep default, saved with the Home tiles — must not reach them as
+ * Mega Bullion. Read off the known houses with no call to the feed: all it
+ * says is JMD Patil or not.
+ */
+const followsJmd = async (scope) =>
+  followedHouse(null, await findScopedSettings(BullionSource, scope)).key === SOURCES.JMD_PATIL;
+
 const getDashboardMatrices = async (req, res) => {
   try {
+    const scope = settingsScope(req.user);
     // The employee's own rows when they have saved them, else the shop's.
-    let metrics = await findScopedSetting(DashboardMetrics, settingsScope(req.user));
+    const [metrics, jmd] = await Promise.all([
+      findScopedSetting(DashboardMetrics, scope),
+      followsJmd(scope),
+    ]);
 
-    if (!metrics) {
-      metrics = { metricsData: DEFAULT_DASHBOARD_MATRIX_VALUES };
-    }
-
-    res.status(200).json({ success: true, data: normalizeDashboardMatrices(metrics.metricsData || {}) });
+    res.status(200).json({
+      success: true,
+      data: { ...normalizeDashboardMatrices(metrics?.metricsData || {}), bhaw_source_jmd: jmd },
+    });
   } catch (error) {
     console.error('Get Dashboard Matrices Error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
@@ -340,15 +366,21 @@ const getDashboardMatrices = async (req, res) => {
 const updateDashboardMatrices = async (req, res) => {
   try {
     const businessId = req.user.businessId;
+    const scope = settingsScope(req.user);
     const { values } = req.body;
-    const normalizedValues = normalizeDashboardMatrices(values || {});
+    // The house is chosen on Choose a Bullion only. A tile save carries the
+    // boolean as the phone last had it — the old default false, from builds
+    // of 29 Aug-21 Sep — so it is stored for the house followed instead.
+    const normalizedValues = {
+      ...normalizeDashboardMatrices(values || {}),
+      bhaw_source_jmd: await followsJmd(scope),
+    };
 
-    const metrics = await upsertScopedSetting(DashboardMetrics, settingsScope(req.user), {
+    const metrics = await upsertScopedSetting(DashboardMetrics, scope, {
       metricsData: normalizedValues,
     });
 
-    // The bhaw source feeds the cached gold-rate computation, for every
-    // account of this business.
+    // Any Dashboard Settings save drops this business's cached gold rates.
     const redisService = require('../services/redis.service');
     await redisService.invalidateGoldRatesCache(businessId.toString());
 
@@ -399,31 +431,26 @@ const withHouse = (houses, house) => (
 /**
  * GET /settings/bullion — the houses this account can follow (the feed's),
  * the one it follows, and the names it has asked us to add. An account that
- * has never chosen follows the record the older boolean left behind, so
- * nothing changes under anyone.
+ * has never chosen follows JMD Patil; an employee who has not chosen follows
+ * the shop's choice.
  */
 const getBullionSources = async (req, res) => {
   try {
     const scope = settingsScope(req.user);
-    const [setting, metrics, board] = await Promise.all([
-      findScopedSetting(BullionSource, scope),
-      findScopedSetting(DashboardMetrics, scope),
+    const [settings, board] = await Promise.all([
+      findScopedSettings(BullionSource, scope),
       bhawService.followableHouses(),
     ]);
 
-    const followed = followedHouse(
-      board,
-      setting?.selected,
-      metrics?.metricsData?.bhaw_source_jmd,
-      setting?.customNames,
-    );
+    const followed = followedHouse(board, settings);
     const builtIn = withHouse(board.houses, followed);
 
     return res.status(200).json({
       success: true,
       data: {
         builtIn,
-        requestedNames: cleanCustomNames(setting?.customNames, builtIn),
+        // The nearest record's names: the employee's own, else the shop's.
+        requestedNames: cleanCustomNames(settings[0]?.customNames, builtIn),
         selected: followed.key,
       },
     });
@@ -439,25 +466,24 @@ const getBullionSources = async (req, res) => {
  * its feed name); the house the account already follows is never refused,
  * so a feed that is down for a moment does not stop a shop saving. A
  * requested name is recorded and answered later, so it cannot move a shop's
- * price today. Nothing sent as `selected` keeps the house followed, and
- * nothing sent as `requestedNames` keeps the names already asked for. A house
- * the board in hand does not list is looked for on both feeds once more
- * (bhawService.findHouseOnFeed) before it is refused.
+ * price today. Nothing sent as `selected` keeps the house followed — and
+ * records no house when none was chosen, so the default never turns into a
+ * choice — and nothing sent as `requestedNames` keeps the names already
+ * asked for. A house the board in hand does not list is looked for on both
+ * feeds once more (bhawService.findHouseOnFeed) before it is refused.
  */
 const updateBullionSources = async (req, res) => {
   try {
     const scope = settingsScope(req.user);
-    const [board, current, currentMetrics] = await Promise.all([
+    const [board, settings] = await Promise.all([
       bhawService.followableHouses(),
-      findScopedSetting(BullionSource, scope),
-      findScopedSetting(DashboardMetrics, scope),
+      findScopedSettings(BullionSource, scope),
     ]);
-    const following = followedHouse(
-      board,
-      current?.selected,
-      currentMetrics?.metricsData?.bhaw_source_jmd,
-      current?.customNames,
-    );
+    // The record this save writes (the employee's own, the shop's for the
+    // owner) and the nearest one, whose names stand when none are sent.
+    const own = settings.find((setting) => String(setting.userId ?? '') === String(scope.userId ?? ''));
+    const current = settings[0];
+    const following = followedHouse(board, settings);
     const sent = req.body?.selected;
     // A house is sent as its key: anything but a string names no house.
     const requested = typeof sent === 'string' ? cleanBullionName(sent) : sent == null ? '' : null;
@@ -483,8 +509,12 @@ const updateBullionSources = async (req, res) => {
     // keeps the names already asked for: [] would have wiped them.
     const sentNames = req.body?.requestedNames ?? req.body?.customNames;
     const customNames = cleanCustomNames(sentNames == null ? current?.customNames : sentNames, builtIn);
-    const selected = chosen.key;
-    const setting = await upsertScopedSetting(BullionSource, scope, { selected, customNames });
+    // A house sent is chosen. None sent keeps this record's own choice, or
+    // none: writing the house it merely follows (JMD Patil by default, or the
+    // shop's) would make that a choice — it once stored Mega Bullion, the
+    // older boolean's default, for shops that had only added a name.
+    const selected = requested ? chosen.key : chosenHouse(board, own)?.key || '';
+    await upsertScopedSetting(BullionSource, scope, { selected, customNames });
     if (customNames.length) {
       // What the shop is waiting for, in the log the team reads.
       console.info('[BULLION_REQUESTED]', {
@@ -494,13 +524,14 @@ const updateBullionSources = async (req, res) => {
       });
     }
 
-    // The older boolean still drives anything that has not read this setting
-    // yet, so it is kept in step: a house the shop added is not JMD Patil.
+    // The older boolean is kept in step with the house now followed (`chosen`:
+    // the one picked, else the one already followed): any house but JMD
+    // Patil reads false.
     const metrics = await findScopedSetting(DashboardMetrics, scope);
     await upsertScopedSetting(DashboardMetrics, scope, {
       metricsData: {
         ...(metrics?.metricsData || {}),
-        bhaw_source_jmd: selected === 'jmd_patil',
+        bhaw_source_jmd: chosen.key === SOURCES.JMD_PATIL,
       },
     });
 
@@ -512,8 +543,8 @@ const updateBullionSources = async (req, res) => {
       success: true,
       data: {
         builtIn,
-        requestedNames: cleanCustomNames(setting.customNames, builtIn),
-        selected: setting.selected,
+        requestedNames: cleanCustomNames(customNames, builtIn),
+        selected: chosen.key,
       },
     });
   } catch (error) {

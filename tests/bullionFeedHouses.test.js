@@ -200,7 +200,7 @@ test('GET lists every house on the feed, by its key and the feed\'s own name, in
   const res = await get();
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.payload.data.builtIn, ELEVEN.map((entry) => ({ key: entry.source, label: entry.name })));
-  // Nothing chosen: the older boolean's house, JMD Patil when unset.
+  // Nothing chosen: JMD Patil.
   assert.equal(res.payload.data.selected, 'jmd_patil');
   assert.deepEqual(res.payload.data.requestedNames, []);
 });
@@ -342,12 +342,13 @@ test('a record holding a house\'s name (an older build) follows that house now i
   const rates = await getLiveGoldRates(BIZ);
   assert.equal(rates.bhawSource.key, 'shree_ram', 'priced on the house the screen ticks');
 
-  // A name on no board stays the older boolean's house, on both sides.
+  // A name on no board is no choice: JMD Patil on both sides, the older
+  // boolean's false (a default those builds saved) aside.
   reset();
   BullionSource.rows.push({ businessId: BIZ, userId: null, selected: 'Gupta Jewellers', customNames: [] });
   DashboardMetrics.rows.push({ businessId: BIZ, userId: null, metricsData: { bhaw_source_jmd: false } });
-  assert.equal((await get()).payload.data.selected, 'mega_bullion');
-  assert.equal((await getLiveGoldRates(BIZ)).bhawSource.key, 'mega_bullion');
+  assert.equal((await get()).payload.data.selected, 'jmd_patil');
+  assert.equal((await getLiveGoldRates(BIZ)).bhawSource.key, 'jmd_patil');
 });
 
 // ---- pricing -----------------------------------------------------------------
@@ -443,13 +444,13 @@ test('a twelfth house that drops off the board stays the shop\'s house: not swap
   assert.deepEqual(ownerRecord().customNames, ['Gupta Jewellers', 'Patel Gold']);
 });
 
-test('a name an older build stored as the choice still falls back to the older boolean, key-shaped or not', async () => {
+test('a name an older build stored as the choice is no choice: JMD Patil, the older boolean aside, key-shaped or not', async () => {
   for (const typed of ['gupta', 'Gupta Jewellers']) {
     reset();
     BullionSource.rows.push({ businessId: BIZ, userId: null, selected: typed, customNames: [typed] });
     DashboardMetrics.rows.push({ businessId: BIZ, userId: null, metricsData: { bhaw_source_jmd: false } });
-    assert.equal((await get()).payload.data.selected, 'mega_bullion', typed);
-    assert.equal((await getLiveGoldRates(BIZ)).bhawSource.key, 'mega_bullion', typed);
+    assert.equal((await get()).payload.data.selected, 'jmd_patil', typed);
+    assert.equal((await getLiveGoldRates(BIZ)).bhawSource.key, 'jmd_patil', typed);
   }
 });
 

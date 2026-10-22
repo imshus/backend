@@ -3,11 +3,10 @@ const GoldTaxSetting = require('../models/goldTaxSetting.model');
 const GoldRate = require('../models/goldRate.model');
 const redisService = require('./redis.service');
 const SupremeChange = require('../models/supremeChange.model');
-const DashboardMetrics = require('../models/dashboardMetrics.model');
 const BullionSource = require('../models/bullionSource.model');
 const bhawService = require('./bhaw.service');
 const { followedHouse } = require('./bullionHouses');
-const { findScopedSetting } = require('./userScope.service');
+const { findScopedSetting, findScopedSettings } = require('./userScope.service');
 const { RUNNING_COMMIT } = require('../utils/runningCommit');
 const { roundHalfUp, percentOfRupeesHalfUp, rupeesLessPercentHalfUp } = require('../utils/money');
 const { ratesUnavailable } = require('./pricingInputs');
@@ -105,7 +104,7 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   // them ready. The MCX comes off that same board (mcx.service) and the
   // supreme changes from this process's copy: no Redis call on the way.
   const bhawWarm = bhawService.prefetch();
-  const [mcxLiveRate, taxSettingsDoc, supremeRead, metrics, bullionSetting, karatRowsRead] = await Promise.all([
+  const [mcxLiveRate, taxSettingsDoc, supremeRead, bullionSettings, karatRowsRead] = await Promise.all([
     mcxService.getLiveMcxRate24K(),
     findScopedSetting(GoldTaxSetting, settings),
     (async () => {
@@ -122,21 +121,15 @@ const getLiveGoldRates = async (businessId, scope = null) => {
         cashChange: supreme && typeof supreme.cashChange === 'number' ? supreme.cashChange : 0
       };
     })(),
-    // Never let the bhaw-source lookup break rate delivery: a malformed
-    // businessId or a metrics outage falls back to the supreme changes.
+    // Which bullion house this account follows: its own choice, else (for
+    // an employee) the shop's. Missing is normal — a shop that never chose
+    // follows JMD Patil — and an outage must not break rate delivery: it
+    // reads as no choice.
     Promise.resolve()
-      .then(() => findScopedSetting(DashboardMetrics, settings))
-      .catch((metricsError) => {
-        console.warn('[Gold Rates] Could not read bhaw source preference:', metricsError.message);
-        return null;
-      }),
-    // Which bullion house this account follows. Missing is normal: accounts
-    // that never opened the setting still carry the older boolean.
-    Promise.resolve()
-      .then(() => findScopedSetting(BullionSource, settings))
+      .then(() => findScopedSettings(BullionSource, settings))
       .catch((bullionError) => {
         console.warn('[Gold Rates] Could not read the bullion house:', bullionError.message);
-        return null;
+        return [];
       }),
     // Both the shop's rows and (for an employee) their own copy, one query;
     // whichever set applies is picked below.
@@ -166,15 +159,10 @@ const getLiveGoldRates = async (businessId, scope = null) => {
   //
   // Every house on the feed can be followed, read the way the settings
   // screen reads it (followedHouse), so the house ticked there is the house
-  // priced here. Anything else in the record — a name the shop added that
-  // is on no board — falls back to the boolean rather than being asked of a
-  // feed that has never heard of it.
-  const followed = followedHouse(
-    await bhawService.followableHouses(),
-    bullionSetting?.selected,
-    metrics?.metricsData?.bhaw_source_jmd,
-    bullionSetting?.customNames,
-  );
+  // priced here. Anything else in the record — nothing chosen, or a name the
+  // shop added that is on no board — is JMD Patil, the default, rather than
+  // a house asked of a feed that has never heard of it.
+  const followed = followedHouse(await bhawService.followableHouses(), bullionSettings);
   const selectedBhawSource = followed.key;
   // The house's premium on each side over its own MCX sell (its Cash or
   // RTGS sell less that line, off the same record), not the tracker's Badla
