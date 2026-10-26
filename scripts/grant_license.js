@@ -7,6 +7,7 @@
  *   node scripts/grant_license.js --phone 8084286876 --apply    # activates the licence
  *   node scripts/grant_license.js --phone 8084286876 --apply --amount 12000
  *   node scripts/grant_license.js --phone 8084286876 --apply --no-bonus
+ *   node scripts/grant_license.js --phone 8084286876 --apply --credits 1000
  *
  * Goes through licenseService.activatePermanentLicense, the path a Razorpay
  * purchase takes, so the record reads like a purchase (dated now; order and
@@ -14,7 +15,8 @@
  * given), the wallet is enabled, the referral reward fires, and a shop that is
  * already permanent is left alone. The purchase bonus credits a paying shop
  * gets (billing config's purchasedBonusCredits, 1000 unless changed) are
- * granted too, unless --no-bonus. No licence-transaction row is written:
+ * granted too (--credits sets another number), unless --no-bonus. No
+ * licence-transaction row is written:
  * those belong to payments, and there was none.
  */
 require('dotenv').config();
@@ -74,8 +76,9 @@ async function findShop(phone) {
  * @param {boolean} options.apply    Write. Without it nothing is saved.
  * @param {number} [options.amount]  Recorded as the purchase amount (default 0).
  * @param {boolean} [options.bonus]  Grant the purchase bonus credits too (default true).
+ * @param {number} [options.credits] How many bonus credits (default: the billing config's).
  */
-async function grantLicense({ phone, apply = false, amount = 0, bonus = true }) {
+async function grantLicense({ phone, apply = false, amount = 0, bonus = true, credits = null }) {
   const shop = await findShop(phone);
   if (!shop) {
     throw new Error(`No owner account signs in with ${tenDigits(phone)}`);
@@ -116,7 +119,7 @@ async function grantLicense({ phone, apply = false, amount = 0, bonus = true }) 
   // payment.service does it on a verified purchase.
   if (result.activated && bonus) {
     const cfg = await billingConfigService.getEffectiveConfig();
-    const bonusCredits = Number(cfg.purchasedBonusCredits || 1000);
+    const bonusCredits = credits || Number(cfg.purchasedBonusCredits || 1000);
     await creditService.grantPurchaseBonusCredits({
       businessId: shop.businessId,
       actionByUserId: null,
@@ -132,7 +135,11 @@ async function grantLicense({ phone, apply = false, amount = 0, bonus = true }) 
 async function main() {
   const args = parseArgs(process.argv);
   if (!args.phone) {
-    throw new Error('usage: node scripts/grant_license.js --phone <10 digits> [--apply] [--amount <rupees>]');
+    throw new Error('usage: node scripts/grant_license.js --phone <10 digits> [--apply] [--amount <rupees>] [--credits <n>]');
+  }
+  const credits = args.credits === undefined ? null : Number(args.credits);
+  if (credits !== null && !(Number.isInteger(credits) && credits > 0)) {
+    throw new Error('--credits must be a whole number above 0');
   }
   if (!config.mongodb?.uri) {
     throw new Error('MONGODB_URI is required');
@@ -145,6 +152,7 @@ async function main() {
       apply: Boolean(args.apply),
       amount: args.amount ? Number(args.amount) : 0,
       bonus: !(args['no-bonus'] || args.noBonus),
+      credits,
     });
   } finally {
     await mongoose.disconnect();
