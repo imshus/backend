@@ -23,6 +23,18 @@ const SIGNUP_FLOW = 'SIGNUP';
 // an account is what stands between a leaked token and that deletion.
 const PHONE_ONLY_FLOWS = new Set(['ACCOUNT_DELETE']);
 
+// The App Store review account (config.reviewLogin) gets its fixed code and
+// no SMS, in every flow but one: no shop may verify that number as its
+// employee's, which the fixed code would let any shop do.
+const REVIEW_REFUSED_FLOWS = new Set(['EMPLOYEE_PHONE']);
+
+function reviewOtpFor(mobile, flow) {
+  const review = config.reviewLogin;
+  if (!review || review.phone !== mobile) return null;
+  if (REVIEW_REFUSED_FLOWS.has(flow)) throw new Error('REVIEW_PHONE_RESERVED');
+  return review.otp;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -267,9 +279,11 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
   let record = null;
   try {
     normalizedMobile = ensureMobile(mobile);
-    const otp = generateOtp();
+    const reviewOtp = reviewOtpFor(normalizedMobile, flow);
+    const otp = reviewOtp || generateOtp();
     const phoneOnly = PHONE_ONLY_FLOWS.has(flow);
-    console.log(`Generated OTP: ${phoneOnly ? `(${flow}, not printed)` : otp}`);
+    const unprinted = reviewOtp ? 'review number' : phoneOnly ? flow : null;
+    console.log(`Generated OTP: ${unprinted ? `(${unprinted}, not printed)` : otp}`);
 
     divider('VALIDATION');
     console.log('Validation Passed: YES');
@@ -288,6 +302,19 @@ async function sendMobileOtp({ mobile, flow = 'GENERAL', businessId = null, otpT
     });
 
     if (!phoneOnly) rememberDevOtp(String(businessId || normalizedMobile), otpType, otp, normalizedMobile);
+
+    if (reviewOtp) {
+      await otpRepository.updateOtpRecord(record._id, { status: 'SENT' });
+      console.log(`[REVIEW_LOGIN] ${flow}: fixed code stored, no SMS sent`);
+      return {
+        success: true,
+        mobile: normalizedMobile,
+        requestId,
+        status: 'SENT',
+        flow,
+        message: 'OTP sent successfully',
+      };
+    }
 
     const msg91Result = await sendMsg91Otp({ mobile: normalizedMobile, otp, requestId, route });
     await otpRepository.updateOtpRecord(record._id, {

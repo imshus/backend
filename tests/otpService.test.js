@@ -142,3 +142,68 @@ test('the sign-up phone check reads only the code sign-up sent, and not past its
     { message: 'OTP_EXPIRED' },
   );
 });
+
+test('the App Store review number gets its fixed code and no SMS; every other number is unchanged', async () => {
+  const config = require('../src/config/env');
+  const original = config.reviewLogin;
+  config.reviewLogin = { phone: '9999999999', otp: '123456' };
+  try {
+    const created = [];
+    const updated = [];
+    let smsSent = 0;
+    otpRepository.createOtpRecord = async (payload) => {
+      created.push(payload);
+      return { _id: `otp-review-${created.length}`, ...payload };
+    };
+    otpRepository.updateOtpRecord = async (_id, payload) => {
+      updated.push(payload);
+      return {};
+    };
+    axios.post = async () => {
+      smsSent += 1;
+      return { status: 200, data: { type: 'success', request_id: 'msg91-req-review' } };
+    };
+
+    for (const flow of ['LOGIN', 'SIGNUP', 'ACCOUNT_DELETE']) {
+      const result = await otpService.sendMobileOtp({ mobile: '+91 99999 99999', flow });
+      assert.equal(result.status, 'SENT');
+    }
+    assert.equal(smsSent, 0, 'no SMS for the review number');
+    assert.deepEqual(created.map((row) => row.otp), ['123456', '123456', '123456']);
+    assert.ok(created.every((row) => row.mobile === '9999999999' && row.expiresAt > new Date()));
+    assert.ok(updated.every((row) => row.status === 'SENT'));
+
+    // No shop may take the review number as its employee's with that code.
+    await assert.rejects(
+      () => otpService.sendMobileOtp({ mobile: '9999999999', flow: 'EMPLOYEE_PHONE', businessId: 'shop-1' }),
+      { message: 'REVIEW_PHONE_RESERVED' },
+    );
+    assert.equal(created.length, 3, 'nothing stored for a refused send');
+
+    // Any other number still gets a random code by SMS.
+    await otpService.sendMobileOtp({ mobile: '9876543210', flow: 'LOGIN' });
+    assert.equal(smsSent, 1);
+    assert.match(created[3].otp, /^[0-9]{6}$/);
+    assert.equal(created[3].mobile, '9876543210');
+  } finally {
+    config.reviewLogin = original;
+  }
+});
+
+test('the review code still has to be typed right, and verifies like any other', async () => {
+  const record = {
+    otp: '123456',
+    verified: false,
+    status: 'SENT',
+    expiresAt: new Date(Date.now() + 60_000),
+    save: async () => {},
+  };
+  otpRepository.findLatestByMobile = async () => record;
+
+  await assert.rejects(
+    () => otpService.verifyOtpByMobile({ mobile: '9999999999', otp: '654321' }),
+    { message: 'OTP_INVALID' },
+  );
+  const result = await otpService.verifyOtpByMobile({ mobile: '9999999999', otp: '123456' });
+  assert.equal(result.verified, true);
+});

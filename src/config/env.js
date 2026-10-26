@@ -12,6 +12,11 @@ const envVarsSchema = joi.object({
   JWT_REFRESH_SECRET: joi.string().required().description('JWT Refresh Secret'),
   MSG91_AUTH_KEY: joi.string().required().description('MSG91 Auth Key'),
   MSG91_TEMPLATE_ID: joi.string().required().description('MSG91 Template ID'),
+  // The App Store review account: this one number is answered with this
+  // fixed code instead of an SMS (otp.service). Off unless both are set; set
+  // them on the server only while Apple is reviewing a build.
+  REVIEW_LOGIN_PHONE: joi.string().pattern(/^[6-9][0-9]{9}$/).allow('').default(''),
+  REVIEW_LOGIN_OTP: joi.string().pattern(/^[0-9]{6}$/).allow('').default(''),
   OPENAI_API_KEY: joi.string().required().description('OpenAI API Key'),
   OPENAI_SERVICE_TIER: joi.string().valid('auto', 'default', 'flex', 'scale', 'priority').optional()
     .description('OpenAI service tier for scan reads; default priority (~1.3s faster per call at ~2x token cost, owner\'s choice for the 4 s target). Set "default" to opt out'),
@@ -142,6 +147,9 @@ module.exports = {
     authKey: envVars.MSG91_AUTH_KEY,
     templateId: envVars.MSG91_TEMPLATE_ID,
   },
+  reviewLogin: envVars.REVIEW_LOGIN_PHONE && envVars.REVIEW_LOGIN_OTP
+    ? { phone: envVars.REVIEW_LOGIN_PHONE, otp: envVars.REVIEW_LOGIN_OTP }
+    : null,
   sandbox: {
     apiKey: envVars.SANDBOX_API_KEY,
     apiSecret: envVars.SANDBOX_API_SECRET,

@@ -3,8 +3,8 @@
  * Fills the App Store review shop with sample masters, so Apple's reviewer
  * sees a working shop: labour codes, wastage codes and item codes the sample
  * tags use. The shop itself is made the normal way first — the owner signs
- * up in the app with the review number (a real number, its OTP shared with
- * Apple on request) — and this only adds what is missing; nothing the shop
+ * up in the app with the review number (REVIEW_LOGIN_PHONE, whose code is
+ * REVIEW_LOGIN_OTP) — and this only adds what is missing; nothing the shop
  * already has is changed.
  *
  *   node scripts/seed_review_demo.js --phone 9XXXXXXXXX            # dry run: lists what it would add

@@ -13,6 +13,7 @@ const errorHandler = (err, req, res, next) => {
     'OTP_LIMIT_EXCEEDED': { status: 429, msg: 'You have exceeded the maximum number of OTP attempts.' },
     'RESEND_TIMEOUT': { status: 429, msg: 'Please wait before requesting another OTP.' },
     'INVALID_MOBILE_NUMBER': { status: 400, msg: 'Invalid mobile number. Provide a valid 10-digit mobile.' },
+    'REVIEW_PHONE_RESERVED': { status: 409, msg: 'This number belongs to the App Review demo account.' },
     'OTP_DB_SAVE_FAILED': { status: 500, msg: 'Failed to persist OTP request.' },
     'MSG91_CONFIG_MISSING': { status: 500, msg: 'MSG91 configuration is missing in environment.' },
     'MSG91_AUTH_ERROR': { status: 502, msg: 'MSG91 rejected credentials. Check MSG91 auth key and token configuration.' },

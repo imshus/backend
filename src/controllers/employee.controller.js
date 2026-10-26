@@ -392,6 +392,13 @@ const sendPhoneOtp = async (req, res) => {
       });
     } catch (error) {
       if (String(error.message).startsWith('MSG91_')) return res.status(502).json(OTP_SEND_FAILED);
+      if (error.message === 'REVIEW_PHONE_RESERVED') {
+        return res.status(409).json({
+          success: false,
+          error: 'REVIEW_PHONE_RESERVED',
+          message: 'This number belongs to the App Review demo account.',
+        });
+      }
       throw error;
     }
 
