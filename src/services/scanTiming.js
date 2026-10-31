@@ -17,6 +17,8 @@
 
 const WINDOW = 200;
 const totals = [];
+// The same scans' lines, for where the wait went (scanStageSummary).
+const lines = [];
 
 const targetMs = () => {
   const n = Number(process.env.SCAN_TARGET_MS);
@@ -46,6 +48,8 @@ const recordScanTiming = (timing) => {
   if (line.totalMs !== null) {
     totals.push(line.totalMs);
     if (totals.length > WINDOW) totals.splice(0, totals.length - WINDOW);
+    lines.push(line);
+    if (lines.length > WINDOW) lines.splice(0, lines.length - WINDOW);
   }
   return line;
 };
@@ -71,9 +75,38 @@ const scanTimingSummary = () => {
   };
 };
 
+/** The steps a scan's wait is split into, as [SCAN_TIMING] names them. */
+const STAGES = ['headStartMs', 'rotationMs', 'readMs', 'adjudicationMs', 'pricingMs', 'storeMs'];
+
+/**
+ * Where the window's wait went, for GET /api/v1/health (scanStages): each
+ * step's p50 and p95 over the scans that ran it, and how often the
+ * speculative read was used and the third look was needed. Null until a scan
+ * is timed.
+ */
+const scanStageSummary = () => {
+  if (!lines.length) return null;
+  const stages = {};
+  for (const stage of STAGES) {
+    const values = lines.map((line) => line[stage]).filter((ms) => Number.isFinite(ms) && ms > 0)
+      .sort((a, b) => a - b);
+    stages[stage] = values.length
+      ? { count: values.length, p50Ms: percentile(values, 50), p95Ms: percentile(values, 95) }
+      : { count: 0, p50Ms: null, p95Ms: null };
+  }
+  const share = (test) => Math.round((lines.filter(test).length / lines.length) * 1000) / 10;
+  return {
+    count: lines.length,
+    stages,
+    speculativeUsedPct: share((line) => line.speculativeUsed),
+    adjudicatedPct: share((line) => Number.isFinite(line.adjudicationMs) && line.adjudicationMs > 0),
+  };
+};
+
 module.exports = {
   recordScanTiming,
   scanTimingSummary,
+  scanStageSummary,
   WINDOW,
-  __internal: { reset: () => totals.splice(0) },
+  __internal: { reset: () => { totals.splice(0); lines.splice(0); } },
 };

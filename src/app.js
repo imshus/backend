@@ -62,7 +62,7 @@ app.get('/api/v1/app-config', (req, res) => {
   });
 });
 
-const { scanTimingSummary } = require('./services/scanTiming');
+const { scanTimingSummary, scanStageSummary } = require('./services/scanTiming');
 
 app.get('/api/v1/health', (req, res) => {
   res.status(200).json({
@@ -74,6 +74,9 @@ app.get('/api/v1/health', (req, res) => {
     // The last 200 analyzed scans, received to answered, against the
     // SCAN_TARGET_MS target (APItracker's Scan speed card reads this).
     scanTiming: scanTimingSummary(),
+    // Where that wait went, step by step (p50/p95 per step), so a slow tail
+    // can be traced without the server's logs. No scan ids, nothing of a shop.
+    scanStages: scanStageSummary(),
   });
 });
 

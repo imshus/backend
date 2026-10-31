@@ -200,3 +200,25 @@ test('GET /api/v1/health reports the window as scanTiming', async () => {
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('the window also says where the wait went: each step\'s p50 and p95, speculative and third-look shares', () => {
+  scanTiming.__internal.reset();
+  assert.equal(scanTiming.scanStageSummary(), null);
+  const quiet = console.info;
+  console.info = () => {};
+  try {
+    scanTiming.recordScanTiming({ scanId: 'a', totalMs: 1300, readMs: 1100, pricingMs: 90, storeMs: 40, speculativeUsed: true });
+    scanTiming.recordScanTiming({ scanId: 'b', totalMs: 1500, readMs: 1250, pricingMs: 110, storeMs: 60, speculativeUsed: true });
+    scanTiming.recordScanTiming({ scanId: 'c', totalMs: 7300, rotationMs: 1400, readMs: 2600, adjudicationMs: 2900, pricingMs: 120, storeMs: 50 });
+  } finally {
+    console.info = quiet;
+  }
+  const summary = scanTiming.scanStageSummary();
+  assert.equal(summary.count, 3);
+  assert.deepEqual(summary.stages.readMs, { count: 3, p50Ms: 1250, p95Ms: 2600 });
+  assert.deepEqual(summary.stages.adjudicationMs, { count: 1, p50Ms: 2900, p95Ms: 2900 });
+  assert.deepEqual(summary.stages.headStartMs, { count: 0, p50Ms: null, p95Ms: null });
+  assert.equal(summary.speculativeUsedPct, 66.7);
+  assert.equal(summary.adjudicatedPct, 33.3);
+  assert.ok(!JSON.stringify(summary).includes('"a"'), 'no scan ids');
+});
