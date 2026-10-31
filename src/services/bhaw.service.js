@@ -326,11 +326,26 @@ const refresh = () => {
   return pendingRead;
 };
 
+/**
+ * How long a lookup waits for the new board when it already holds an older
+ * one. The read itself keeps going (up to READ_DEADLINE_MS) and becomes the
+ * board when it lands; the lookup prices on the board it has rather than
+ * hold a scan or Home for the full 8 s of a feed that has gone quiet.
+ */
+const STALE_WAIT_MS = 2_500;
+
 const fetchRows = async (force = false) => {
   const now = Date.now();
   if (!force && cache.rows && now < cache.freshUntil) return cache.rows;
   if (!force && now < cache.retryAfter) return cache.rows;
-  await refresh();
+  const read = refresh();
+  if (force || !cache.rows) {
+    await read;
+    return cache.rows;
+  }
+  let timer;
+  await Promise.race([read, new Promise((resolve) => { timer = setTimeout(resolve, STALE_WAIT_MS); })]);
+  clearTimeout(timer);
   return cache.rows;
 };
 

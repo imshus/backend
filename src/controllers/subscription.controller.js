@@ -63,6 +63,15 @@ async function getReferralOverview(req, res, next) {
 async function getOverview(req, res, next) {
   try {
     const businessId = req.user.businessId;
+    // Four reads that need nothing from each other, side by side: Home asks
+    // for this on every visit and every minute it stays open.
+    const [state, cfg, monthSummary, business] = await Promise.all([
+      readSubscriptionState(businessId),
+      billingConfigService.getEffectiveConfig(),
+      paymentService.getMonthCostSummary({ businessId }),
+      // Offered again in the email popup before the next payment.
+      Business.findById(businessId).select('billingEmail').lean(),
+    ]);
     const {
       license,
       licenseStatus,
@@ -74,11 +83,7 @@ async function getOverview(req, res, next) {
       trialHoursRemaining,
       wallet,
       creditBalance,
-    } = await readSubscriptionState(businessId);
-    const cfg = await billingConfigService.getEffectiveConfig();
-    const monthSummary = await paymentService.getMonthCostSummary({ businessId });
-    // Offered again in the email popup before the next payment.
-    const business = await Business.findById(businessId).select('billingEmail').lean();
+    } = state;
 
     let creditWarningLevel = 'NONE';
     // The balance a new scan needs to be above; the app's Scan popup uses the

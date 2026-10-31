@@ -1,3 +1,9 @@
+// Before anything touches the libuv threadpool: its default 4 threads are
+// shared by every scan's image work (sharp), file reads and DNS lookups, and a
+// few scans at once left a plain fs.stat waiting ~0.4 s behind them. A value
+// set in the environment wins.
+process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
+
 const os = require('os');
 const app = require('./app');
 const config = require('./config/env');

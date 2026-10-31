@@ -559,6 +559,37 @@ test('a read that times out is not waited on again by the next lookup in the sam
   }
 });
 
+test('a quiet feed holds a lookup 2.5 s at most when an older board is in hand; the read goes on', async () => {
+  const timers = holdTimers();
+  try {
+    const t0 = Date.UTC(2026, 9, 6, 17, 0, 0);
+    setClock(t0);
+    respond = async () => ({ data: snapshotAt(t0, fourHouses()) });
+    await bhawService.boardMcxSell();
+
+    const t1 = t0 + 10 * 60_000;
+    setClock(t1);
+    const silent = new PassThrough();
+    silent.write(': ping\n\n');
+    respond = async () => ({ data: silent });
+
+    let answered = false;
+    const stamp = bhawService.feedStamp('jmd_patil').then((value) => { answered = true; return value; });
+    await tick();
+    assert.equal(answered, false, 'it does wait a moment for the new board');
+    const waits = timers.pending(2_500);
+    assert.equal(waits.length, 1, 'a 2.5 s wait');
+    waits[0].fn();
+    assert.equal(await stamp, STAMP_JMD, 'then the board in hand');
+    assert.equal(timers.pending(8_000).length, 1, 'while the read itself is still out');
+    timers.pending(8_000)[0].fn();
+    await tick();
+    assert.equal(calls.length, 2);
+  } finally {
+    timers.restore();
+  }
+});
+
 test('requiring the service opens nothing', () => {
   assert.equal(callsAtRequire, 0, 'the require at the top of this file made no call');
 });

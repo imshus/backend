@@ -61,7 +61,8 @@ const sendInvoicePdf = (res, invoiceNumber, pdfBuffer, query) => {
 
 /** Downloads and validates a generated invoice before it enters Redis. */
 const fetchInvoicePdf = async (downloadUrl) => {
-  const upstream = await fetch(downloadUrl);
+  // The download a shop is waiting on; never the five-minute default.
+  const upstream = await fetch(downloadUrl, { signal: AbortSignal.timeout(20_000) });
   if (!upstream.ok) {
     throw new Error(`PDF fetch failed with ${upstream.status}`);
   }

@@ -243,9 +243,11 @@ const prepareViews = async (filePath, { detectRotation, scanContext, signal } = 
             })
           : work().resize({ width: maxEdgePx, height: maxEdgePx, fit: 'inside', withoutEnlargement: true });
       const encoded = await sized
-        // mozjpeg costs ~120 ms more on an enlarged crop to save a few tens of
-        // kilobytes, which upload faster than that.
-        .jpeg({ quality: jpegQuality, mozjpeg: upscale === 1 })
+        // No mozjpeg: at quality 92 it saves a tenth to a quarter of the bytes
+        // for ten to twenty times the encode (~150 ms against ~13 ms for a
+        // 1 MP crop), and the server's link to the model carries those bytes
+        // in far less than that. The same for the crops below.
+        .jpeg({ quality: jpegQuality, mozjpeg: false })
         .toBuffer({ resolveWithObject: true });
       full = encoded.data;
       fullWidth = encoded.info.width;
@@ -268,7 +270,7 @@ const prepareViews = async (filePath, { detectRotation, scanContext, signal } = 
         });
       }
       const encoded = await part
-        .jpeg({ quality: PART_JPEG_QUALITY, mozjpeg: true })
+        .jpeg({ quality: PART_JPEG_QUALITY, mozjpeg: false })
         .toBuffer({ resolveWithObject: true });
       return {
         name: region.name,

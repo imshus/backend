@@ -68,5 +68,8 @@ const wishlistSchema = new mongoose.Schema(
 // Compound indices for efficient lookups and uniqueness per user within a business
 wishlistSchema.index({ businessId: 1, userId: 1, createdAt: -1 });
 wishlistSchema.index({ businessId: 1, userId: 1, itemId: 1 }, { unique: true });
+// The owner's list is the whole shop's (no userId in the filter), which the
+// two above cannot sort.
+wishlistSchema.index({ businessId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Wishlist', wishlistSchema);

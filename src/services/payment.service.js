@@ -603,12 +603,20 @@ async function getMonthCostSummary({ businessId }) {
 
   const ScanBilling = require('../models/scanBilling.model');
   const businessObjectId = new mongoose.Types.ObjectId(String(businessId));
+  // A coarse lower bound on billedAt, so the {businessId, billedAt} index
+  // hands over only recent rows; the $expr below still decides the exact
+  // month and day in the billing time zone. Today's month began at most 31
+  // days ago, and no time zone is more than 14 hours off UTC.
+  const now = Date.now();
+  const monthFloor = new Date(now - 32 * 24 * 60 * 60 * 1000);
+  const dayFloor = new Date(now - 2 * 24 * 60 * 60 * 1000);
 
   const [monthRows, todayRows] = await Promise.all([
     ScanBilling.aggregate([
       {
         $match: {
           businessId: businessObjectId,
+          billedAt: { $gte: monthFloor },
           billingStatus: { $ne: 'FAILED', $nin: ['PENDING', 'RECONCILIATION_REQUIRED'] },
           $expr: {
             $eq: [
@@ -630,6 +638,7 @@ async function getMonthCostSummary({ businessId }) {
       {
         $match: {
           businessId: businessObjectId,
+          billedAt: { $gte: dayFloor },
           billingStatus: { $ne: 'FAILED', $nin: ['PENDING', 'RECONCILIATION_REQUIRED'] },
           $expr: {
             $eq: [

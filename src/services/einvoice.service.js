@@ -32,6 +32,9 @@ const { computeInvoiceFigures, placeOfSupplyFor, stateName } = require('./invoic
  * Sandbox's own { code, data } wrapper, and both layers are handled below.
  */
 const SANDBOX_BASE_URL = 'https://api.sandbox.co.in';
+/** Each IRP call gives up after this, so a stalled portal fails the e-invoice
+ * step instead of holding the invoice's PDF behind it indefinitely. */
+const EINVOICE_TIMEOUT_MS = 20_000;
 const EINVOICE_AUTH_PATH = '/gst/compliance/e-invoice/tax-payer/authenticate';
 const EINVOICE_GENERATE_PATH = '/gst/compliance/e-invoice/tax-payer/invoice';
 
@@ -297,6 +300,7 @@ async function getTaxpayerToken(business, deps) {
     {
       // `force` is mandatory; false reuses NIC's active session when one exists.
       params: { force: false },
+      timeout: EINVOICE_TIMEOUT_MS,
       headers: {
         authorization: apiToken,
         'x-api-key': config.sandbox.apiKey,
@@ -340,6 +344,7 @@ async function generateEInvoice({ payload, business }, deps = { axios, getAccess
       gstin: inv01.SellerDtls.Gstin,
       'Content-Type': 'application/json',
     },
+    timeout: EINVOICE_TIMEOUT_MS,
   });
 
   const data = unwrapNicResponse(response, 'GENERATE');

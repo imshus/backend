@@ -58,7 +58,9 @@ async function generateInvoicePdf(payload, filename) {
       },
     }),
     // Sync endpoint can take up to 5 minutes on PDFMonkey's side, but in
-    // practice jewellery invoices finish in 3-10 s. Node's default is fine.
+    // practice jewellery invoices finish in 3-10 s. A minute is ample; past
+    // it the invoice is marked failed instead of pending for five.
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!response.ok) {
@@ -100,6 +102,9 @@ async function generateInvoicePdf(payload, filename) {
 async function getDownloadUrl(docId) {
   const response = await fetch(`${PDFMONKEY_BASE_URL}/documents/${docId}`, {
     headers: { Authorization: `Bearer ${API_SECRET}` },
+    // Asked while a shop waits on the invoice link: a stalled API answers an
+    // error in seconds rather than holding the request for minutes.
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {

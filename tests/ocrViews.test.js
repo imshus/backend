@@ -265,8 +265,8 @@ test('an encode that cannot be avoided never goes below quality 92, whatever OCR
   const file = await writeTag('turned-camera.jpg', 2400, 1500, { withExifRotation: 6 });
   const views = await withJpegQuality(60, () => prepareImageViews(file));
   assert.deepEqual([views.width, views.height], [1500, 2400]);
-  assert.equal(quantTables(Buffer.from(views.full, 'base64')), await referenceTables(MIN_JPEG_QUALITY, true));
+  assert.equal(quantTables(Buffer.from(views.full, 'base64')), await referenceTables(MIN_JPEG_QUALITY, false));
   // A setting above the floor is still honoured.
   const higher = await withJpegQuality(95, () => prepareImageViews(file));
-  assert.equal(quantTables(Buffer.from(higher.full, 'base64')), await referenceTables(95, true));
+  assert.equal(quantTables(Buffer.from(higher.full, 'base64')), await referenceTables(95, false));
 });

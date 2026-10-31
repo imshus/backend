@@ -85,4 +85,10 @@ creditTransactionSchema.index(
   }
 );
 
+// A shop's ledger, newest first (GET /subscription/credit-transactions: one
+// SCAN_DEDUCTION row per scan, so it only grows), and one type of it
+// (GET /notifications reads the shop's REFERRAL_BONUS rows).
+creditTransactionSchema.index({ businessId: 1, createdAt: -1, _id: -1 });
+creditTransactionSchema.index({ businessId: 1, type: 1, createdAt: -1 });
+
 module.exports = mongoose.model('CreditTransaction', creditTransactionSchema);

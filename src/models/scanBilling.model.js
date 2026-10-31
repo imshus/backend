@@ -113,4 +113,10 @@ const scanBillingSchema = new mongoose.Schema(
   }
 );
 
+// A shop's billing, newest first: the Credits screen's list
+// (GET /subscription/scan-billing) and the month and day totals Home reads
+// with every overview. Single-field indexes left each of them reading and
+// sorting every row the shop was ever billed.
+scanBillingSchema.index({ businessId: 1, billedAt: -1, createdAt: -1 });
+
 module.exports = mongoose.model('ScanBilling', scanBillingSchema);

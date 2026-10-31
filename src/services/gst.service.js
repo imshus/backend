@@ -6,6 +6,8 @@ const config = require('../config/env');
 // Search: POST /gst/compliance/public/gstin/search with { gstin } -> GSTN public data.
 
 const SANDBOX_BASE_URL = 'https://api.sandbox.co.in';
+/** The GSTIN check runs while the person waits on sign-up or Profile. */
+const GST_TIMEOUT_MS = 15_000;
 
 let accessToken = null;
 let tokenExpiry = 0;
@@ -22,7 +24,8 @@ const getAccessToken = async () => {
         'x-api-secret': config.sandbox.apiSecret,
         'x-api-version': config.sandbox.apiVersion,
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: GST_TIMEOUT_MS,
     });
 
     const token = response.data?.data?.access_token || response.data?.access_token;
@@ -109,7 +112,8 @@ const verifyGST = async (gstNumber) => {
           'x-api-key': config.sandbox.apiKey,
           'x-api-version': config.sandbox.apiVersion,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: GST_TIMEOUT_MS,
       }
     );
 
