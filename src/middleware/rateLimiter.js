@@ -1,3 +1,4 @@
+const config = require('../config/env');
 const redisClient = require('../redis/redisClient');
 const { loginLookupOf, normalizeIndianMobile } = require('../utils/phone');
 
@@ -70,10 +71,10 @@ const perUserLimiter = ({ name, limit, windowSeconds, message }) => async (req, 
  * behind a proxy without trust proxy, so every phone would share one bucket.
  * A request without the value passes; validation refuses it anyway.
  */
-const bodyKeyLimiter = ({ name, limit, windowSeconds, message, pick }) => async (req, res, next) => {
+const bodyKeyLimiter = ({ name, limit, windowSeconds, message, pick, exempt }) => async (req, res, next) => {
   try {
     const raw = String(pick(req) || '').trim().toLowerCase();
-    if (!raw) return next();
+    if (!raw || exempt?.(raw)) return next();
     const count = await countHit(`${name}_limit:${raw.replace(/\s+/g, '')}`, windowSeconds);
     if (count > limit) {
       return res.status(429).json({ success: false, error: 'RATE_LIMIT_EXCEEDED', message });
@@ -86,6 +87,10 @@ const bodyKeyLimiter = ({ name, limit, windowSeconds, message, pick }) => async 
 
 const mobileOf = (req) => String(req.body?.mobile || '').replace(/\D/g, '').slice(-10);
 
+// The App Store review number's code is fixed and texted to no one, so there
+// is nothing to flood or guess; a reviewer retrying must not lock it out.
+const isReviewPhone = (mobile) => Boolean(config.reviewLogin) && config.reviewLogin.phone === mobile;
+
 // Ten codes an hour to one number is plenty for a person and stops a number
 // being flooded; fifteen checks an hour is far more than a real mistyping
 // and far too few to guess a code within its ten-minute life.
@@ -95,6 +100,7 @@ const otpSendLimiter = bodyKeyLimiter({
   windowSeconds: 3600,
   message: 'Too many codes were sent to this number. Please try again in an hour.',
   pick: mobileOf,
+  exempt: isReviewPhone,
 });
 const otpVerifyLimiter = bodyKeyLimiter({
   name: 'otp_verify',
@@ -102,6 +108,7 @@ const otpVerifyLimiter = bodyKeyLimiter({
   windowSeconds: 3600,
   message: 'Too many attempts for this number. Please try again in an hour.',
   pick: mobileOf,
+  exempt: isReviewPhone,
 });
 const accountLookupLimiter = bodyKeyLimiter({
   name: 'account_lookup',
