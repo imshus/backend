@@ -564,7 +564,11 @@ test('a refused speed parameter is left out for that model only, and only until 
 
     sent = await tagBoxWith('model-x');
     assert.deepEqual(tiers(sent), [null], 'not offered again to the model that refused it');
-    assert.equal(sent[0].body.reasoning_effort, 'none', 'what was not refused is still sent');
+    assert.equal(
+      sent[0].body.reasoning_effort,
+      process.env.OPENAI_TAG_BOX_REASONING_EFFORT || 'medium',
+      'what was not refused is still sent',
+    );
 
     sent = await tagBoxWith('model-y');
     assert.deepEqual(tiers(sent), ['priority'], 'another model still gets it');

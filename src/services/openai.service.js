@@ -1793,7 +1793,8 @@ const TAG_BOX_SYSTEM_PROMPT =
   'ST NO, sometimes with a barcode or QR code. It is often tied to a ring, held in fingers, or sealed ' +
   'inside a clear plastic bag with glare across it; it may be small in the photograph, and may lie at any ' +
   'angle, sideways or upside down. Answer only with JSON ' +
-  '{"x":0.0,"y":0.0,"width":0.0,"height":0.0,"found":true}, the numbers being fractions of the image ' +
+  '{"x":0.0,"y":0.0,"width":0.0,"height":0.0,"rotate":0,"found":true}, x, y, width and height being ' +
+  'fractions of the image ' +
   'width and height. The rectangle is the WRITTEN AREA of the tag: the block of printed or handwritten ' +
   'details — weights, codes, karat — from the top of its first line to the bottom of its last line, and ' +
   'from its leftmost character to its rightmost, with a small margin of white from the card around it. ' +
@@ -1801,10 +1802,14 @@ const TAG_BOX_SYSTEM_PROMPT =
   'the top of a long white slip, and the blank paper below it must be left out. Every written line, the ' +
   'first and the last included, must fall inside the rectangle; when unsure of an edge, place it a little ' +
   'further out, never further in. Measure the rectangle against the edges of the photograph however the ' +
-  'card is turned. Do not box the plastic bag, the ring, the hand or the background. When no such tag is ' +
+  'card is turned. Do not box the plastic bag, the ring, the hand or the background. "rotate" is how many ' +
+  'degrees the photograph must be turned CLOCKWISE so the printed lines read normally, left to right and ' +
+  'horizontal: 0 when they already do, 90 when they run bottom-to-top (the tops of the letters facing ' +
+  'left), 270 when they run top-to-bottom (tops facing right), 180 when upside down. When no such tag is ' +
   'visible answer {"found":false}.';
 
-const TAG_BOX_MAX_COMPLETION_TOKENS = 600;
+// Room for the reasoning the call now does as well as its few-token answer.
+const TAG_BOX_MAX_COMPLETION_TOKENS = 4000;
 
 /**
  * The tag's rectangle in an image, as fractions of its width and height, or
@@ -1843,7 +1848,10 @@ const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_00
     // not the old "minimal": GPT-6 Luna refuses that, GPT-5.6 Luna is only
     // known to take "none" and "low", and a refusal would drop the effort
     // from that model's later calls until the refusal expires.
-    reasoningEffort: 'none',
+    // The shop asked for the adjustment to be as right as it can be, at the
+    // cost of a slower answer: "medium" by default, and changeable without a
+    // deploy (OPENAI_TAG_BOX_REASONING_EFFORT, e.g. "low" or "high").
+    reasoningEffort: process.env.OPENAI_TAG_BOX_REASONING_EFFORT || 'medium',
     // Its own model and tier, from the environment: a lighter model may
     // place a card as well as the reader's, and the priority tier answers
     // sooner. Neither can be judged from here, so both can be changed
@@ -1879,6 +1887,8 @@ const detectTagBox = async (base64Image, { businessId, userId, timeoutMs = 20_00
     y: top,
     width: Math.max(right - left, 0.02),
     height: Math.max(bottom - top, 0.02),
+    // The quarter turn that makes the writing horizontal; anything else is 0.
+    rotate: [0, 90, 180, 270].includes(Number(parsedData.rotate)) ? Number(parsedData.rotate) : 0,
   };
   console.info('[TAG_BOX]', { ...who, found: true, ...box });
   return box;
