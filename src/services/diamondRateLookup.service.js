@@ -56,4 +56,42 @@ const findDiamondRateMatch = (rows, { color, clarity, shape, packetCode }) => {
   return candidates[0]?.row ?? null;
 };
 
-module.exports = { findDiamondRateMatch, normalizeKey, normalizeShapeKey };
+/**
+ * A tag line like "Dia.1.48\550" carries a code after the weight that the
+ * reader takes for the rate. When that number is a packet code in Masters ->
+ * Diamond, it is the packet code (the shop's ask): it is recorded as such and
+ * the misread rate dropped, so pricing and the result screen take that
+ * packet's rate from the master. A number no packet code matches stays the
+ * rate, as before. Diamonds that already have a packet code are left alone.
+ *
+ * `diamonds` are reading rows ({ value, confidence } fields); `packetCodes`
+ * the codes configured in the master. Returns the rows (new objects only
+ * where something changed).
+ */
+const promotePacketCodesFromRate = (diamonds, packetCodes) => {
+  if (!Array.isArray(diamonds) || !Array.isArray(packetCodes) || packetCodes.length === 0) {
+    return diamonds;
+  }
+  const byKey = new Map();
+  for (const code of packetCodes) {
+    const key = normalizeKey(code);
+    if (key && !byKey.has(key)) byKey.set(key, String(code).trim());
+  }
+  const valueOf = (field) =>
+    field && typeof field === 'object' && 'value' in field ? field.value : field;
+  return diamonds.map((diamond) => {
+    if (!diamond || typeof diamond !== 'object') return diamond;
+    if (normalizeKey(valueOf(diamond.packetCode))) return diamond;
+    const rateKey = normalizeKey(valueOf(diamond.rate));
+    const code = rateKey ? byKey.get(rateKey) : undefined;
+    if (!code) return diamond;
+    const confidence = Number(diamond.rate?.confidence) || 0;
+    return {
+      ...diamond,
+      packetCode: { value: code, confidence },
+      rate: { value: '', confidence: 0 },
+    };
+  });
+};
+
+module.exports = { findDiamondRateMatch, normalizeKey, normalizeShapeKey, promotePacketCodesFromRate };

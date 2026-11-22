@@ -9,6 +9,7 @@ const { compareReads, applyAdjudication, describeDisagreements } = require('./oc
 const DiamondRate = require('../models/diamondRate.model');
 const ColorstoneRate = require('../models/colorstoneRate.model');
 const { findScopedRows, scopeCacheId } = require('./userScope.service');
+const { promotePacketCodesFromRate } = require('./diamondRateLookup.service');
 const { abortedError, isAbortError, throwIfAborted } = require('../utils/abort');
 
 const openai = new OpenAI({
@@ -1568,6 +1569,12 @@ const analyzeImages = async (
             return { ...diamond, packetCode: packetCodeField };
           });
         }
+        // "Dia.1.48\550": the number after the weight is a packet code when
+        // Masters -> Diamond has it, and that packet's rate is the one used.
+        parsedData.structuredData.diamonds = promotePacketCodesFromRate(
+          parsedData.structuredData.diamonds,
+          mergedDiamondCustoms?.packetCodes,
+        );
 
         if (parsedData.structuredData.diamonds && parsedData.structuredData.diamonds.length > 0) {
 
