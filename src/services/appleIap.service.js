@@ -30,6 +30,8 @@ const PRODUCTS = {
   'com.amitaashitsolution.credits100': { paymentType: 'CREDIT_RECHARGE', credits: 100 },
   'com.amitaashitsolution.credits250': { paymentType: 'CREDIT_RECHARGE', credits: 250 },
   'com.amitaashitsolution.credits500': { paymentType: 'CREDIT_RECHARGE', credits: 500 },
+  'com.amitaashitsolution.credits1000': { paymentType: 'CREDIT_RECHARGE', credits: 1000 },
+  'com.amitaashitsolution.credits5000': { paymentType: 'CREDIT_RECHARGE', credits: 5000 },
 };
 
 const BUNDLE_ID = process.env.APPLE_BUNDLE_ID || 'com.amitaashitsolution';
