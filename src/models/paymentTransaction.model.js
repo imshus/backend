@@ -19,6 +19,14 @@ const paymentTransactionSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Razorpay checkout (Android), or Apple In-App Purchase (iPhone), where
+    // Apple is the seller and bills the shop itself: no MRPscan GST invoice.
+    provider: {
+      type: String,
+      enum: ['RAZORPAY', 'APPLE'],
+      default: 'RAZORPAY',
+      index: true,
+    },
     orderId: {
       type: String,
       required: true,

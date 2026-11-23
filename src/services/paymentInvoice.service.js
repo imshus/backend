@@ -38,6 +38,7 @@ async function sendPaymentInvoice(txnId) {
 
   const txn = await PaymentTransaction.findById(txnId).lean();
   if (!txn || txn.status !== 'PAYMENT_SUCCESS') return { sent: false, reason: 'NOT_PAID' };
+  if (txn.provider === 'APPLE') return { sent: false, reason: 'APPLE_BILLED' };
   if (txn.invoiceEmailedAt) return { sent: false, reason: 'ALREADY_SENT' };
 
   const business = await Business.findById(txn.businessId).select(BUSINESS_FIELDS).lean();
@@ -68,6 +69,8 @@ async function paidTransaction(businessId, orderId) {
   const txn = await PaymentTransaction.findOne({ orderId: String(orderId || ''), businessId }).lean();
   if (!txn) throw new Error('PAYMENT_ORDER_NOT_FOUND');
   if (txn.status !== 'PAYMENT_SUCCESS') throw new Error('PAYMENT_INVOICE_NOT_READY');
+  // Bought through the App Store: Apple sold it and sends its own receipt.
+  if (txn.provider === 'APPLE') throw new Error('APPLE_PURCHASE_NO_INVOICE');
   return txn;
 }
 

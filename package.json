@@ -9,6 +9,7 @@
     "test:msg91": "node test_msg91.js"
   },
   "dependencies": {
+    "@apple/app-store-server-library": "^3.1.0",
     "axios": "^1.18.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",

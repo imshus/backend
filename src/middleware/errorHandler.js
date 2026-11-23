@@ -117,6 +117,13 @@ const errorHandler = (err, req, res, next) => {
     'PAYMENT_NOT_CAPTURED': { status: 409, msg: 'Payment is not captured yet. Please retry shortly.' },
     'WEBHOOK_EVENT_ID_MISSING': { status: 400, msg: 'Webhook event id is missing.' },
     'INVALID_WEBHOOK_SIGNATURE': { status: 400, msg: 'Webhook signature verification failed.' },
+    'APPLE_TRANSACTION_MISSING': { status: 400, msg: 'The App Store purchase details are missing.' },
+    'APPLE_TRANSACTION_INVALID': { status: 400, msg: 'The App Store purchase could not be verified.' },
+    'APPLE_VERIFICATION_RETRY': { status: 503, msg: 'The App Store purchase could not be checked right now. Please try again.' },
+    'APPLE_PRODUCT_UNKNOWN': { status: 400, msg: 'This App Store product is not sold in MRPscan.' },
+    'APPLE_TRANSACTION_REVOKED': { status: 409, msg: 'This App Store purchase was refunded or revoked.' },
+    'APPLE_PURCHASE_OTHER_ACCOUNT': { status: 409, msg: 'This App Store purchase is already used on another MRPscan account.' },
+    'APPLE_PURCHASE_NO_INVOICE': { status: 409, msg: 'This was bought through the App Store. Apple sends the receipt for it.' },
   };
 
   if (err?.name === 'MulterError') {

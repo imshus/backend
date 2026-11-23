@@ -3,6 +3,7 @@ const { isEmail } = require('../utils/email');
 const Business = require('../models/business.model');
 const paymentService = require('../services/payment.service');
 const paymentInvoiceService = require('../services/paymentInvoice.service');
+const appleIapService = require('../services/appleIap.service');
 
 /**
  * The email the shop typed in the popup before paying, kept on the shop so
@@ -163,7 +164,34 @@ async function emailPaymentInvoice(req, res, next) {
   }
 }
 
+/**
+ * iPhone: a StoreKit 2 purchase, as the transaction Apple signed. Verified
+ * and applied once; the app finishes the transaction with Apple only after
+ * this answers, so a lost answer is simply sent again.
+ */
+async function verifyApplePurchase(req, res, next) {
+  try {
+    const result = await appleIapService.verifyAndApplyTransaction({
+      businessId: req.user.businessId,
+      userId: req.user.userId,
+      signedTransaction: req.body?.signedTransaction,
+    });
+    sendSuccess(res, {
+      success: true,
+      idempotent: result.idempotent,
+      orderId: result.txn.orderId,
+      status: result.txn.status,
+      paymentType: result.txn.paymentType,
+      creditsPurchased: result.txn.creditsPurchased,
+      walletBalance: result.wallet.creditBalance,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
+  verifyApplePurchase,
   getPaymentInvoice,
   emailPaymentInvoice,
   createApplicationOrder,

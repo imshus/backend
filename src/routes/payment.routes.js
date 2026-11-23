@@ -25,6 +25,8 @@ router.post('/orders/application', requireRole('OWNER', 'ADMIN'), paymentControl
 // at the point of paying us.
 router.post('/orders/credits', requireRole('OWNER', 'ADMIN'), paymentController.createCreditOrder);
 router.post('/verify', requireRole('OWNER', 'ADMIN'), paymentController.verifyPayment);
+// iPhone: an App Store purchase (StoreKit 2 signed transaction).
+router.post('/apple/verify', requireRole('OWNER', 'ADMIN'), paymentController.verifyApplePurchase);
 router.post('/mark-failure', requireRole('OWNER', 'ADMIN'), paymentController.markPaymentFailure);
 router.get('/history', requireRole('OWNER', 'ADMIN'), paymentController.getPaymentHistory);
 // MRPscan's invoice for one of the shop's own paid orders: shown in the app

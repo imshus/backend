@@ -17,6 +17,7 @@ app.use(helmet());
 app.use(cors());
 app.locals.razorpayKeyId = config.razorpay?.keyId || null;
 app.post('/api/v1/webhooks/razorpay', express.raw({ type: 'application/json' }), webhookController.handleRazorpayWebhook);
+app.post('/api/v1/webhooks/apple', express.json({ limit: '1mb' }), webhookController.handleAppleNotification);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(morgan('dev'));
