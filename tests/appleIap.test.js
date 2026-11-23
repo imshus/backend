@@ -122,7 +122,8 @@ test('the licence is keyed by its original transaction, so a restore finds it', 
     productId: 'com.amitaashitsolution.licence', transactionId: '3000001', originalTransactionId: '3000001',
   });
   await apply();
-  assert.equal(rows[0].amount, 14160);
+  assert.equal(rows[0].amount, 12000);
+  assert.equal(rows[0].gstAmount, 0);
   assert.equal(rows[0].paymentType, 'APPLICATION_PURCHASE');
   appleIap._setVerifiersForTest(decodingTo({
     productId: 'com.amitaashitsolution.licence', transactionId: '3000099', originalTransactionId: '3000001',

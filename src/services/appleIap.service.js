@@ -18,9 +18,9 @@ const paymentService = require('./payment.service');
  * goes through the same applyPaymentEffects as a Razorpay payment: the
  * licence with its bonus credits, or the credits of the pack.
  *
- * Prices match what Android charges: the licence at the licence price + 18%
- * GST, credits + 18% GST (the app shows neither price nor GST; Apple's sheet
- * shows the amount). Apple charges the shop and keeps its
+ * Prices: the licence at the licence price itself (Rs 12,000, GST inside);
+ * credits + 18% GST, as Android charges. The app shows a final amount before
+ * Apple's sheet. Apple charges the shop and keeps its
  * commission; the amounts stored are the list price, for history and stats.
  *
  * The product ids must match the products created in App Store Connect.
@@ -116,7 +116,9 @@ function quantityOf(transaction) {
 async function listPrice(product, quantity) {
   if (product.paymentType === 'APPLICATION_PURCHASE') {
     const cfg = await billingConfigService.getEffectiveConfig();
-    return withGst(Math.round(Number(cfg.applicationPrice || 12000) * 100), paymentService.APPLICATION_GST_PERCENT);
+    // The iPhone licence sells at the licence price itself (Rs 12,000), GST
+    // inside, which Apple pays from its sale (owner, 23 Nov 2026).
+    return withGst(Math.round(Number(cfg.applicationPrice || 12000) * 100), 0);
   }
   return withGst(Math.round(product.credits * quantity * 100), paymentService.CREDIT_GST_PERCENT);
 }
