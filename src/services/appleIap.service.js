@@ -18,9 +18,9 @@ const paymentService = require('./payment.service');
  * goes through the same applyPaymentEffects as a Razorpay payment: the
  * licence with its bonus credits, or the credits of the pack.
  *
- * Prices: the licence at the licence price + 18% GST, as on Android; a credit
- * pack at its credits in rupees with no GST on top (owner, 23 Nov 2026: no
- * GST shown on iPhone). Apple charges the shop and keeps its
+ * Prices match what Android charges: the licence at the licence price + 18%
+ * GST, credits + 18% GST (the app shows neither price nor GST; Apple's sheet
+ * shows the amount). Apple charges the shop and keeps its
  * commission; the amounts stored are the list price, for history and stats.
  *
  * The product ids must match the products created in App Store Connect.
@@ -118,9 +118,7 @@ async function listPrice(product, quantity) {
     const cfg = await billingConfigService.getEffectiveConfig();
     return withGst(Math.round(Number(cfg.applicationPrice || 12000) * 100), paymentService.APPLICATION_GST_PERCENT);
   }
-  // iPhone packs cost their credits in rupees (50 credits = Rs 50), no GST
-  // added on top (owner, 23 Nov 2026); Apple handles the tax on its sale.
-  return withGst(Math.round(product.credits * quantity * 100), 0);
+  return withGst(Math.round(product.credits * quantity * 100), paymentService.CREDIT_GST_PERCENT);
 }
 
 function appleSummary(transaction) {
