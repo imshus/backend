@@ -80,7 +80,7 @@ test('a missing transaction is refused before any check', async () => {
   );
 });
 
-test('a credit pack adds its credits, priced as Android (credits + 18% GST)', async () => {
+test('a credit pack adds its credits, priced at its credits with no GST (50 credits = Rs 50)', async () => {
   const { rows, applied } = stub({
     productId: 'com.amitaashitsolution.credits250', transactionId: '2000001', originalTransactionId: '2000001', environment: 'Sandbox',
   });
@@ -89,8 +89,8 @@ test('a credit pack adds its credits, priced as Android (credits + 18% GST)', as
   assert.equal(rows[0].provider, 'APPLE');
   assert.equal(rows[0].paymentType, 'CREDIT_RECHARGE');
   assert.equal(rows[0].creditsPurchased, 250);
-  assert.equal(rows[0].amount, 295);
-  assert.equal(rows[0].gstAmount, 45);
+  assert.equal(rows[0].amount, 250);
+  assert.equal(rows[0].gstAmount, 0);
   assert.equal(rows[0].orderId, 'apple-2000001');
   assert.deepEqual(applied, [{ orderId: 'apple-2000001', source: 'APPLE_IAP' }]);
 });
@@ -101,8 +101,8 @@ test('a pack bought several at once adds pack x quantity (typed 2,000 = 500 x 4)
   });
   await apply();
   assert.equal(rows[0].creditsPurchased, 2000);
-  assert.equal(rows[0].amount, 2360);
-  assert.equal(rows[0].gstAmount, 360);
+  assert.equal(rows[0].amount, 2000);
+  assert.equal(rows[0].gstAmount, 0);
 });
 
 test('the same transaction sent again is not applied twice', async () => {
@@ -122,8 +122,8 @@ test('the licence is keyed by its original transaction, so a restore finds it', 
     productId: 'com.amitaashitsolution.licence', transactionId: '3000001', originalTransactionId: '3000001',
   });
   await apply();
-  assert.equal(rows[0].amount, 14160);
-  assert.equal(rows[0].gstAmount, 2160);
+  assert.equal(rows[0].amount, 12000);
+  assert.equal(rows[0].gstAmount, 0);
   assert.equal(rows[0].paymentType, 'APPLICATION_PURCHASE');
   appleIap._setVerifiersForTest(decodingTo({
     productId: 'com.amitaashitsolution.licence', transactionId: '3000099', originalTransactionId: '3000001',
