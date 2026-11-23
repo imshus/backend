@@ -100,12 +100,22 @@ function withGst(basePaise, percent) {
   };
 }
 
-async function listPrice(product) {
+/**
+ * A credit pack can be bought several at once (StoreKit's quantity, 1-10):
+ * the app turns a typed amount into pack x quantity, so 2,000 credits is the
+ * 500 pack x 4. The licence is always one.
+ */
+function quantityOf(transaction) {
+  const quantity = Math.floor(Number(transaction.quantity || 1));
+  return Number.isFinite(quantity) && quantity >= 1 ? quantity : 1;
+}
+
+async function listPrice(product, quantity) {
   if (product.paymentType === 'APPLICATION_PURCHASE') {
     const cfg = await billingConfigService.getEffectiveConfig();
     return withGst(Math.round(Number(cfg.applicationPrice || 12000) * 100), paymentService.APPLICATION_GST_PERCENT);
   }
-  return withGst(Math.round(product.credits * 100), paymentService.CREDIT_GST_PERCENT);
+  return withGst(Math.round(product.credits * quantity * 100), paymentService.CREDIT_GST_PERCENT);
 }
 
 function appleSummary(transaction) {
@@ -113,6 +123,7 @@ function appleSummary(transaction) {
     transactionId: transaction.transactionId,
     originalTransactionId: transaction.originalTransactionId,
     productId: transaction.productId,
+    quantity: transaction.quantity,
     environment: transaction.environment,
     storefront: transaction.storefront,
     price: transaction.price,
@@ -139,7 +150,8 @@ async function verifyAndApplyTransaction({ businessId, userId, signedTransaction
   let txn = await PaymentTransaction.findOne({ orderId });
 
   if (!txn) {
-    const price = await listPrice(product);
+    const quantity = product.credits ? quantityOf(transaction) : 1;
+    const price = await listPrice(product, quantity);
     try {
       txn = await PaymentTransaction.create({
         businessId,
@@ -150,7 +162,7 @@ async function verifyAndApplyTransaction({ businessId, userId, signedTransaction
         receipt: orderId,
         paymentId: `apple-txn-${transaction.transactionId}`,
         ...price,
-        creditsPurchased: product.credits || 0,
+        creditsPurchased: (product.credits || 0) * quantity,
         currency: 'INR',
         status: 'PAYMENT_PENDING',
         idempotencyKey: `${orderId}:${product.paymentType}`,

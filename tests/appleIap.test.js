@@ -95,6 +95,16 @@ test('a credit pack adds its credits, priced as Android (credits + 18% GST)', as
   assert.deepEqual(applied, [{ orderId: 'apple-2000001', source: 'APPLE_IAP' }]);
 });
 
+test('a pack bought several at once adds pack x quantity (typed 2,000 = 500 x 4)', async () => {
+  const { rows } = stub({
+    productId: 'com.amitaashitsolution.credits500', transactionId: '2000010', originalTransactionId: '2000010', quantity: 4,
+  });
+  await apply();
+  assert.equal(rows[0].creditsPurchased, 2000);
+  assert.equal(rows[0].amount, 2360);
+  assert.equal(rows[0].gstAmount, 360);
+});
+
 test('the same transaction sent again is not applied twice', async () => {
   const { rows, applied } = stub({
     productId: 'com.amitaashitsolution.credits50', transactionId: '2000002', originalTransactionId: '2000002',
