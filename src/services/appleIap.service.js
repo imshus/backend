@@ -19,20 +19,21 @@ const paymentService = require('./payment.service');
  * licence with its bonus credits, or the credits of the pack.
  *
  * Prices carry no GST on iPhone (owner, 23 Nov 2026): the licence at its
- * price (Rs 12,000), a pack at its credits in rupees (50 credits = Rs 50);
+ * price (Rs 12,000), a pack at its credits in rupees (200 credits = Rs 200);
  * Apple pays the tax from its sale. Apple charges the shop and keeps its
  * commission; the amounts stored are the list price, for history and stats.
  *
- * The product ids must match the products created in App Store Connect.
+ * These are the five products approved in App Store Connect on 23 Nov 2026.
+ * A product id cannot be renamed once it exists, so the licence really is
+ * spelled "lisence" — type it exactly, and keep this map in step with
+ * frontend utils/appleIap.ts. An id missing here is refused, not granted.
  */
 const PRODUCTS = {
-  'com.amitaashitsolution.licence': { paymentType: 'APPLICATION_PURCHASE' },
-  'com.amitaashitsolution.credits50': { paymentType: 'CREDIT_RECHARGE', credits: 50 },
-  'com.amitaashitsolution.credits100': { paymentType: 'CREDIT_RECHARGE', credits: 100 },
-  'com.amitaashitsolution.credits250': { paymentType: 'CREDIT_RECHARGE', credits: 250 },
-  'com.amitaashitsolution.credits500': { paymentType: 'CREDIT_RECHARGE', credits: 500 },
-  'com.amitaashitsolution.credits1000': { paymentType: 'CREDIT_RECHARGE', credits: 1000 },
-  'com.amitaashitsolution.credits5000': { paymentType: 'CREDIT_RECHARGE', credits: 5000 },
+  'com.mrpscan.lisence': { paymentType: 'APPLICATION_PURCHASE' },
+  'com.mrpscan.credits.200': { paymentType: 'CREDIT_RECHARGE', credits: 200 },
+  'com.mrpscan.credits.500': { paymentType: 'CREDIT_RECHARGE', credits: 500 },
+  'com.mrpscan.credits.1000': { paymentType: 'CREDIT_RECHARGE', credits: 1000 },
+  'com.mrpscan.credits.5000': { paymentType: 'CREDIT_RECHARGE', credits: 5000 },
 };
 
 const BUNDLE_ID = process.env.APPLE_BUNDLE_ID || 'com.amitaashitsolution';

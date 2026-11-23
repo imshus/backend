@@ -64,7 +64,7 @@ test('a JWS not signed by Apple is refused', async () => {
   appleIap._setVerifiersForTest(null);
   const forged = [
     Buffer.from(JSON.stringify({ alg: 'ES256', x5c: ['AAAA', 'BBBB', 'CCCC'] })).toString('base64url'),
-    Buffer.from(JSON.stringify({ productId: 'com.amitaashitsolution.credits500', transactionId: '1' })).toString('base64url'),
+    Buffer.from(JSON.stringify({ productId: 'com.mrpscan.credits.500', transactionId: '1' })).toString('base64url'),
     'c2lnbmF0dXJl',
   ].join('.');
   await assert.rejects(
@@ -80,16 +80,16 @@ test('a missing transaction is refused before any check', async () => {
   );
 });
 
-test('a credit pack adds its credits, priced at its credits with no GST (50 credits = Rs 50)', async () => {
+test('a credit pack adds its credits, priced at its credits with no GST (200 credits = Rs 200)', async () => {
   const { rows, applied } = stub({
-    productId: 'com.amitaashitsolution.credits250', transactionId: '2000001', originalTransactionId: '2000001', environment: 'Sandbox',
+    productId: 'com.mrpscan.credits.200', transactionId: '2000001', originalTransactionId: '2000001', environment: 'Sandbox',
   });
   await apply();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].provider, 'APPLE');
   assert.equal(rows[0].paymentType, 'CREDIT_RECHARGE');
-  assert.equal(rows[0].creditsPurchased, 250);
-  assert.equal(rows[0].amount, 250);
+  assert.equal(rows[0].creditsPurchased, 200);
+  assert.equal(rows[0].amount, 200);
   assert.equal(rows[0].gstAmount, 0);
   assert.equal(rows[0].orderId, 'apple-2000001');
   assert.deepEqual(applied, [{ orderId: 'apple-2000001', source: 'APPLE_IAP' }]);
@@ -97,7 +97,7 @@ test('a credit pack adds its credits, priced at its credits with no GST (50 cred
 
 test('a pack bought several at once adds pack x quantity (typed 2,000 = 500 x 4)', async () => {
   const { rows } = stub({
-    productId: 'com.amitaashitsolution.credits500', transactionId: '2000010', originalTransactionId: '2000010', quantity: 4,
+    productId: 'com.mrpscan.credits.500', transactionId: '2000010', originalTransactionId: '2000010', quantity: 4,
   });
   await apply();
   assert.equal(rows[0].creditsPurchased, 2000);
@@ -107,7 +107,7 @@ test('a pack bought several at once adds pack x quantity (typed 2,000 = 500 x 4)
 
 test('the same transaction sent again is not applied twice', async () => {
   const { rows, applied } = stub({
-    productId: 'com.amitaashitsolution.credits50', transactionId: '2000002', originalTransactionId: '2000002',
+    productId: 'com.mrpscan.credits.200', transactionId: '2000002', originalTransactionId: '2000002',
   });
   const first = await apply();
   const again = await apply();
@@ -119,14 +119,14 @@ test('the same transaction sent again is not applied twice', async () => {
 
 test('the licence is keyed by its original transaction, so a restore finds it', async () => {
   const { rows, applied } = stub({
-    productId: 'com.amitaashitsolution.licence', transactionId: '3000001', originalTransactionId: '3000001',
+    productId: 'com.mrpscan.lisence', transactionId: '3000001', originalTransactionId: '3000001',
   });
   await apply();
   assert.equal(rows[0].amount, 12000);
   assert.equal(rows[0].gstAmount, 0);
   assert.equal(rows[0].paymentType, 'APPLICATION_PURCHASE');
   appleIap._setVerifiersForTest(decodingTo({
-    productId: 'com.amitaashitsolution.licence', transactionId: '3000099', originalTransactionId: '3000001',
+    productId: 'com.mrpscan.lisence', transactionId: '3000099', originalTransactionId: '3000001',
   }));
   const restored = await apply();
   assert.equal(restored.idempotent, true);
@@ -135,7 +135,7 @@ test('the licence is keyed by its original transaction, so a restore finds it', 
 });
 
 test('another shop cannot use a purchase already applied to a shop', async () => {
-  stub({ productId: 'com.amitaashitsolution.licence', transactionId: '4000001', originalTransactionId: '4000001' });
+  stub({ productId: 'com.mrpscan.lisence', transactionId: '4000001', originalTransactionId: '4000001' });
   await apply(SHOP);
   await assert.rejects(apply(OTHER_SHOP), { message: 'APPLE_PURCHASE_OTHER_ACCOUNT' });
 });
@@ -144,7 +144,7 @@ test('an unknown product or a refunded transaction grants nothing', async () => 
   const { rows } = stub({ productId: 'com.someone.else', transactionId: '5' });
   await assert.rejects(apply(), { message: 'APPLE_PRODUCT_UNKNOWN' });
   appleIap._setVerifiersForTest(decodingTo({
-    productId: 'com.amitaashitsolution.credits100', transactionId: '6', revocationDate: 1,
+    productId: 'com.mrpscan.credits.200', transactionId: '6', revocationDate: 1,
   }));
   await assert.rejects(apply(), { message: 'APPLE_TRANSACTION_REVOKED' });
   assert.equal(rows.length, 0);
