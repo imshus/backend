@@ -39,7 +39,7 @@ function stub(payload) {
   const rows = [];
   const applied = [];
   appleIap._setVerifiersForTest(decodingTo(payload));
-  billingConfigService.getEffectiveConfig = async () => ({ applicationPrice: 12000 });
+  billingConfigService.getEffectiveConfig = async () => ({ applicationPrice: 15000, applicationPriceApple: 17500 });
   PaymentTransaction.findOne = async (query) => rows.find((row) => row.orderId === query.orderId) || null;
   PaymentTransaction.create = async (doc) => {
     if (rows.some((row) => row.orderId === doc.orderId)) throw Object.assign(new Error('dup'), { code: 11000 });
@@ -122,7 +122,8 @@ test('the licence is keyed by its original transaction, so a restore finds it', 
     productId: 'com.mrpscan.lisence', transactionId: '3000001', originalTransactionId: '3000001',
   });
   await apply();
-  assert.equal(rows[0].amount, 12000);
+  // The iPhone licence is its own price, not the Android base plus GST.
+  assert.equal(rows[0].amount, 17500);
   assert.equal(rows[0].gstAmount, 0);
   assert.equal(rows[0].paymentType, 'APPLICATION_PURCHASE');
   appleIap._setVerifiersForTest(decodingTo({

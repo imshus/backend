@@ -8,6 +8,7 @@ const DEFAULT_BILLING_CONFIG = {
   kComp: 0.27,
   aComp: 0,
   applicationPrice: 15000,
+  applicationPriceApple: 17500,
   freeTrialCredits: 10,
   purchasedBonusCredits: 1000,
   trialDays: 7,

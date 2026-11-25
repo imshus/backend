@@ -117,7 +117,7 @@ function quantityOf(transaction) {
 async function listPrice(product, quantity) {
   if (product.paymentType === 'APPLICATION_PURCHASE') {
     const cfg = await billingConfigService.getEffectiveConfig();
-    return withGst(Math.round(Number(cfg.applicationPrice || 15000) * 100), 0);
+    return withGst(Math.round(Number(cfg.applicationPriceApple || 17500) * 100), 0);
   }
   return withGst(Math.round(product.credits * quantity * 100), 0);
 }
