@@ -36,7 +36,7 @@ const billingConfigSchema = new mongoose.Schema(
     },
     applicationPrice: {
       type: Number,
-      default: 12000,
+      default: 15000,
       min: 0,
     },
     freeTrialCredits: {

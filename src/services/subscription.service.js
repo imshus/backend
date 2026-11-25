@@ -3,7 +3,7 @@ const billingConfigService = require('./billingConfig.service');
 
 const TRIAL_DAYS = 10;
 const TRIAL_CREDITS = 100;
-const PURCHASE_AMOUNT = 12000;
+const PURCHASE_AMOUNT = 15000;
 const PURCHASE_BONUS_CREDITS = 1000;
 
 function addDays(baseDate, days) {

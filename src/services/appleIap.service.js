@@ -19,7 +19,7 @@ const paymentService = require('./payment.service');
  * licence with its bonus credits, or the credits of the pack.
  *
  * Prices carry no GST on iPhone (owner, 23 Nov 2026): the licence at its
- * price (Rs 12,000), a pack at its credits in rupees (200 credits = Rs 200);
+ * price (Rs 15,000), a pack at its credits in rupees (200 credits = Rs 200);
  * Apple pays the tax from its sale. Apple charges the shop and keeps its
  * commission; the amounts stored are the list price, for history and stats.
  *
@@ -117,7 +117,7 @@ function quantityOf(transaction) {
 async function listPrice(product, quantity) {
   if (product.paymentType === 'APPLICATION_PURCHASE') {
     const cfg = await billingConfigService.getEffectiveConfig();
-    return withGst(Math.round(Number(cfg.applicationPrice || 12000) * 100), 0);
+    return withGst(Math.round(Number(cfg.applicationPrice || 15000) * 100), 0);
   }
   return withGst(Math.round(product.credits * quantity * 100), 0);
 }

@@ -137,7 +137,7 @@ async function getOverview(req, res, next) {
       monthScans: walletEnabled ? monthSummary.monthScans : 0,
       todayScanCost: walletEnabled ? monthSummary.todayScanCost : 0,
       currentMonthCost: walletEnabled ? monthSummary.currentMonthCost : 0,
-      applicationPrice: Number(cfg.applicationPrice || 12000),
+      applicationPrice: Number(cfg.applicationPrice || 15000),
       freeTrialCreditsConfigured: Number(cfg.freeTrialCredits || 100),
       purchasedBonusCreditsConfigured: Number(cfg.purchasedBonusCredits || 1000),
       trialDaysConfigured: Number(cfg.trialDays || 7),

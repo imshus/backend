@@ -7,7 +7,7 @@ const DEFAULT_BILLING_CONFIG = {
   outputTokenPricePerMillionUsd: 1.2,
   kComp: 0.27,
   aComp: 0,
-  applicationPrice: 12000,
+  applicationPrice: 15000,
   freeTrialCredits: 10,
   purchasedBonusCredits: 1000,
   trialDays: 7,

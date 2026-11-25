@@ -59,7 +59,7 @@ async function createOrderForApplicationPurchase({ businessId, userId }) {
   }
 
   // The licence price plus GST, worked in whole paise so base + GST always
-  // equals the charge exactly: 12,000 + 18% = 14,160. Verification and the
+  // equals the charge exactly: 15,000 + 18% = 17,700. Verification and the
   // webhook compare against the stored amountInPaise, so orders made before
   // GST was added still verify at the price they were made for.
   const basePaise = toPaise(cfg.applicationPrice);
