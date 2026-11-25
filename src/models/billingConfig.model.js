@@ -39,16 +39,6 @@ const billingConfigSchema = new mongoose.Schema(
       default: 15000,
       min: 0,
     },
-    /**
-     * The licence on iPhone, charged flat. Apple takes its commission and
-     * pays the tax from its own sale, so this is not applicationPrice plus
-     * GST; it is its own figure, set to land near the Android total.
-     */
-    applicationPriceApple: {
-      type: Number,
-      default: 17500,
-      min: 0,
-    },
     freeTrialCredits: {
       type: Number,
       default: 10,

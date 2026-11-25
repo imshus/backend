@@ -18,9 +18,10 @@ const paymentService = require('./payment.service');
  * goes through the same applyPaymentEffects as a Razorpay payment: the
  * licence with its bonus credits, or the credits of the pack.
  *
- * Prices carry no GST on iPhone (owner, 23 Nov 2026): the licence at its
- * price (Rs 15,000), a pack at its credits in rupees (200 credits = Rs 200);
- * Apple pays the tax from its sale. Apple charges the shop and keeps its
+ * Prices: the licence at its price + 18% GST, as on Android (Rs 15,000 +
+ * Rs 2,700 = Rs 17,700; owner, 25 Nov 2026), so com.mrpscan.lisence must be
+ * priced Rs 17,700 in App Store Connect; a pack at its credits in rupees with
+ * no GST line (200 credits = Rs 200). Apple charges the shop and keeps its
  * commission; the amounts stored are the list price, for history and stats.
  *
  * These are the five products approved in App Store Connect on 23 Nov 2026.
@@ -117,7 +118,7 @@ function quantityOf(transaction) {
 async function listPrice(product, quantity) {
   if (product.paymentType === 'APPLICATION_PURCHASE') {
     const cfg = await billingConfigService.getEffectiveConfig();
-    return withGst(Math.round(Number(cfg.applicationPriceApple || 17500) * 100), 0);
+    return withGst(Math.round(Number(cfg.applicationPrice || 15000) * 100), paymentService.APPLICATION_GST_PERCENT);
   }
   return withGst(Math.round(product.credits * quantity * 100), 0);
 }
