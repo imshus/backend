@@ -55,11 +55,20 @@ const { RUNNING_COMMIT: runningCommit } = require('./utils/runningCommit');
 
 // Public, unauthenticated: the few settings the app reads before or without a
 // login. The Pratham AI address lives here so a move of that server needs a
-// .env change and a restart, not a new APK.
+// .env change and a restart, not a new APK. `android` is the newest Android
+// release, for phones whose APK did not come from Google Play (the app's
+// update popup falls back to it when Play reports nothing).
 app.get('/api/v1/app-config', (req, res) => {
   res.status(200).json({
     success: true,
-    data: { prathamAiUrl: config.prathamAi?.url || '' },
+    data: {
+      prathamAiUrl: config.prathamAi?.url || '',
+      android: {
+        latestVersion: config.androidRelease?.version || '',
+        latestVersionCode: Number(config.androidRelease?.versionCode || 0),
+        downloadUrl: config.androidRelease?.downloadUrl || '',
+      },
+    },
   });
 });
 

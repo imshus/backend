@@ -38,6 +38,14 @@ const envVarsSchema = joi.object({
   // e.g. https://ai.example.com. Served to the app so it can be changed here
   // without rebuilding the APK; the app falls back to its own build-time value.
   PRATHAM_AI_URL: joi.string().allow('').default(''),
+  // The newest Android release, for phones whose APK did not come from Google
+  // Play (Play's own update check reports nothing to them). The app compares
+  // its versionCode with ANDROID_LATEST_VERSION_CODE and, when lower, shows
+  // "New version available" with ANDROID_DOWNLOAD_URL behind Update Now.
+  // Set all three on each release; 0 / empty turns the check off.
+  ANDROID_LATEST_VERSION: joi.string().allow('').default(''),
+  ANDROID_LATEST_VERSION_CODE: joi.number().integer().min(0).default(0),
+  ANDROID_DOWNLOAD_URL: joi.string().allow('').default(''),
   BILLING_TIMEZONE: joi.string().default('Asia/Kolkata'),
   MCX_SCHEDULER_TIMEZONE: joi.string().default('Asia/Kolkata'),
   MCX_TRADING_DAYS: joi.string().default('1,2,3,4,5').description('ISO weekdays for MCX trading scheduler (1=Mon..7=Sun)'),
@@ -158,6 +166,11 @@ module.exports = {
   gstVerifyMode: envVars.GST_VERIFY_MODE,
   prathamAi: {
     url: envVars.PRATHAM_AI_URL,
+  },
+  androidRelease: {
+    version: envVars.ANDROID_LATEST_VERSION,
+    versionCode: envVars.ANDROID_LATEST_VERSION_CODE,
+    downloadUrl: envVars.ANDROID_DOWNLOAD_URL,
   },
   einvoice: {
     credKey: envVars.EINVOICE_CRED_KEY,
