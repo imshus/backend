@@ -356,6 +356,42 @@ const FAQ_SECTIONS = [
       },
     ],
   },
+  {
+    section: { en: 'Credits & Subscription', hi: 'क्रेडिट और सब्सक्रिप्शन' },
+    items: [
+      {
+        q: {
+          en: 'What does the permanent licence cost?',
+          hi: 'परमानेंट लाइसेंस की कीमत क्या है?',
+        },
+        // Android, where the shop pays through the app. The iPhone is priced
+        // differently and answered by `aApple` below — the App Store charges
+        // its own amount and adds no GST line (owner, 26 Nov 2026).
+        a: {
+          en: '₹15,000 + 18% GST, a one-time payment that comes to ₹17,700. It includes bonus scan credits. Settings → Credits & Subscription → Purchase Now.',
+          hi: '₹15,000 + 18% GST, एक बार का payment जो कुल ₹17,700 बनता है। इसमें bonus scan credits भी मिलते हैं। Settings → Credits & Subscription → Purchase Now.',
+        },
+        aApple: {
+          en: '₹17,500, a one-time purchase through the App Store, with bonus scan credits included. Settings → Credits & Subscription → Purchase Now.',
+          hi: '₹17,500, App Store से एक बार का purchase, जिसमें bonus scan credits शामिल हैं। Settings → Credits & Subscription → Purchase Now.',
+        },
+      },
+      {
+        q: {
+          en: 'What do scan credits cost?',
+          hi: 'Scan credits की कीमत क्या है?',
+        },
+        a: {
+          en: '₹1 per credit — ₹500 adds 500 credits. Settings → Credits & Subscription → choose the amount and pay.',
+          hi: '₹1 per credit — ₹500 में 500 credits आते हैं। Settings → Credits & Subscription → amount चुनें और pay करें।',
+        },
+        aApple: {
+          en: '₹1 per credit, bought as a pack of 200, 500, 1,000 or 5,000 through the App Store. Settings → Credits & Subscription.',
+          hi: '₹1 per credit, App Store से 200, 500, 1,000 या 5,000 के pack में। Settings → Credits & Subscription.',
+        },
+      },
+    ],
+  },
 ];
 
 module.exports = { FAQ_SECTIONS };

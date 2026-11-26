@@ -8,7 +8,6 @@ const {
 } = require('@apple/app-store-server-library');
 
 const PaymentTransaction = require('../models/paymentTransaction.model');
-const billingConfigService = require('./billingConfig.service');
 const paymentService = require('./payment.service');
 
 /**
@@ -18,9 +17,9 @@ const paymentService = require('./payment.service');
  * goes through the same applyPaymentEffects as a Razorpay payment: the
  * licence with its bonus credits, or the credits of the pack.
  *
- * Prices: the licence at its price + 18% GST, as on Android (Rs 15,000 +
- * Rs 2,700 = Rs 17,700; owner, 25 Nov 2026), so com.mrpscan.lisence must be
- * priced Rs 17,700 in App Store Connect; a pack at its credits in rupees with
+ * Prices: the licence at a flat Rs 17,500 with no GST line (owner, 26 Nov
+ * 2026), so com.mrpscan.lisence must be priced Rs 17,500 in App Store
+ * Connect; a pack at its credits in rupees with
  * no GST line (200 credits = Rs 200). Apple charges the shop and keeps its
  * commission; the amounts stored are the list price, for history and stats.
  *
@@ -115,10 +114,16 @@ function quantityOf(transaction) {
   return Number.isFinite(quantity) && quantity >= 1 ? quantity : 1;
 }
 
+/**
+ * The iPhone licence is a flat Rs 17,500, no GST line (owner, 26 Nov 2026) —
+ * not the Android price plus 18%. Apple is the one charging, and the App Store
+ * product com.mrpscan.lisence must be priced at this same figure.
+ */
+const APPLE_LICENCE_PRICE = Number(process.env.APPLE_LICENCE_PRICE || 17500);
+
 async function listPrice(product, quantity) {
   if (product.paymentType === 'APPLICATION_PURCHASE') {
-    const cfg = await billingConfigService.getEffectiveConfig();
-    return withGst(Math.round(Number(cfg.applicationPrice || 15000) * 100), paymentService.APPLICATION_GST_PERCENT);
+    return withGst(Math.round(APPLE_LICENCE_PRICE * 100), 0);
   }
   return withGst(Math.round(product.credits * quantity * 100), 0);
 }

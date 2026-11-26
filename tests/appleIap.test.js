@@ -122,9 +122,9 @@ test('the licence is keyed by its original transaction, so a restore finds it', 
     productId: 'com.mrpscan.lisence', transactionId: '3000001', originalTransactionId: '3000001',
   });
   await apply();
-  // Rs 15,000 + 18% GST, as on Android.
-  assert.equal(rows[0].amount, 17700);
-  assert.equal(rows[0].gstAmount, 2700);
+  // A flat Rs 17,500 on iPhone, with no GST line (owner, 26 Nov 2026).
+  assert.equal(rows[0].amount, 17500);
+  assert.equal(rows[0].gstAmount, 0);
   assert.equal(rows[0].paymentType, 'APPLICATION_PURCHASE');
   appleIap._setVerifiersForTest(decodingTo({
     productId: 'com.mrpscan.lisence', transactionId: '3000099', originalTransactionId: '3000001',
