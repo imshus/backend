@@ -32,12 +32,22 @@ const readValue = (field) => {
 // labels (LBR, MC) and weights are not identifiers and do not match.
 const LABELLED_IDENTIFIER =
   /\b(?:(?:SR|SKU|CODE|HUID)(?:\.?\s*(?:NO|NUMBER)\b)?|(?:S|SL|ST|STYLE|ITEM|TAG|DESIGN)\.?\s*(?:NO|NUMBER)\b)\.?\s*[:#-]?\s*([A-Z0-9][A-Z0-9/-]*(?:\s\d{2,})?)/gi;
-// An unlabelled line that is only an item number: a few letters and a
-// number, as the reader is told item numbers look ("PSE 1086", "GR10286").
-const CODE_LINE = /^\s*([A-Z]{1,4}\s?\d{3,}[A-Z]?)\s*$/i;
-// Letters that label an amount, not an item ("LBR 1338" is labour), or an
-// identifier label the labelled pattern above has already read ("SR 838338").
-const NOT_A_CODE = /^(?:LBR|LAB|MKG|MC|RATE|RS|MRP|AMT|PCS|HM|SR|SKU|CODE|HUID|S|SL|ST)\b/i;
+// An unlabelled item number at the HEAD of a line: a few letters and a
+// number, as the reader is told item numbers look ("PSE 1086", "GR10286"),
+// optionally with a suffix ("GR10286/A"). The rest of the line may carry
+// anything — a tag prints "GR10286 22K GOLD" as readily as the code alone,
+// and requiring the code to sit alone was losing those (27 Nov 2026).
+// It must OPEN the line, so a figure further along ("GR WT 8.208", where
+// the digits do not follow the letters) is never mistaken for one.
+const CODE_LINE = /^\s*([A-Z]{1,4}\s?\d{3,}[A-Z]?(?:[/-][A-Z0-9]{1,4})?)(?![0-9])/i;
+// Letters that label an amount, a weight or a purity rather than an item
+// ("LBR 1338" is labour, "GOLD 916" is purity), or an identifier label the
+// labelled pattern above has already read ("SR 838338"). Only words that
+// are themselves printed immediately before a number need listing; GR and
+// the other weight prefixes cannot match, since a weight prints its label
+// ("GR WT") between the letters and the figure.
+const NOT_A_CODE =
+  /^(?:LBR|LAB|MKG|MC|MAKING|RATE|RS|MRP|AMT|TOTAL|SUB|GST|CGST|SGST|VA|PCS|PC|QTY|HM|BIS|KT|K|GOLD|FINE|PURE|PURITY|WT|NET|GROSS|DIA|CS|STONE|WAST|WASTAGE|SR|SKU|CODE|HUID|S|SL|ST)\b/i;
 
 const transcriptOf = (analysisResult) => {
   const raw = analysisResult?.rawText;

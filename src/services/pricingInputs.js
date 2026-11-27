@@ -245,17 +245,54 @@ function findItemExactly(code, rows) {
 }
 
 /**
+ * The saved item a tag's transcript names anywhere, when none of the
+ * identifiers the reader picked out did.
+ *
+ * Whether the reader puts the item number in serialNumber, sets it aside, or
+ * leaves it in the text among other words ("JMD JEWELLERS GR10286") varies
+ * from scan to scan, which is why the same tag used to name its item one
+ * time and not the next (owner, 27 Nov 2026). This asks the opposite
+ * question: of the codes the shop actually saved in Masters -> Item Code,
+ * is one of them printed on this tag? Nothing can be invented, because only
+ * a saved code can match.
+ *
+ * Every word is tried, and a letters-word followed by a digits-word as one
+ * ("PSE 1086"). A candidate needs a letter, a digit and three characters, so
+ * a bare number or a plain word is never a code.
+ */
+function findItemInText(text, rows) {
+  const words = String(text ?? '').split(/[^A-Za-z0-9/-]+/).filter(Boolean);
+  const candidates = [];
+  words.forEach((word, index) => {
+    candidates.push(word);
+    const next = words[index + 1];
+    if (next && /^[A-Za-z]+$/.test(word) && /^\d+$/.test(next)) candidates.push(`${word} ${next}`);
+  });
+  for (const code of candidates) {
+    if (code.replace(/[^A-Za-z0-9]/g, '').length < 3) continue;
+    if (!/[A-Za-z]/.test(code) || !/\d/.test(code)) continue;
+    const row = findItemByCode(code, rows);
+    if (row) return { row, identifier: code };
+  }
+  return null;
+}
+
+/**
  * The saved item any of a tag's identifiers names, trying them in order, and
  * the identifier that named it; null when none does (the app's findItemOnTag).
+ *
+ * `text` is the tag's transcript, when the caller holds it: a last resort
+ * once no identifier has matched, so a code the reader did not single out
+ * still names its item (findItemInText).
  */
-function findItemOnTag(identifiers, rows) {
+function findItemOnTag(identifiers, rows, text = '') {
   for (const raw of Array.isArray(identifiers) ? identifiers : []) {
     const code = String(raw ?? '').trim();
     if (!code) continue;
     const row = findItemByCode(code, rows);
     if (row) return { row, identifier: code };
   }
-  return null;
+  return text ? findItemInText(text, rows) : null;
 }
 
 // ── Colour-stone rate rows ───────────────────────────────────────────────

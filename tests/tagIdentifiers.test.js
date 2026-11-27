@@ -70,3 +70,26 @@ test('nothing read gives an empty list', () => {
   assert.deepEqual(tagIdentifiersOf({}), []);
   assert.deepEqual(tagIdentifiersOf({ structuredData: { serialNumber: ['', 0] }, unknownFields: [] }), []);
 });
+
+test('an item number sharing its line with other words is still read', () => {
+  // The reader leaves the number in the text as often as it picks it out,
+  // which is why the same tag named its item one scan and not the next.
+  assert.deepEqual(
+    tagIdentifiersOf({ rawText: { merged: 'GR10286 22K GOLD\nWT 5.430' } }),
+    ['GR10286'],
+  );
+  assert.deepEqual(
+    tagIdentifiersOf({ rawText: { merged: 'PSE 1086 LADIES RING\nWT 3.100' } }),
+    ['PSE 1086'],
+  );
+  assert.deepEqual(
+    tagIdentifiersOf({ rawText: { merged: 'GR10286/A\nWT 5.430' } }),
+    ['GR10286/A'],
+  );
+});
+
+test('a purity, an amount or a weight opening a line is not an item number', () => {
+  assert.deepEqual(tagIdentifiersOf({ rawText: { merged: 'GOLD 916 HM\nGR WT 8.208' } }), []);
+  assert.deepEqual(tagIdentifiersOf({ rawText: { merged: 'LBR 1338\nMRP 45000\nTOTAL 45000' } }), []);
+  assert.deepEqual(tagIdentifiersOf({ rawText: { merged: 'KT 750\nBIS 916\nVA 1200' } }), []);
+});

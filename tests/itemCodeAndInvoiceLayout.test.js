@@ -119,3 +119,19 @@ test('Masters saves the labour unit sent, keeps the saved one when a build sends
     ItemCode.findOne = original.findOne;
   }
 });
+
+test('a saved item code printed anywhere on the tag names its item', () => {
+  const { findItemOnTag } = require('../src/services/pricingInputs');
+  const rows = [{ code: 'GR', name: 'Gold Ring' }, { code: 'PSE', name: 'Pendant Set' }];
+
+  // Nothing was picked out as an identifier, but the shop's own code is on
+  // the tag: the question is turned round, and only a saved code can match.
+  assert.equal(findItemOnTag([], rows, 'JMD JEWELLERS GR10286\nWT 5.430')?.row.code, 'GR');
+  assert.equal(findItemOnTag([], rows, 'LADIES RING PSE 1086\nWT 3.100')?.row.code, 'PSE');
+
+  // A code the shop never saved, and a bare number, name nothing.
+  assert.equal(findItemOnTag([], rows, 'XY99999\nWT 5.430'), null);
+  assert.equal(findItemOnTag([], rows, '261440\nWT 5.430'), null);
+  // An identifier that matches still wins, and is still the one reported.
+  assert.equal(findItemOnTag(['GR10286'], rows, 'PSE 1086')?.identifier, 'GR10286');
+});

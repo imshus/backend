@@ -136,6 +136,13 @@ function prefetchPricingReads(user) {
   return reads;
 }
 
+/** A scan's transcript, however it was stored (a string, or rawText.merged). */
+function transcriptOf(analysisResult) {
+  const raw = analysisResult?.rawText;
+  if (typeof raw === 'string') return raw;
+  return String(raw?.merged ?? '');
+}
+
 /** Blank and repeated (ignoring case) identifiers dropped, the order kept. */
 function distinctIdentifiers(values) {
   const seen = new Set();
@@ -377,7 +384,7 @@ async function computeMrp({ user, sessionContext, scanId, input, scan: knownScan
   // exactly, so there the item is the one whose code is exactly the item
   // code sent, as it always was.
   const itemMatch = rules >= ITEM_PREFIX_RULES
-    ? findItemOnTag(identifiers, itemRows)
+    ? findItemOnTag(identifiers, itemRows, transcriptOf(scan?.analysisResult))
     : findItemExactly(request.itemCode, itemRows);
   const itemRow = itemMatch?.row || null;
   const wastageCandidates = codeCandidatesOf(itemMatch, identifiers);
@@ -641,7 +648,9 @@ async function deriveInputFromReading({ user, structuredData, scan, prefetched =
     })
     .filter(Boolean);
 
-  const itemMatch = currentRules ? findItemOnTag(identifiers, plainRows(itemRows)) : null;
+  const itemMatch = currentRules
+    ? findItemOnTag(identifiers, plainRows(itemRows), transcriptOf(scan?.analysisResult))
+    : null;
   // The labour code the tag names, in the order computeMrp looks it up (no
   // code is picked yet), so the code whose rate opens the box is the one the
   // price records and the analysis names.
