@@ -744,7 +744,9 @@ function validateCalculationInput(input) {
   // by it, but a figure no build sends is refused for every build alike.
   if (!isBlank(body.wastageWeightBasis)) {
     const basis = typeof body.wastageWeightBasis === 'string' ? body.wastageWeightBasis.trim().toLowerCase() : '';
-    if (basis !== 'net' && basis !== 'gross') throw invalidPricingInput('wastageWeightBasis must be "net" or "gross"');
+    if (basis !== 'net' && basis !== 'gross' && basis !== 'gold_diamond') {
+      throw invalidPricingInput('wastageWeightBasis must be "net", "gross" or "gold_diamond"');
+    }
     out.wastageWeightBasis = basis;
   }
 

@@ -23,7 +23,8 @@ const { roundHalfUp } = require('../utils/money');
  *                              unit is per gram
  *   labourWeightBasis          'gross' or 'net'
  *   wastagePercent
- *   wastageWeightBasis         'gross' or 'net': the weight wastagePercent is
+ *   wastageWeightBasis         'gross', 'net' or 'gold_diamond' (the percent of
+ *                              gold amount + diamond amount): what wastagePercent is
  *                              a share of (gross falls back to net when no
  *                              gross weight is known); read only with
  *                              wastageAtCurrentGoldRate, net otherwise
@@ -145,8 +146,14 @@ function computePricing(inputs) {
   // at 13,740 a gram. Builds on rules 1-2 priced it on the net weight at the
   // 24K rate, and their invoices print that rate on the wastage line, so a
   // price for them stays as it was.
-  const wastageWeightBasis =
-    wastageAtCurrentGoldRate && requestedWastageBasis === 'gross' && numericGrossWt > 0 ? 'gross' : 'net';
+  // Gold + DMD (owner, 28 Nov 2026): the percent is of the gold amount plus
+  // the diamond amount, not of a weight: wastage = % x (gold + diamond) / 100.
+  // Colour stones are not counted.
+  const wastageWeightBasis = !wastageAtCurrentGoldRate
+    ? 'net'
+    : requestedWastageBasis === 'gold_diamond'
+      ? 'gold_diamond'
+      : requestedWastageBasis === 'gross' && numericGrossWt > 0 ? 'gross' : 'net';
   const wastageBaseWeight = wastageWeightBasis === 'gross' ? numericGrossWt : numericNetWt;
   const wastageRatePerGram = wastageAtCurrentGoldRate ? purityAdjustedGoldRatePerGram : selected24kGoldRatePerGram;
   // From rules 3 the grams are taken to the milligram first, as the invoice
@@ -154,10 +161,17 @@ function computePricing(inputs) {
   // so the wastage line prints the Current Gold Rate itself and comes to the
   // rupee the MRP carries. Unrounded it was 0.83648 g, and the line had to
   // print a rate a few rupees off to add up.
-  const rawWastageGrams =
-    resolvedWastagePercent > 0 ? wastageBaseWeight * (resolvedWastagePercent / 100) : 0;
+  const onValue = wastageWeightBasis === 'gold_diamond';
+  const valueWastage = onValue && resolvedWastagePercent > 0
+    ? ((goldAmount + diamondAmount) * resolvedWastagePercent) / 100
+    : 0;
+  const rawWastageGrams = onValue
+    ? (wastageRatePerGram > 0 ? valueWastage / wastageRatePerGram : 0)
+    : resolvedWastagePercent > 0 ? wastageBaseWeight * (resolvedWastagePercent / 100) : 0;
   const wastageWeightGrams = wastageAtCurrentGoldRate ? roundHalfUp(rawWastageGrams, 3) : rawWastageGrams;
-  const wastageAmount = wastageWeightGrams * wastageRatePerGram;
+  // On Gold + DMD the amount is the owner's formula exactly; the grams the
+  // invoice line prints are that amount at the current gold rate.
+  const wastageAmount = onValue ? valueWastage : wastageWeightGrams * wastageRatePerGram;
 
   const aggregation = aggregateJewelleryMrp({
     goldAmount,

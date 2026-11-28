@@ -298,7 +298,7 @@ test('a wastageWeightBasis that is not net or gross is a 400 naming the field, o
       const res = await calculate({ netWt: 10, purityKarat: '22K', wastagePercent: 8, wastageWeightBasis: bad }, rules);
       assert.equal(res.statusCode, 400, `${JSON.stringify(bad)} on rules ${rules}`);
       assert.equal(res.body.error, 'INVALID_PRICING_INPUT');
-      assert.match(res.body.message, /wastageWeightBasis must be "net" or "gross"/);
+      assert.match(res.body.message, /wastageWeightBasis must be "net", "gross" or "gold_diamond"/);
     }
   }
 });
@@ -586,4 +586,16 @@ test('wastage grams are taken to the milligram, so the invoice line prints the C
   // Builds on rules 2 keep their unrounded grams.
   const old = await priced({ ...plain, netWt: 8.765 }, 2);
   near(wastageOf(old).grams, 0.7012, 'rules 2 grams');
+});
+
+test('Gold + DMD: wastage is the percent of gold amount + diamond amount', () => {
+  const diamonds = [{ weight: 0.5, rate: 100000, discountPercent: 0, unit: 'ct' }];
+  const net = pricePiece({ diamonds, wastageWeightBasis: 'net' });
+  const gd = pricePiece({ diamonds, wastageWeightBasis: 'gold_diamond' });
+  const b = gd.breakdown;
+  assert.ok(b.diamondAmount > 0, 'the fixture must carry a diamond value');
+  const gold = b.goldAmount ?? b.goldBasePrice;
+  assert.ok(Math.abs(b.wastageAmount - 0.08 * (gold + b.diamondAmount)) < 1, JSON.stringify(b));
+  assert.equal(b.wastageWeightBasis, 'gold_diamond');
+  assert.ok(b.wastageAmount > net.breakdown.wastageAmount);
 });
