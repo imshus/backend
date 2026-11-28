@@ -1,5 +1,5 @@
 /**
- * A new scan needs a wallet above the billing config's minScanBalance (0.74):
+ * A new scan needs a wallet above the billing config's minScanBalance (0.94):
  * a wallet of 0.51 used to pass the old "above 0" check, run the scan, and
  * then fail to pay for it, so every scan after that was free.
  */
@@ -48,12 +48,12 @@ test('the minimum comes from the billing config', async () => {
   assert.equal(await gate(0.2, { minScanBalance: 0 }), null, 'a minimum of 0 is the old rule');
 });
 
-test('an unreadable config falls back to 0.74', async () => {
-  assert.equal(DEFAULT_MIN_SCAN_BALANCE, 0.74);
+test('an unreadable config falls back to the baseline minimum', async () => {
+  assert.equal(DEFAULT_MIN_SCAN_BALANCE, 0.94);
   const failing = async () => { throw new Error('db down'); };
-  assert.equal((await gate(0.6, failing)).message, 'NO_CREDITS_AVAILABLE');
-  assert.equal(await gate(0.8, failing), null);
-  assert.equal((await gate(0.6, { minScanBalance: 'junk' })).message, 'NO_CREDITS_AVAILABLE');
+  assert.equal((await gate(0.9, failing)).message, 'NO_CREDITS_AVAILABLE');
+  assert.equal(await gate(1, failing), null);
+  assert.equal((await gate(0.9, { minScanBalance: 'junk' })).message, 'NO_CREDITS_AVAILABLE');
 });
 
 test('no licence context is a server error, not a free pass', async () => {
@@ -67,11 +67,12 @@ test('no licence context is a server error, not a free pass', async () => {
 test('the overview and the gate read the minimum the same way', () => {
   const { minScanBalanceOf } = billingConfigService;
   assert.equal(minScanBalanceOf({ minScanBalance: 0.74 }), 0.74);
+  assert.equal(minScanBalanceOf({ minScanBalance: 0.94 }), 0.94);
   assert.equal(minScanBalanceOf({ minScanBalance: 1.5 }), 1.5);
   assert.equal(minScanBalanceOf({ minScanBalance: 0 }), 0, 'a 0 saved is kept');
   assert.equal(minScanBalanceOf({ minScanBalance: '0.9' }), 0.9);
   for (const bad of [-1, 'junk', null, '', undefined]) {
-    assert.equal(minScanBalanceOf({ minScanBalance: bad }), 0.74, `${String(bad)} reads as 0.74`);
+    assert.equal(minScanBalanceOf({ minScanBalance: bad }), 0.94, `${String(bad)} reads as 0.94`);
   }
-  assert.equal(minScanBalanceOf(null), 0.74);
+  assert.equal(minScanBalanceOf(null), 0.94);
 });

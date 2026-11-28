@@ -129,7 +129,7 @@ function requireScannerAccess(req, res, next) {
 
 /**
  * Starting a scan, and every step before it is billed, needs more than the
- * billing config's minScanBalance (0.74) in the wallet. A scan is billed when
+ * billing config's minScanBalance (0.94) in the wallet. A scan is billed when
  * it is done and only if the wallet covers the whole charge; the old check
  * (anything above 0) let a wallet of 0.51 run scan after scan that it could
  * never pay for. Steps of a scan already analysed (review, clarification,

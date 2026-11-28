@@ -117,6 +117,97 @@ test('one successful completed scan creates one billing, deduction, and scan tra
   assert.equal(wallet.monthScans, 1);
 });
 
+test('a scan whose token usage never came back is billed at zero, balance untouched', async () => {
+  const business = businessId();
+  const user = userId();
+  await seedWallet(business, 10);
+
+  // No flat per-scan line, and no tokens reported: nothing cost us anything,
+  // so there is nothing to double. The wallet refuses a zero deduction, so the
+  // scan has to be recorded without one rather than failing to bill.
+  const noFlatLine = billingConfigService.getEffectiveConfig;
+  billingConfigService.getEffectiveConfig = async () => ({
+    erf: 97,
+    inputTokenPricePerMillionUsd: 0.2,
+    outputTokenPricePerMillionUsd: 1.0,
+    marginMultiplier: 2,
+    kComp: 0,
+    aComp: 0,
+    lowCreditThreshold: 20,
+    criticalCreditThreshold: 10,
+  });
+
+  try {
+    const billing = await scanBillingService.billCompletedScan({
+      scan: scanFixture('scan-zero-charge-1', business, user),
+      analysisResult: analysisFixture(),
+      session: { userId: user },
+    });
+
+    assert.equal(Number(billing.totalScanCharge), 0);
+    assert.equal(billing.billingStatus, 'SUCCEEDED');
+    assert.equal(Number(billing.balanceBefore), 10);
+    assert.equal(Number(billing.balanceAfter), 10);
+    assert.equal(
+      await CreditTransaction.countDocuments({ 'metadata.scanId': 'scan-zero-charge-1' }),
+      0,
+      'nothing was taken, so nothing is in the ledger',
+    );
+
+    const wallet = await OrganizationWallet.findOne({ businessId: business }).lean();
+    assert.equal(wallet.creditBalance, 10);
+  } finally {
+    billingConfigService.getEffectiveConfig = noFlatLine;
+  }
+});
+
+test('a scan is charged double its token cost and nothing else', async () => {
+  const business = businessId();
+  const user = userId();
+  await seedWallet(business, 10);
+
+  const doubleOnly = billingConfigService.getEffectiveConfig;
+  billingConfigService.getEffectiveConfig = async () => ({
+    erf: 97,
+    inputTokenPricePerMillionUsd: 0.2,
+    outputTokenPricePerMillionUsd: 1.0,
+    marginMultiplier: 2,
+    kComp: 0,
+    aComp: 0,
+    lowCreditThreshold: 20,
+    criticalCreditThreshold: 10,
+  });
+
+  try {
+    const billing = await scanBillingService.billCompletedScan({
+      scan: scanFixture('scan-double-1', business, user),
+      analysisResult: {
+        provider: 'openai',
+        billingMeta: {
+          model: 'gpt-6-luna',
+          promptTokens: 6000,
+          completionTokens: 1500,
+        },
+        structuredData: {},
+      },
+      session: { userId: user },
+    });
+
+    // $0.0027 the tokens cost, Rs 0.26 at 97, Rs 0.52 charged.
+    assert.equal(Number(billing.totalUsd), 0.0027);
+    assert.equal(Number(billing.costInr), 0.26);
+    assert.equal(Number(billing.marginMultiplier), 2);
+    assert.equal(Number(billing.totalScanCharge), 0.52);
+    assert.equal(Number(billing.promptTokens), 6000);
+    assert.equal(Number(billing.completionTokens), 1500);
+
+    const wallet = await OrganizationWallet.findOne({ businessId: business }).lean();
+    assert.equal(wallet.creditBalance, 9.48);
+  } finally {
+    billingConfigService.getEffectiveConfig = doubleOnly;
+  }
+});
+
 test('same scanId billed twice remains idempotent with one deduction', async () => {
   const business = businessId();
   const user = userId();

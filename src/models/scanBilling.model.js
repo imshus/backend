@@ -59,6 +59,18 @@ const scanBillingSchema = new mongoose.Schema(
       default: 97,
       min: 0,
     },
+    // What the scan cost us in rupees (totalUsd x erf), before the margin, and
+    // the multiplier the shop was charged at. lComp is costInr x this.
+    costInr: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    marginMultiplier: {
+      type: Number,
+      default: 2,
+      min: 0,
+    },
     lComp: {
       type: Number,
       default: 0,

@@ -31,6 +31,8 @@ function buildBillingPayload({ scan, session, usage, chargeBreakdown, balanceBef
     outputCostUsd: chargeBreakdown.outputCostUsd,
     totalUsd: chargeBreakdown.totalUsd,
     erf: chargeBreakdown.erf,
+    costInr: chargeBreakdown.costInr,
+    marginMultiplier: chargeBreakdown.marginMultiplier,
     lComp: chargeBreakdown.lComp,
     kComp: chargeBreakdown.kComp,
     aComp: chargeBreakdown.aComp,
@@ -56,6 +58,64 @@ function readUsageFromAnalysis(analysisResult = {}) {
     model,
     provider,
   };
+}
+
+/**
+ * The wallet move for one scan: double the cost out of the balance.
+ *
+ * A charge of nothing is not a deduction. With no flat per-scan line, a scan
+ * whose token usage never came back (a reader answer carrying no billingMeta)
+ * cost nothing to run, so there is nothing to double and nothing to take - and
+ * the wallet refuses a zero amount outright (INVALID_SCAN_CHARGE), which would
+ * have failed the billing of a scan that had already succeeded. Such a scan is
+ * recorded at zero against an untouched balance.
+ */
+async function moveWalletForScan({ scan, session, usage, chargeBreakdown, config, dbSession = null }) {
+  const walletBefore = await walletService.ensureWallet(
+    scan.businessId,
+    dbSession ? { dbSession } : {},
+  );
+  const balance = Number(walletBefore.creditBalance || 0);
+  console.info('[WALLET_BEFORE]', { scanId: scan.scanId, balance });
+
+  if (!(chargeBreakdown.totalScanCharge > 0)) {
+    console.info('[WALLET_NOT_CHARGED]', {
+      scanId: scan.scanId,
+      reason: 'zero_charge',
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+    });
+    return { balanceBefore: balance, balanceAfter: balance };
+  }
+
+  const { balanceBefore, balanceAfter } = await walletService.deductScanCharge({
+    businessId: scan.businessId,
+    userId: session?.userId || null,
+    actionByUserId: session?.userId || null,
+    amount: chargeBreakdown.totalScanCharge,
+    note: 'OCR scan billing deduction',
+    metadata: {
+      scanId: scan.scanId,
+      model: usage.model,
+      provider: usage.provider,
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      costUsd: chargeBreakdown.totalUsd,
+      costInr: chargeBreakdown.costInr,
+      marginMultiplier: chargeBreakdown.marginMultiplier,
+    },
+    dbSession,
+    effectiveConfig: config,
+  });
+
+  console.info('[WALLET_DEDUCTED]', {
+    scanId: scan.scanId,
+    deduction: chargeBreakdown.totalScanCharge,
+    balanceBefore,
+    balanceAfter,
+  });
+
+  return { balanceBefore, balanceAfter };
 }
 
 async function billCompletedScan({ scan, analysisResult, session, precomputedOverview = null }) {
@@ -103,10 +163,16 @@ async function billCompletedScan({ scan, analysisResult, session, precomputedOve
     outputTokenPricePerMillionUsd: config.outputTokenPricePerMillionUsd,
     kComp: config.kComp,
     aComp: config.aComp,
+    marginMultiplier: config.marginMultiplier,
   });
 
   console.info('[BILLING_CALCULATION]', {
     scanId: scan.scanId,
+    promptTokens: chargeBreakdown.promptTokens,
+    completionTokens: chargeBreakdown.completionTokens,
+    costUsd: chargeBreakdown.totalUsd,
+    costInr: chargeBreakdown.costInr,
+    margin: chargeBreakdown.marginMultiplier,
     lComp: chargeBreakdown.lComp,
     kComp: chargeBreakdown.kComp,
     aComp: chargeBreakdown.aComp,
@@ -131,34 +197,13 @@ async function billCompletedScan({ scan, analysisResult, session, precomputedOve
         return;
       }
 
-      const walletBefore = await walletService.ensureWallet(scan.businessId, { dbSession });
-      console.info('[WALLET_BEFORE]', {
-        scanId: scan.scanId,
-        balance: Number(walletBefore.creditBalance || 0),
-      });
-
-      const { balanceBefore, balanceAfter } = await walletService.deductScanCharge({
-        businessId: scan.businessId,
-        userId: session?.userId || null,
-        actionByUserId: session?.userId || null,
-        amount: chargeBreakdown.totalScanCharge,
-        note: 'OCR scan billing deduction',
-        metadata: {
-          scanId: scan.scanId,
-          model: usage.model,
-          provider: usage.provider,
-          promptTokens: usage.promptTokens,
-          completionTokens: usage.completionTokens,
-        },
+      const { balanceBefore, balanceAfter } = await moveWalletForScan({
+        scan,
+        session,
+        usage,
+        chargeBreakdown,
+        config,
         dbSession,
-        effectiveConfig: config,
-      });
-
-      console.info('[WALLET_DEDUCTED]', {
-        scanId: scan.scanId,
-        deduction: chargeBreakdown.totalScanCharge,
-        balanceBefore,
-        balanceAfter,
       });
 
       const [created] = await ScanBilling.create([
@@ -255,33 +300,12 @@ async function billCompletedScanWithoutTransaction({ scan, session, usage, charg
   }
 
   try {
-    const walletBefore = await walletService.ensureWallet(scan.businessId);
-    console.info('[WALLET_BEFORE]', {
-      scanId: scan.scanId,
-      balance: Number(walletBefore.creditBalance || 0),
-    });
-
-    const { balanceBefore, balanceAfter } = await walletService.deductScanCharge({
-      businessId: scan.businessId,
-      userId: session?.userId || null,
-      actionByUserId: session?.userId || null,
-      amount: chargeBreakdown.totalScanCharge,
-      note: 'OCR scan billing deduction',
-      metadata: {
-        scanId: scan.scanId,
-        model: usage.model,
-        provider: usage.provider,
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-      },
-      effectiveConfig,
-    });
-
-    console.info('[WALLET_DEDUCTED]', {
-      scanId: scan.scanId,
-      deduction: chargeBreakdown.totalScanCharge,
-      balanceBefore,
-      balanceAfter,
+    const { balanceBefore, balanceAfter } = await moveWalletForScan({
+      scan,
+      session,
+      usage,
+      chargeBreakdown,
+      config: effectiveConfig,
     });
 
     const billing = await ScanBilling.findOneAndUpdate(

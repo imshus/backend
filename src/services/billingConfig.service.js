@@ -4,8 +4,9 @@ const DEFAULT_BILLING_CONFIG = {
   scope: 'GLOBAL',
   erf: 97,
   inputTokenPricePerMillionUsd: 0.2,
-  outputTokenPricePerMillionUsd: 1.2,
-  kComp: 0.27,
+  outputTokenPricePerMillionUsd: 1.0,
+  marginMultiplier: 2,
+  kComp: 0,
   aComp: 0,
   applicationPrice: 15000,
   freeTrialCredits: 10,
@@ -13,10 +14,10 @@ const DEFAULT_BILLING_CONFIG = {
   trialDays: 7,
   lowCreditThreshold: 20,
   criticalCreditThreshold: 10,
-  minScanBalance: 0.74,
+  minScanBalance: 0.94,
 };
 
-/** The balance a new scan must be above, as the config gives it; 0.74 otherwise. */
+/** The balance a new scan must be above, as the config gives it; 0.94 otherwise. */
 const DEFAULT_MIN_SCAN_BALANCE = DEFAULT_BILLING_CONFIG.minScanBalance;
 function minScanBalanceOf(config) {
   const value = config?.minScanBalance;
@@ -43,6 +44,31 @@ async function ensureConfig() {
   // it there rather than here.
   if (Number(config.trialDays) === 10) {
     config.trialDays = 7;
+    await config.save();
+  }
+
+  // The reader's real rate: $1.00 a million output tokens on OpenAI's priority
+  // tier, not the 1.2 this baseline carried before the margin was separated
+  // out. A deployment still holding that old baseline moves with it; any other
+  // price is a number someone chose, so it stays.
+  if (Number(config.outputTokenPricePerMillionUsd) === 1.2) {
+    config.outputTokenPricePerMillionUsd = 1.0;
+    await config.save();
+  }
+
+  // The flat 0.27 a scan used to carry is gone: a scan is charged exactly
+  // double what it cost and nothing else (owner, 28 Nov 2026). A deployment
+  // still holding that old baseline moves with it; any other figure is one
+  // someone chose in billing settings, so it stays.
+  if (Number(config.kComp) === 0.27) {
+    config.kComp = 0;
+    await config.save();
+  }
+
+  // The balance a scan must start above, moved with the doubled token charge
+  // (see the model). Only the old baseline moves.
+  if (Number(config.minScanBalance) === 0.74) {
+    config.minScanBalance = 0.94;
     await config.save();
   }
 

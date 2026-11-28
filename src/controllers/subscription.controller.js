@@ -304,8 +304,17 @@ async function getScanBillingHistory(req, res, next) {
       .limit(limit)
       .lean();
 
+    // The tokens a scan burned and what they cost, beside what it was charged:
+    // charge = costInr x marginMultiplier + the flat lines.
     const safeRows = rows.map((row) => ({
       scanId: row.scanId,
+      model: String(row.model || ''),
+      promptTokens: Number(row.promptTokens || 0),
+      completionTokens: Number(row.completionTokens || 0),
+      totalTokens: Number(row.promptTokens || 0) + Number(row.completionTokens || 0),
+      costUsd: Number(row.totalUsd || 0),
+      costInr: Number(row.costInr || 0),
+      marginMultiplier: Number(row.marginMultiplier || 0),
       totalScanCharge: Number(row.totalScanCharge || 0),
       balanceBefore: Number(row.balanceBefore || 0),
       balanceAfter: Number(row.balanceAfter || 0),
